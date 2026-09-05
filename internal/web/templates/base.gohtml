@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · 2FA</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/webauthn.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <span class="brand">2FA-сервер</span>
+  {{if .Username}}
+  <nav>
+    <a href="/me">Профиль</a>
+    <a href="/me/totp">TOTP</a>
+    <a href="/me/backup">Резервные коды</a>
+    <a href="/me/telegram">Telegram</a>
+    <a href="/me/passkeys">Passkeys</a>
+    <a href="/me/devices">Устройства</a>
+    {{if .IsAdmin}}
+    <a href="/admin/users">Пользователи</a>
+    <a href="/admin/audit">Аудит</a>
+    <a href="/admin/challenges">Challenge</a>
+    <a href="/admin/settings">Настройки</a>
+    {{end}}
+  </nav>
+  <form action="/logout" method="post" class="inline">
+    <span class="user">{{.Username}}</span>
+    {{csrf .CSRF}}
+    <button type="submit" class="secondary">Выйти</button>
+  </form>
+  {{end}}
+</header>
+<main>
+{{with .Flash}}<div class="flash ok">{{.}}</div>{{end}}
+{{with .FlashErr}}<div class="flash err">{{.}}</div>{{end}}
+{{template "content" .}}
+</main>
+<footer>twofa</footer>
+</body>
+</html>

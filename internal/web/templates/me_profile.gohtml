@@ -1,0 +1,84 @@
+{{define "content"}}
+<h1>Профиль</h1>
+
+<h2>Контакты</h2>
+<p class="muted">Смена email или телефона требует код подтверждения на старый
+канал (или резервный код).</p>
+<form action="/me/contacts" method="post">
+  {{csrf .CSRF}}
+  <label>Email
+    <input type="email" name="email" value="{{.User.Email}}">
+  </label>
+  <label>Телефон
+    <input type="tel" name="phone" value="{{.User.Phone}}" placeholder="+79990001122">
+  </label>
+  <label>Код подтверждения
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code">
+  </label>
+  <button type="submit">Сохранить контакты</button>
+</form>
+<form action="/me/contacts/send-code" method="post" class="send-code">
+  {{csrf .CSRF}}
+  <label>Отправить код подтверждения на канал
+    <select name="channel">
+      <option value="email">Email</option>
+      <option value="sms">SMS</option>
+      <option value="telegram">Telegram</option>
+    </select>
+  </label>
+  <button type="submit" class="secondary">Отправить код подтверждения</button>
+</form>
+
+<h2>Каналы второго фактора</h2>
+<p class="muted">Отметьте каналы, коды с которых вы готовы принимать при входе.</p>
+<form action="/me/prefer" method="post">
+  {{csrf .CSRF}}
+  <label class="check"><input type="checkbox" name="channels" value="totp" {{if hasChan .User.PreferChannels "totp"}}checked{{end}}> TOTP-приложение</label>
+  <label class="check"><input type="checkbox" name="channels" value="telegram" {{if hasChan .User.PreferChannels "telegram"}}checked{{end}}> Telegram</label>
+  <label class="check"><input type="checkbox" name="channels" value="email" {{if hasChan .User.PreferChannels "email"}}checked{{end}}> Email</label>
+  <label class="check"><input type="checkbox" name="channels" value="sms" {{if hasChan .User.PreferChannels "sms"}}checked{{end}}> SMS</label>
+  <button type="submit">Сохранить каналы</button>
+</form>
+
+<h2>Смена пароля</h2>
+<p class="muted">После смены пароля все сессии и доверенные устройства
+отзываются.</p>
+<form action="/me/password" method="post">
+  {{csrf .CSRF}}
+  <label>Текущий пароль
+    <input type="password" name="old_password" required autocomplete="current-password">
+  </label>
+  <label>Новый пароль
+    <input type="password" name="new_password" required minlength="8" autocomplete="new-password">
+  </label>
+  <label>Новый пароль ещё раз
+    <input type="password" name="new_password2" required minlength="8" autocomplete="new-password">
+  </label>
+  <button type="submit">Сменить пароль</button>
+</form>
+
+<h2>Статус каналов</h2>
+<table>
+  <tr><th>Канал</th><th>Статус</th><th></th></tr>
+  <tr>
+    <td>TOTP-приложение</td>
+    <td>{{if .TOTPConfirmed}}<span class="badge ok">привязан</span>{{else}}<span class="badge off">не привязан</span>{{end}}</td>
+    <td><a href="/me/totp">Управлять</a></td>
+  </tr>
+  <tr>
+    <td>Резервные коды</td>
+    <td><span class="badge">осталось: {{.BackupRemaining}}</span></td>
+    <td><a href="/me/backup">Управлять</a></td>
+  </tr>
+  <tr>
+    <td>Telegram</td>
+    <td>{{if .TelegramLinked}}<span class="badge ok">привязан</span>{{else}}<span class="badge off">не привязан</span>{{end}}</td>
+    <td><a href="/me/telegram">Управлять</a></td>
+  </tr>
+  <tr>
+    <td>Passkeys</td>
+    <td><span class="badge">ключей: {{.PasskeyCount}}</span></td>
+    <td><a href="/me/passkeys">Управлять</a></td>
+  </tr>
+</table>
+{{end}}

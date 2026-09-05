@@ -1,0 +1,43 @@
+{{define "content"}}
+<h1>TOTP-приложение</h1>
+<p class="muted">Google Authenticator, Aegis, 1Password и другие приложения
+с шестизначными кодами.</p>
+
+{{if .Confirmed}}
+<div class="flash ok">TOTP привязан.</div>
+<p>Отвязка требует код из приложения или резервный код.</p>
+<form action="/me/totp/delete" method="post">
+  {{csrf .CSRF}}
+  <label>Код
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+  </label>
+  <button type="submit" class="danger">Отвязать TOTP</button>
+</form>
+
+{{else if .OtpauthURL}}
+<h2>Шаг 1. Отсканируйте QR-код</h2>
+<img class="qr" src="{{qrPNG .OtpauthURL}}" alt="QR-код TOTP" width="200" height="200">
+<p>Не сканируется? Введите ключ вручную:</p>
+<p><code class="otpauth">{{.OtpauthURL}}</code></p>
+<h2>Шаг 2. Введите код из приложения</h2>
+<form action="/me/totp/confirm" method="post">
+  {{csrf .CSRF}}
+  <label>Код из приложения
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus>
+  </label>
+  <button type="submit">Подтвердить</button>
+</form>
+<form action="/me/totp/enroll" method="post" class="startover">
+  {{csrf .CSRF}}
+  <button type="submit" class="secondary">Выдать новый секрет заново</button>
+</form>
+
+{{else}}
+<p>TOTP не привязан. Нажмите кнопку — сервер выдаст секрет, который нужно
+отсканировать приложением и подтвердить кодом.</p>
+<form action="/me/totp/enroll" method="post">
+  {{csrf .CSRF}}
+  <button type="submit">Привязать приложение</button>
+</form>
+{{end}}
+{{end}}
