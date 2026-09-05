@@ -1,0 +1,250 @@
+// Package radiusserver — RADIUS-интерфейс 2FA-сервера: Access-Request (PAP)
+// через auth.Core (сплиты «пароль+код», push_wait-удержание, fail-счётчик)
+// и accounting-лог. Reply-атрибуты Access-Accept: сначала per-user
+// users.radius_reply, иначе глобальные radius.reply_attributes (MikroTik VSA
+// и стандартные атрибуты, см. attrs.go). Ответ на запрос с
+// Message-Authenticator подписывается (RFC 3579, митигация BlastRADIUS,
+// см. messageauth.go). Неизвестные коды пакетов игнорируются без ответа.
+package radiusserver
+
+import (
+	"context"
+	"errors"
+	"log"
+	"log/slog"
+	"net"
+	"time"
+
+	"layeh.com/radius"
+	"layeh.com/radius/rfc2865"
+	"layeh.com/radius/rfc2866"
+
+	"github.com/aligorov/twofa/internal/auth"
+	"github.com/aligorov/twofa/internal/settings"
+	"github.com/aligorov/twofa/internal/store"
+)
+
+// shutdownGrace — сколько ждать завершения in-flight хендлеров (включая
+// удержания push_wait) при остановке.
+const shutdownGrace = 30 * time.Second
+
+// authTimeoutMargin — запас сверх radius.push_wait на контексте обработки:
+// удержание Core опрашивает состояние с шагом 1 с, ответ должен успеть
+// уйти до отмены контекста.
+const authTimeoutMargin = 5 * time.Second
+
+// ErrNoSecret — radius.secret не задан: серверы не стартуют.
+var ErrNoSecret = errors.New("radiusserver: radius.secret не задан")
+
+// Server — RADIUS auth (:1812) и acct (:1813) серверы поверх одного ядра
+// аутентификации.
+type Server struct {
+	core *auth.Core
+	st   *store.Store
+	m    *settings.M
+}
+
+// New собирает RADIUS-сервер. Секрет и адреса читаются из настроек при
+// каждом запуске слушателей (ListenAndServe/ServeAuth/ServeAcct).
+func New(core *auth.Core, st *store.Store, m *settings.M) *Server {
+	return &Server{core: core, st: st, m: m}
+}
+
+// slogBridge — маршрутизация внутренних ошибок layeh/radius в slog
+// (PacketServer.ErrorLog принимает *log.Logger).
+func slogBridge() *log.Logger {
+	return slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn)
+}
+
+// buildAuth/buildAcct собирают PacketServer-ы с секретом из текущего
+// снимка настроек.
+func (s *Server) buildAuth() (*radius.PacketServer, error) {
+	secret := s.m.Get().RadiusSecret
+	if secret == "" {
+		return nil, ErrNoSecret
+	}
+	return &radius.PacketServer{
+		Handler:      radius.HandlerFunc(s.handleAuth),
+		SecretSource: radius.StaticSecretSource([]byte(secret)),
+		ErrorLog:     slogBridge(),
+	}, nil
+}
+
+func (s *Server) buildAcct() (*radius.PacketServer, error) {
+	secret := s.m.Get().RadiusSecret
+	if secret == "" {
+		return nil, ErrNoSecret
+	}
+	return &radius.PacketServer{
+		Handler:      radius.HandlerFunc(s.handleAcct),
+		SecretSource: radius.StaticSecretSource([]byte(secret)),
+		ErrorLog:     slogBridge(),
+	}, nil
+}
+
+// ListenAndServe поднимает оба сервера на listen.radius_auth /
+// listen.radius_acct и блокирует до отмены ctx (затем Shutdown обоих;
+// ошибки слушателей логируются, не прерывая второй сервер). При пустом
+// radius.secret серверы не запускаются (одна запись в лог), метод ждёт
+// отмены ctx и возвращает nil.
+func (s *Server) ListenAndServe(ctx context.Context) error {
+	authSrv, err := s.buildAuth()
+	if err != nil {
+		slog.Error("radius: серверы не запущены — radius.secret не задан")
+		<-ctx.Done()
+		return nil
+	}
+	acctSrv, err := s.buildAcct()
+	if err != nil { // тот же секрет — практически недостижимо, но не паникуем
+		slog.Error("radius: acct-сервер не запущен", "error", err)
+	}
+
+	run := func(name, addr string, srv *radius.PacketServer) {
+		if srv == nil {
+			return
+		}
+		srv.Addr = addr
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, radius.ErrServerShutdown) {
+			slog.Error("radius: слушатель остановлен с ошибкой", "server", name, "error", err)
+		}
+	}
+	go run("auth", s.m.Get().Listen.RadiusAuth, authSrv)
+	go run("acct", s.m.Get().Listen.RadiusAcct, acctSrv)
+
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
+	defer cancel()
+	for _, srv := range []*radius.PacketServer{authSrv, acctSrv} {
+		if srv == nil {
+			continue
+		}
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("radius: не удалось корректно остановить сервер", "error", err)
+		}
+	}
+	return nil
+}
+
+// ServeAuth обслуживает auth-запросы на готовом соединении (тесты слушают
+// на 127.0.0.1:0). Блокирует до отмены ctx; сервер останавливается
+// Shutdown-ом при отмене.
+func (s *Server) ServeAuth(ctx context.Context, conn net.PacketConn) error {
+	srv, err := s.buildAuth()
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	go shutdownOnDone(ctx, srv, conn)
+	err = srv.Serve(conn)
+	if errors.Is(err, radius.ErrServerShutdown) {
+		return nil
+	}
+	return err
+}
+
+// ServeAcct — аналог ServeAuth для accounting-сервера.
+func (s *Server) ServeAcct(ctx context.Context, conn net.PacketConn) error {
+	srv, err := s.buildAcct()
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	go shutdownOnDone(ctx, srv, conn)
+	err = srv.Serve(conn)
+	if errors.Is(err, radius.ErrServerShutdown) {
+		return nil
+	}
+	return err
+}
+
+// shutdownOnDone закрывает слушатель и ждёт хендлеры при отмене ctx.
+func shutdownOnDone(ctx context.Context, srv *radius.PacketServer, conn net.PacketConn) {
+	<-ctx.Done()
+	conn.Close()
+	shctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
+	defer cancel()
+	if err := srv.Shutdown(shctx); err != nil {
+		slog.Warn("radius: shutdown завершился с ошибкой", "error", err)
+	}
+}
+
+// handleAuth — Access-Request (PAP): UserName + User-Password (библиотека
+// расшифровывает PAP сама) → Core.RADIUSAuth с таймаутом push_wait+5s →
+// Accept с reply-атрибутами (per-user radius_reply, иначе глобальные) или
+// Reject с Reply-Message "rejected" без внутренних деталей.
+func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
+	if r.Code != radius.CodeAccessRequest {
+		return // неизвестные коды игнорируются без ответа
+	}
+	if !verifyMessageAuthenticator(r.Packet) {
+		// BlastRADIUS: подделанный Message-Authenticator — молчаливый drop.
+		slog.Warn("radius: неверный Message-Authenticator — пакет отброшен",
+			"remote", r.RemoteAddr.String())
+		return
+	}
+
+	username, _ := rfc2865.UserName_LookupString(r.Packet)
+	password, _ := rfc2865.UserPassword_LookupString(r.Packet)
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.m.Get().Radius.PushWait+authTimeoutMargin)
+	defer cancel()
+
+	accept, reason := s.core.RADIUSAuth(ctx, username, password, hostOnly(r.RemoteAddr))
+	var resp *radius.Packet
+	if accept {
+		resp = r.Response(radius.CodeAccessAccept)
+		attrs := s.m.Get().Radius.ReplyAttributes
+		if user, err := s.st.UserByUsername(ctx, username); err == nil && user.RadiusReply != nil {
+			attrs = user.RadiusReply
+		}
+		applyReplyAttrs(resp, attrs)
+		slog.Info("radius: Access-Accept", "user", username, "reason", reason,
+			"remote", hostOnly(r.RemoteAddr))
+	} else {
+		resp = r.Response(radius.CodeAccessReject)
+		if err := rfc2865.ReplyMessage_SetString(resp, "rejected"); err != nil {
+			slog.Warn("radius: Reply-Message не установлен", "error", err)
+		}
+		slog.Info("radius: Access-Reject", "user", username, "reason", reason,
+			"remote", hostOnly(r.RemoteAddr))
+	}
+	signResponseMessageAuthenticator(r.Packet, resp)
+	if err := w.Write(resp); err != nil {
+		slog.Warn("radius: ответ не отправлен", "user", username, "error", err)
+	}
+}
+
+// handleAcct — Accounting-Request: событие в лог и аудит, ВСЕГДА
+// Accounting-Response (иначе NAS ретрансмитит).
+func (s *Server) handleAcct(w radius.ResponseWriter, r *radius.Request) {
+	if r.Code != radius.CodeAccountingRequest {
+		return
+	}
+	username, _ := rfc2865.UserName_LookupString(r.Packet)
+	session, _ := rfc2866.AcctSessionID_LookupString(r.Packet)
+	status := rfc2866.AcctStatusType_Get(r.Packet).String()
+	srcIP := hostOnly(r.RemoteAddr)
+
+	slog.Info("radius: accounting", "user", username, "session_id", session,
+		"status", status, "src_ip", srcIP)
+	// Дублируем в audit_log (событие survive-ит процесс; ошибки записи
+	// не должны ломать ответ NAS).
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if err := s.st.Audit(auditCtx, username, "radius_acct",
+		map[string]any{"session_id": session, "status": status}, srcIP, "ok"); err != nil {
+		slog.Warn("radius: accounting не записан в аудит", "user", username, "error", err)
+	}
+
+	if err := w.Write(r.Response(radius.CodeAccountingResponse)); err != nil {
+		slog.Warn("radius: accounting-ответ не отправлен", "user", username, "error", err)
+	}
+}
+
+// hostOnly выдает IP из net.Addr ("1.2.3.4:5678" → "1.2.3.4").
+func hostOnly(addr net.Addr) string {
+	if host, _, err := net.SplitHostPort(addr.String()); err == nil {
+		return host
+	}
+	return addr.String()
+}
