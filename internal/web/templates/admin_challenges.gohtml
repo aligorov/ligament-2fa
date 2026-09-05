@@ -1,0 +1,22 @@
+{{define "content"}}
+<h1>Активные challenge</h1>
+<p class="muted">Выданные коды и push-подтверждения (без самих кодов).</p>
+
+{{if .Challenges}}
+<table>
+  <tr><th>Пользователь</th><th>Канал</th><th>Назначение</th><th>Истекает</th><th>Состояние push</th><th>Попыток</th></tr>
+  {{range .Challenges}}
+  <tr>
+    <td>{{index $.Usernames .UserID}}</td>
+    <td><span class="badge">{{.Channel}}</span></td>
+    <td>{{.Purpose}}</td>
+    <td class="nowrap">{{dt .ExpiresAt}}</td>
+    <td>{{if .PushState}}<span class="badge {{if eq (deref .PushState) "approved"}}ok{{end}}">{{deref .PushState}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{.AttemptsLeft}}</td>
+  </tr>
+  {{end}}
+</table>
+{{else}}
+<p>Активных challenge нет.</p>
+{{end}}
+{{end}}

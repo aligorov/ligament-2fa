@@ -1,0 +1,22 @@
+{{define "content"}}
+<h1>Журнал аудита</h1>
+<p class="muted">Последние события безопасности, новые первыми.</p>
+
+{{if .Rows}}
+<table class="audit">
+  <tr><th>Время</th><th>Пользователь</th><th>Событие</th><th>IP</th><th>Результат</th><th>Детали</th></tr>
+  {{range .Rows}}
+  <tr>
+    <td class="nowrap">{{dt .Ts}}</td>
+    <td>{{if .Username}}{{.Username}}{{else}}<span class="muted">система</span>{{end}}</td>
+    <td><span class="badge">{{.Event}}</span></td>
+    <td>{{.SrcIP}}</td>
+    <td>{{if eq .Result "ok"}}<span class="badge ok">ok</span>{{else if .Result}}<span class="badge">{{.Result}}</span>{{end}}</td>
+    <td class="detail">{{if .Detail}}<pre>{{jsonPretty .Detail}}</pre>{{else}}<span class="muted">—</span>{{end}}</td>
+  </tr>
+  {{end}}
+</table>
+{{else}}
+<p>Записей нет.</p>
+{{end}}
+{{end}}

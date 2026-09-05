@@ -1,0 +1,33 @@
+# twofa — systemd unit для bare-metal/VM установки (спека §10).
+# Установка:
+#   sudo cp twofa /usr/local/bin/twofa && sudo chmod 0755 /usr/local/bin/twofa
+#   sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin twofa
+#   sudo cp deploy/twofa.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now twofa
+#
+# Порты 8080/1812/1813 > 1024 — AmbientCapabilities не нужны; пользователь
+# непривилегированный. Настройки хранятся в БД (кроме TWOFA_DB_DSN);
+# горячая перезагрузка: systemctl kill -s HUP twofa.
+
+[Unit]
+Description=twofa 2FA server (RADIUS + REST API + web UI)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=twofa
+Group=twofa
+ExecStart=/usr/local/bin/twofa
+Environment=TWOFA_DB_DSN=postgres://twofa:CHANGE_ME@127.0.0.1:5432/twofa
+Restart=always
+RestartSec=5
+# Минимальные привилегии и изоляция файловой системы.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,204 @@
+{{define "content"}}
+<h1>Настройки сервера</h1>
+<p class="muted">Каждая секция сохраняется отдельно. Секретные поля показывают
+только факт «задано»; чтобы изменить — введите новое значение, пустое поле
+не меняет текущее.</p>
+
+<h2>Слушатели <span class="badge off">нужен перезапуск</span></h2>
+<form action="/admin/settings" method="post" class="wide">
+  {{csrf .CSRF}}<input type="hidden" name="section" value="listen">
+  <div class="grid">
+    <label>HTTP
+      <input type="text" name="listen.http" value="{{.S.Listen.HTTP}}">
+    </label>
+    <label>RADIUS Auth
+      <input type="text" name="listen.radius_auth" value="{{.S.Listen.RadiusAuth}}">
+    </label>
+    <label>RADIUS Acct
+      <input type="text" name="listen.radius_acct" value="{{.S.Listen.RadiusAcct}}">
+    </label>
+  </div>
+  <button type="submit">Сохранить секцию</button>
+</form>
+
+<h2>RADIUS</h2>
+<form action="/admin/settings" method="post" class="wide">
+  {{csrf .CSRF}}<input type="hidden" name="section" value="radius">
+  <div class="grid">
+    <label>Секрет {{if .RadiusSecretSet}}<span class="badge">•••• (задано)</span>{{end}}
+      <input type="password" name="radius.secret" placeholder="введите новое, чтобы изменить">
+    </label>
+    <label>Длины кодов (JSON)
+      <input type="text" name="radius.code_lengths" value='{{jsonPretty .S.Radius.CodeLengths}}'>
+    </label>
+    <label>Макс. неудач на пользователя
+      <input type="number" name="radius.max_fail_per_user" value="{{.S.Radius.MaxFailPerUser}}">
+    </label>
+    <label>Окно неудач (duration)
+      <input type="text" name="radius.fail_window" value="{{.S.Radius.FailWindow}}">
+    </label>
+    <label>Ожидание push (duration)
+      <input type="text" name="radius.push_wait" value="{{.S.Radius.PushWait}}">
+    </label>
+  </div>
+  <label>Reply-атрибуты Accept (JSON)
+    <textarea name="radius.reply_attributes" rows="4">{{.ReplyAttrsJSON}}</textarea>
+  </label>
+  <div class="row-actions">
+    <button type="submit">Сохранить секцию</button>
+    <button type="submit" name="regenerate" value="radius.secret" class="danger"
+      onclick="return confirm('Перегенерировать radius.secret? Все NAS отключатся, пока не обновят секрет.')">Перегенерировать секрет</button>
+  </div>
+</form>
+
+<h2>Токены доступа</h2>
+<form action="/admin/settings" method="post" class="wide">
+  {{csrf .CSRF}}
+  <p class="muted">admin_token — Bearer-токен REST API <code>/api/v1/admin/*</code>.
+  Новое значение показывается один раз; интеграции со старым токеном
+  перестанут работать сразу после перегенерации.</p>
+  <div class="row-actions">
+    <button type="submit" name="regenerate" value="admin_token" class="danger"
+      onclick="return confirm('Перегенерировать admin_token? Все интеграции со старым токеном перестанут работать.')">Перегенерировать admin_token</button>
+  </div>
+</form>
+
+<h2>SMTP <span class="badge off">применяется после SIGHUP/перезапуска</span></h2>
+<form action="/admin/settings" method="post" class="wide">
+  {{csrf .CSRF}}<input type="hidden" name="section" value="smtp">
+  <div class="grid">
+    <label>Хост
+      <input type="text" name="smtp.host" value="{{.S.SMTP.Host}}">
+    </label>
+    <label>Порт
+      <input type="number" name="smtp.port" value="{{.S.SMTP.Port}}">
+    </label>
+    <label>Пользователь
+      <input type="text" name="smtp.user" value="{{.S.SMTP.User}}">
+    </label>
+    <label>Пароль {{if .SMTPPasswordSet}}<span class="badge">•••• (задано)</span>{{end}}
+      <input type="password" name="smtp.password" placeholder="введите новое, чтобы изменить">
+    </label>
+    <label>От кого
+      <input type="text" name="smtp.from" value="{{.S.SMTP.From}}">
+    </label>
+    <label>Тема письма
+      <input type="text" name="smtp.subject" value="{{.S.SMTP.Subject}}">
+    </label>
+    <label>Таймаут (duration)
+      <input type="text" name="smtp.timeout" value="{{.S.SMTP.Timeout}}">
+    </label>
+    <label class="check"><input type="checkbox" name="smtp.starttls" value="1"{{if .S.SMTP.StartTLS}} checked{{end}}> STARTTLS</label>
+  </div>
+  <button type="submit">Сохранить секцию</button>
+</form>
+
+<h2>SMS-шлюз <span class="badge off">применяется после SIGHUP/перезапуска</span></h2>
+<form action="/admin/settings" method="post" class="wide">
+  {{csrf .CSRF}}<input type="hidden" name="section" value="sms">
+  <label>Шлюз (JSON: preset, method, url, headers, body, content_type, success)
+    <textarea name="sms.gateway" rows="8">{{.SMSGatewayJSON}}</textarea>
+  </label>
+  <label>Пресеты (JSON)
+    <textarea name="sms.presets" rows="4">{{.SMSPresetsJSON}}</textarea>
+  </label>
+  <button type="submit">Сохранить секцию</button>
+</form>
+
+<h2>Telegram <span class="badge off">смена токена — перезапуск</span></h2>
+<form action="/admin/settings" method="post" class="wide">
+  {{csrf .CSRF}}<input type="hidden" name="section" value="telegram">
+  <label>Токен бота {{if .TGBotTokenSet}}<span class="badge">•••• (задано)</span>{{else}}<span class="badge off">не задан — бот выключен</span>{{end}}
+    <input type="password" name="telegram.bot_token" placeholder="введите новое, чтобы изменить">
+  </label>
+  <button type="submit">Сохранить секцию</button>
+</form>
+
+<h2>TOTP</h2>
+<form action="/admin/settings" method="post" class="wide">
+  {{csrf .CSRF}}<input type="hidden" name="section" value="totp">
+  <div class="grid">
+    <label>Издатель (issuer)
+      <input type="text" name="totp.issuer" value="{{.S.TOTP.Issuer}}">
+    </label>
+    <label>Цифр в коде
+      <input type="number" name="totp.digits" value="{{.S.TOTP.Digits}}">
+    </label>
+    <label>Период, сек
+      <input type="number" name="totp.period" value="{{.S.TOTP.Period}}">
+    </label>
+    <label>Skew (шагов допуска)
+      <input type="number" name="totp.skew" value="{{.S.TOTP.Skew}}">
+    </label>
+  </div>
+  <button type="submit">Сохранить секцию</button>
+</form>
+
+<h2>WebAuthn</h2>
+<form action="/admin/settings" method="post" class="wide">
+  {{csrf .CSRF}}<input type="hidden" name="section" value="webauthn">
+  <div class="grid">
+    <label>RP ID (домен сервера)
+      <input type="text" name="webauthn.rp_id" value="{{.S.WebAuthn.RPID}}">
+    </label>
+    <label>RP Name (отображаемое имя)
+      <input type="text" name="webauthn.rp_name" value="{{.S.WebAuthn.RPName}}">
+    </label>
+  </div>
+  <p class="muted">Смена RP ID отвязывает существующие passkeys — миграция
+  описана в README.</p>
+  <button type="submit">Сохранить секцию</button>
+</form>
+
+<h2>Политики</h2>
+<form action="/admin/settings" method="post" class="wide">
+  {{csrf .CSRF}}<input type="hidden" name="section" value="policy">
+  <div class="grid">
+    <label>Время жизни кода
+      <input type="text" name="policy.code_ttl" value="{{.S.Policy.CodeTTL}}">
+    </label>
+    <label>Длина кода
+      <input type="number" name="policy.code_length" value="{{.S.Policy.CodeLength}}">
+    </label>
+    <label>Попыток ввода
+      <input type="number" name="policy.max_attempts" value="{{.S.Policy.MaxAttempts}}">
+    </label>
+    <label>Cooldown повторной отправки
+      <input type="text" name="policy.resend_cooldown" value="{{.S.Policy.ResendCooldown}}">
+    </label>
+    <label>Cooldown push
+      <input type="text" name="policy.push_cooldown" value="{{.S.Policy.PushCooldown}}">
+    </label>
+    <label>Push в час
+      <input type="number" name="policy.push_per_hour" value="{{.S.Policy.PushPerHour}}">
+    </label>
+    <label>Срок доверия устройству
+      <input type="text" name="policy.trusted_device_ttl" value="{{.S.Policy.TrustedDeviceTTL}}">
+    </label>
+    <label>Неудач до блокировки
+      <input type="number" name="policy.max_fail" value="{{.S.Policy.MaxFail}}">
+    </label>
+    <label>Окно неудач
+      <input type="text" name="policy.fail_window" value="{{.S.Policy.FailWindow}}">
+    </label>
+    <label>Время блокировки
+      <input type="text" name="policy.ban_time" value="{{.S.Policy.BanTime}}">
+    </label>
+    <label>Сессия web (duration)
+      <input type="text" name="web.session_ttl" value="{{.S.Policy.SessionTTL}}">
+    </label>
+  </div>
+  <label>Каналы по умолчанию (JSON)
+    <input type="text" name="policy.default_prefer_channels" value='{{jsonPretty .S.Policy.DefaultPrefer}}'>
+  </label>
+  <button type="submit">Сохранить секцию</button>
+</form>
+
+{{if .OneTimeValue}}
+<div class="card">
+  <h3>Новое значение: {{.OneTimeLabel}}</h3>
+  <p class="flash err">Показывается только один раз — сохраните!</p>
+  <pre>{{.OneTimeValue}}</pre>
+</div>
+{{end}}
+{{end}}

@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>Telegram</h1>
+<p class="muted">Коды и push-подтверждения в чат-боте сервера.</p>
+
+{{if .Linked}}
+<div class="flash ok">Telegram привязан{{with .ChatID}} (chat {{.}}){{end}}.</div>
+<form action="/me/telegram/delete" method="post">
+  {{csrf .CSRF}}
+  <label>Код подтверждения
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+  </label>
+  <button type="submit" class="danger">Отвязать Telegram</button>
+</form>
+
+{{else}}
+{{if .LinkCode}}
+<div class="flash ok">Код привязки получен. Отправьте его боту — бот указан
+в настройках сервера.</div>
+<p class="linkcode">{{.LinkCode}}</p>
+<p class="muted">Код действует ограниченное время. Если он истёк —
+запросите новый.</p>
+{{end}}
+<form action="/me/telegram/link" method="post">
+  {{csrf .CSRF}}
+  {{if .LinkCode}}
+  <button type="submit" class="secondary">Получить новый код</button>
+  {{else}}
+  <button type="submit">Получить код привязки</button>
+  {{end}}
+</form>
+{{end}}
+{{end}}

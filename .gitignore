@@ -14,3 +14,6 @@ coverage.*
 
 # macOS
 .DS_Store
+
+# superpowers SDD-скретч (брифы/отчёты/ledger/worktrees)
+.superpowers/

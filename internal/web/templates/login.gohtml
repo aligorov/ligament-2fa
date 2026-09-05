@@ -1,0 +1,20 @@
+{{define "content"}}
+<h1>Вход</h1>
+<p class="muted">Введите имя пользователя и пароль. Если у вас включён второй
+фактор — введите код из приложения или сообщения.</p>
+{{with .Err}}<div class="flash err">{{.}}</div>{{end}}
+{{if .NeedCode}}<div class="flash ok">Введите код второго фактора.</div>{{end}}
+<form action="/login" method="post" class="card">
+  <label>Имя пользователя
+    <input type="text" name="username" value="{{.Prefill}}" required autofocus autocomplete="username">
+  </label>
+  <label>Пароль
+    <input type="password" name="password" required autocomplete="current-password">
+  </label>
+  <label>Код 2FA (если включён)
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="например, 123456">
+  </label>
+  <label class="check"><input type="checkbox" name="remember" value="1"> Запомнить это устройство</label>
+  <button type="submit">Войти</button>
+</form>
+{{end}}

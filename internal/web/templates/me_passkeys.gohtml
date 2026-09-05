@@ -1,0 +1,46 @@
+{{define "content"}}
+<h1>Passkeys</h1>
+<p class="muted">Биометрия, синхронизируемые ключи или USB-ключи. Добавление
+требует код из приложения или резервный код.</p>
+
+{{if .Creds}}
+<table>
+  <tr><th>Имя</th><th>Подключение</th><th>Последнее использование</th><th></th></tr>
+  {{range .Creds}}
+  <tr>
+    <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">без имени</span>{{end}}</td>
+    <td>{{.Attachment}}</td>
+    <td>{{dt .LastUsedAt}}</td>
+    <td>
+      <form action="/me/webauthn/credentials/{{.ID}}/delete" method="post" class="inline-del">
+        {{csrf $.CSRF}}
+        <button type="submit" class="danger">Удалить</button>
+      </form>
+    </td>
+  </tr>
+  {{end}}
+</table>
+{{else}}
+<p>Passkeys ещё не добавлены.</p>
+{{end}}
+
+<h2>Добавить passkey</h2>
+{{if .Handle}}
+<div id="passkey-pending" class="flash ok"
+     data-handle="{{.Handle}}" data-name="{{.RegName}}" data-options="{{.OptionsJSON}}">
+Подтвердите создание ключа «{{.RegName}}» в диалоге браузера…
+</div>
+{{end}}
+<form action="/me/webauthn/credentials" method="post" id="passkey-form">
+  {{csrf .CSRF}}
+  <label>Имя ключа
+    <input type="text" name="name" placeholder="например, MacBook · Touch ID" required>
+  </label>
+  <label>Код подтверждения
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+  </label>
+  <button type="button" onclick="return twofaRegisterPasskey(this.form)">Добавить passkey</button>
+  <noscript><p class="flash err">Для добавления passkey нужен включённый
+  JavaScript (WebAuthn-церемония браузера).</p></noscript>
+</form>
+{{end}}
