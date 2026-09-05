@@ -147,15 +147,103 @@ func (s *SessionAPI) audit(ctx context.Context, username, event, ip, result stri
 	}
 }
 
-// allow проверяет rate-limit корзины username и IP (как /auth/start).
+// allowReq проверяет rate-limit корзины username и IP без записи ответа —
+// общий предикат для JSON- и HTML-входа.
+func (s *SessionAPI) allowReq(r *http.Request, username string) bool {
+	return s.rl.Allow("u:"+username) && s.rl.Allow("ip:"+clientIP(r))
+}
+
+// allow проверяет rate-limit корзины username и IP (как /auth/start);
+// при исчерпании сам отвечает 429.
 func (s *SessionAPI) allow(w http.ResponseWriter, r *http.Request, username string) bool {
-	if !s.rl.Allow("u:"+username) || !s.rl.Allow("ip:"+clientIP(r)) {
+	if !s.allowReq(r, username) {
 		w.Header().Set("Retry-After", strconv.Itoa(rlRetryAfterSec))
 		writeJSON(w, http.StatusTooManyRequests,
 			map[string]any{"error": "rate_limited", "retry_after": rlRetryAfterSec})
 		return false
 	}
 	return true
+}
+
+// loginStep1 — первый фактор web-входа (общий код JSON- и HTML-обвязки):
+// проверка пароля и fail-блокировки; аудит пишется здесь же. flow — метка
+// аудита (web / web_html). Возвращает (user, 0, "") при успехе либо код
+// ответа и машинный код ошибки (status != 0).
+func (s *SessionAPI) loginStep1(ctx context.Context, ip, username, password, flow string) (*store.User, int, string) {
+	user, err := s.pv.Verify(ctx, username, password)
+	if errors.Is(err, auth.ErrBadCredentials) || errors.Is(err, store.ErrNotFound) {
+		// Единый ответ против перечисления пользователей.
+		s.audit(ctx, username, "login_fail", ip, "fail",
+			map[string]any{"reason": "bad_credentials", "flow": flow})
+		return nil, http.StatusUnauthorized, "bad_credentials"
+	}
+	if err != nil {
+		slog.Error("api: login verify", "error", err)
+		return nil, http.StatusInternalServerError, "internal"
+	}
+	if s.core.FailLocked(ctx, user.ID) {
+		s.audit(ctx, user.Username, "login_fail", ip, "fail",
+			map[string]any{"reason": "locked", "flow": flow})
+		return nil, http.StatusLocked, "locked"
+	}
+	return user, 0, ""
+}
+
+// loginStep2 — второй шаг web-входа «пароль + код» одним запросом (общий
+// код JSON- и HTML-обвязки): lookup пользователя → enabled → FailLocked →
+// код (VerifyAnyCode либо одноразовое passkey-окно consumeWebauthnPending)
+// → пароль РОВНО один раз и только после кода (инвариант «один argon2 на
+// запрос»). Возвращает (user, 0, "") при успехе либо код ответа и ошибку.
+func (s *SessionAPI) loginStep2(ctx context.Context, r *http.Request, username, password, code, flow string) (*store.User, int, string) {
+	ip := clientIP(r)
+	user, err := s.st.UserByUsername(ctx, username)
+	if errors.Is(err, store.ErrNotFound) {
+		s.audit(ctx, username, "login_fail", ip, "fail",
+			map[string]any{"reason": "no_user", "flow": flow})
+		return nil, http.StatusUnauthorized, "bad_credentials"
+	}
+	if err != nil {
+		slog.Error("api: login/2fa lookup", "error", err)
+		return nil, http.StatusInternalServerError, "internal"
+	}
+	if !user.Enabled {
+		// Единый 401, как в первом шаге (анти-перечисление).
+		s.audit(ctx, user.Username, "login_fail", ip, "fail",
+			map[string]any{"reason": "bad_credentials", "flow": flow})
+		return nil, http.StatusUnauthorized, "bad_credentials"
+	}
+	if s.core.FailLocked(ctx, user.ID) {
+		s.audit(ctx, user.Username, "login_fail", ip, "fail",
+			map[string]any{"reason": "locked", "flow": flow})
+		return nil, http.StatusLocked, "locked"
+	}
+
+	if code != "" {
+		if _, err := s.core.VerifyAnyCode(ctx, user, code); err != nil {
+			if !errors.Is(err, auth.ErrBadCode) {
+				slog.Error("api: login/2fa код", "error", err)
+				return nil, http.StatusInternalServerError, "internal"
+			}
+			s.audit(ctx, user.Username, "login_fail", ip, "fail",
+				map[string]any{"reason": "bad_code", "flow": flow})
+			return nil, http.StatusUnauthorized, "bad_code"
+		}
+	} else if !s.consumeWebauthnPending(ctx, user) {
+		s.audit(ctx, user.Username, "login_fail", ip, "fail",
+			map[string]any{"reason": "bad_code", "flow": flow})
+		return nil, http.StatusUnauthorized, "bad_code"
+	}
+
+	if _, err := s.pv.Verify(ctx, username, password); err != nil {
+		if errors.Is(err, auth.ErrBadCredentials) || errors.Is(err, store.ErrNotFound) {
+			s.audit(ctx, user.Username, "login_fail", ip, "fail",
+				map[string]any{"reason": "bad_credentials", "flow": flow})
+			return nil, http.StatusUnauthorized, "bad_credentials"
+		}
+		slog.Error("api: login/2fa verify", "error", err)
+		return nil, http.StatusInternalServerError, "internal"
+	}
+	return user, 0, ""
 }
 
 // ---- POST /api/v1/login ----
@@ -181,23 +269,9 @@ func (s *SessionAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.pv.Verify(ctx, req.Username, req.Password)
-	if errors.Is(err, auth.ErrBadCredentials) || errors.Is(err, store.ErrNotFound) {
-		// Единый 401 против перечисления пользователей.
-		s.audit(ctx, req.Username, "login_fail", ip, "fail",
-			map[string]any{"reason": "bad_credentials", "flow": "web"})
-		writeError(w, http.StatusUnauthorized, "bad_credentials")
-		return
-	}
-	if err != nil {
-		slog.Error("api: login verify", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal")
-		return
-	}
-	if s.core.FailLocked(ctx, user.ID) {
-		s.audit(ctx, user.Username, "login_fail", ip, "fail",
-			map[string]any{"reason": "locked", "flow": "web"})
-		writeError(w, http.StatusLocked, "locked")
+	user, status, errCode := s.loginStep1(ctx, ip, req.Username, req.Password, "web")
+	if status != 0 {
+		writeError(w, status, errCode)
 		return
 	}
 
@@ -230,93 +304,48 @@ type login2FAReq struct {
 // — пустой код при активном «webauthn_web_pending»-окне: его создаёт
 // публичный /api/v1/auth/webauthn/finish ПОСЛЕ проверки подписи passkey, и
 // оно атомарно погашается этим входом (consumeWebauthnPending — одноразовое
-// окно вместо прежнего скана аудита). Пароль проверяется РОВНО один раз
-// и только после прохождения кода (инвариант «один argon2 на запрос», см.
-// Core.VerifyPasswordAndCode).
+// окно вместо прежнего скана аудита). Решение принимает loginStep2.
 func (s *SessionAPI) handleLogin2FA(w http.ResponseWriter, r *http.Request) {
 	var req login2FAReq
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx := r.Context()
-	ip := clientIP(r)
 	if !s.allow(w, r, req.Username) {
 		return
 	}
-
-	user, err := s.st.UserByUsername(ctx, req.Username)
-	if errors.Is(err, store.ErrNotFound) {
-		s.audit(ctx, req.Username, "login_fail", ip, "fail",
-			map[string]any{"reason": "no_user", "flow": "web_2fa"})
-		writeError(w, http.StatusUnauthorized, "bad_credentials")
-		return
-	}
-	if err != nil {
-		slog.Error("api: login/2fa lookup", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal")
-		return
-	}
-	if !user.Enabled {
-		// Единый 401, как в первом шаге (анти-перечисление).
-		s.audit(ctx, user.Username, "login_fail", ip, "fail",
-			map[string]any{"reason": "bad_credentials", "flow": "web_2fa"})
-		writeError(w, http.StatusUnauthorized, "bad_credentials")
-		return
-	}
-	if s.core.FailLocked(ctx, user.ID) {
-		s.audit(ctx, user.Username, "login_fail", ip, "fail",
-			map[string]any{"reason": "locked", "flow": "web_2fa"})
-		writeError(w, http.StatusLocked, "locked")
-		return
-	}
-
-	if req.Code != "" {
-		if _, err := s.core.VerifyAnyCode(ctx, user, req.Code); err != nil {
-			if !errors.Is(err, auth.ErrBadCode) {
-				slog.Error("api: login/2fa код", "error", err)
-				writeError(w, http.StatusInternalServerError, "internal")
-				return
-			}
-			s.audit(ctx, user.Username, "login_fail", ip, "fail",
-				map[string]any{"reason": "bad_code", "flow": "web_2fa"})
-			writeError(w, http.StatusUnauthorized, "bad_code")
-			return
-		}
-	} else if !s.consumeWebauthnPending(ctx, user) {
-		s.audit(ctx, user.Username, "login_fail", ip, "fail",
-			map[string]any{"reason": "bad_code", "flow": "web_2fa"})
-		writeError(w, http.StatusUnauthorized, "bad_code")
-		return
-	}
-
-	if _, err := s.pv.Verify(ctx, req.Username, req.Password); err != nil {
-		if errors.Is(err, auth.ErrBadCredentials) || errors.Is(err, store.ErrNotFound) {
-			s.audit(ctx, user.Username, "login_fail", ip, "fail",
-				map[string]any{"reason": "bad_credentials", "flow": "web_2fa"})
-			writeError(w, http.StatusUnauthorized, "bad_credentials")
-			return
-		}
-		slog.Error("api: login/2fa verify", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal")
+	user, status, errCode := s.loginStep2(r.Context(), r, req.Username, req.Password, req.Code, "web_2fa")
+	if status != 0 {
+		writeError(w, status, errCode)
 		return
 	}
 	s.finishLogin(w, r, user, req.RememberDevice, "password+code")
 }
 
-// finishLogin выпускает сессию (и, при remember_device, доверенное
-// устройство), пишет login_ok и отвечает {ok, username, csrf}.
+// finishLogin выпускает сессию (startSession) и отвечает {ok, username, csrf}.
 func (s *SessionAPI) finishLogin(w http.ResponseWriter, r *http.Request, user *store.User, rememberDevice bool, mode string) {
-	csrf, err := s.createSession(w, r, user)
+	csrf, err := s.startSession(w, r, user, rememberDevice, mode)
 	if err != nil {
 		slog.Error("api: создать сессию", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal")
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": user.Username, "csrf": csrf})
+}
+
+// startSession выпускает сессию (и, при remember_device, доверяет
+// устройству) и пишет login_ok — общий хвост JSON- и HTML-входа.
+// Возвращает CSRF для ответа клиенту (cookie HttpOnly — скрипт токен
+// не прочитает).
+func (s *SessionAPI) startSession(w http.ResponseWriter, r *http.Request, user *store.User, rememberDevice bool, mode string) (string, error) {
+	csrf, err := s.createSession(w, r, user)
+	if err != nil {
+		return "", err
+	}
 	if rememberDevice {
 		s.trustDevice(w, r, user)
 	}
 	s.audit(r.Context(), user.Username, "login_ok", clientIP(r), "ok", map[string]any{"mode": mode})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": user.Username, "csrf": csrf})
+	return csrf, nil
 }
 
 // createSession выпускает сессию: случайный токен — в cookie, в БД — только

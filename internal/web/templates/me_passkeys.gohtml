@@ -25,6 +25,12 @@
 {{end}}
 
 <h2>Добавить passkey</h2>
+{{if .Handle}}
+<div id="passkey-pending" class="flash ok"
+     data-handle="{{.Handle}}" data-name="{{.RegName}}" data-options="{{.OptionsJSON}}">
+Подтвердите создание ключа «{{.RegName}}» в диалоге браузера…
+</div>
+{{end}}
 <form action="/me/webauthn/credentials" method="post" id="passkey-form">
   {{csrf .CSRF}}
   <label>Имя ключа
