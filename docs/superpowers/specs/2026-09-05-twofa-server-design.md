@@ -42,8 +42,10 @@
 | UDP :1813 | RADIUS Accounting (только лог) |
 | TCP :8080 | HTTP: REST API + web-UI (`/login`, `/admin`, `/me`) + метрики `/healthz` |
 
-Единственная внешняя зависимость — PostgreSQL. Конфигурация — YAML-файл,
-секреты — переменные окружения (перекрывают файл).
+Единственная внешняя зависимость — PostgreSQL. **Вся конфигурация хранится
+в самой БД** (таблица `settings`, редактируется через админку/API).
+Переменная окружения ровно одна — `TWOFA_DB_DSN` (строка подключения);
+то же самое можно передать флагом `-dsn`.
 
 ```
                  ┌────────────────────────────────────────────┐
@@ -73,7 +75,7 @@ LDAP-реализация добавляется позже без измене�
 Парсер Access-Request:
 
 1. Прочитать `User-Name` и `User-Password` (PAP, секрет RADIUS-shared-secret).
-2. Для каждой длины кода `L` из конфига `radius.code_lengths: [6, 8]`
+2. Для каждой длины кода `L` из настроек `radius.code_lengths: [6, 8]`
    (перебор по порядку): разбить строку на `pass = s[:len-L]`, `code = s[len-L:]`.
 3. Для каждого разбиения **сначала дёшево проверить код**: TOTP пользователя,
    затем активные challenge-коды (email/SMS, запрошенные заранее), затем
@@ -133,32 +135,35 @@ TOTP в REST-флоу: `start` не высылает код — возвраща
   смена email/телефона, подтверждение TOTP, регенерация резервных кодов —
   поле «код из приложения/SMS» прямо в форме).
 - `/admin` — таблица пользователей (создать/редактировать/вкл-выкл, сбросить
-  TOTP, политика каналов), аудит-лог, список активных challenge.
+  TOTP, политика каналов), аудит-лог, список активных challenge,
+  **страница «Настройки»** (SMTP, SMS-шлюз, TOTP, политики, порты,
+  `admin_token`; секреты показаны маской, смена — вводом нового значения).
 - `/me` — профиль: email/телефон (смена с кодом подтверждения на старый
   канал), привязка TOTP: показать QR (otpauth://) → ввести код → подтверждено;
   резервные коды (показ один раз при регенерации); «отправить тестовый код».
 
 ### 3.4 RADIUS reply-атрибуты
 
-Глобальный список пар `имя: значение` в конфиге
+Глобальный список пар `имя: значение` в настройках БД
 (`radius.reply_attributes`, например `Framed-IP-Address`, MikroTik
 vendor-атрибуты), применяется ко всем Access-Accept. Per-user override:
 колонка `radius_reply` (JSON) у пользователя заменяет глобальный список.
 
 ## 4. Каналы доставки
 
-| Канал | Механизм | Конфиг |
+| Канал | Механизм | Ключи настроек в БД |
 |---|---|---|
-| Email | SMTP, STARTTLS/TLS, логин/пароль; письмо из шаблона | `smtp:` |
-| SMS | Универсальный HTTP-шлюз: метод, URL-шаблон с `{phone}` `{text}`, заголовки, тело-шаблон, Success-критерий (HTTP-код / подстрока / JSON-path) | `sms.gateway:` + именованные пресеты `sms.presets:` |
+| Email | SMTP, STARTTLS/TLS, логин/пароль; письмо из шаблона | `smtp.*` |
+| SMS | Универсальный HTTP-шлюз: метод, URL-шаблон с `{phone}` `{text}`, заголовки, тело-шаблон, Success-критерий (HTTP-код / подстрока / JSON-path) | `sms.gateway.*` + именованные пресеты `sms.presets.*` |
 | TOTP | RFC 6238, SHA-1, 6 цифр, 30 с, окно ±1; секрет 20 байт base32 | `totp:` |
 
 Пресеты в комплекте: `smsc`, `twilio`. Выбор пресета: `sms.gateway.preset: smsc`
-(значения-переменные пресета перекрываются из конфига).
+(значения-переменные пресета перекрываются полями `sms.gateway`).
 
 Лимиты кода: длина 6 цифр, генерация crypto/rand; TTL 5 мин; максимум
 5 попыток; повторная отправка не раньше чем через 60 с; код одноразовый
-(помечается использованным при успехе). Все значения — в `policy:` конфига.
+(помечается использованным при успехе). Все значения — в настройках
+`policy.*` с безопасными дефолтами.
 
 ## 5. Модель данных (PostgreSQL)
 
@@ -169,6 +174,7 @@ vendor-атрибуты), применяется ко всем Access-Accept. Pe
 | `backup_codes` | id, user_id FK, code_hash SHA-256 UNIQUE, used_at NULL |
 | `challenges` | id UUID PK, user_id FK, channel, code_hash SHA-256 **NULL для channel=totp** (код не хранится, проверяется против TOTP-секрета), expires_at, attempts_left, used_at NULL, purpose (`api`\|`radius_prefetch`\|`ui_confirm`), created_at |
 | `sessions` | token_hash PK, user_id FK, csrf, expires_at, created_at |
+| `settings` | key TEXT PK, value JSONB — **вся конфигурация сервера** (см. §8); секретные ключи помечены и маскируются в API/UI |
 | `audit_log` | id BIGSERIAL, ts, username, event (`login_ok`, `login_fail`, `code_sent`, `code_ok`, `code_fail`, `totp_enroll`, `admin_action`, …), detail JSONB, src_ip, result |
 
 Индексы: `challenges(user_id, expires_at)`, `audit_log(ts)`,
@@ -176,16 +182,20 @@ vendor-атрибуты), применяется ко всем Access-Accept. Pe
 
 Коды и сессии хранятся **хешами** — компромисс БД не раскрывает действующие
 коды. TOTP-секреты шифруются AES-GCM мастер-ключом (см. §6).
-
-Пароль БД, мастер-ключ, SMTP- и SMS-учётки — только через env
-(`TWOFA_DB_DSN`, `TWOFA_MASTER_KEY`, `TWOFA_SMTP_PASSWORD`,
-`TWOFA_SMS_*`), в YAML — нечувствительные дефолты.
+Строка подключения к БД (`TWOFA_DB_DSN`) — единственная настройка вне БД:
+без неё сервер не найдёт саму базу. Всё остальное живёт в `settings`.
 
 ## 6. Безопасность
 
 - Пароли: argon2id (m=64 МБ, t=1, p=4 — фиксируется в коде, параметры в хеше).
-- TOTP-секреты: AES-256-GCM, мастер-ключ 32 байта из `TWOFA_MASTER_KEY`
-  (base64). Ключ ротируется перезашифровкой (CLI-команда, не v1).
+- TOTP-секреты: AES-256-GCM. Мастер-ключ 32 байта генерируется при первом
+  старте и хранится в `settings` (ключ `master_key`). Компромисс осознан:
+  ключ лежит рядом с данными, шифрование защищает от частичных утечек
+  (дамп отдельных таблиц/колонок), полная защита — доступ к БД (см. §12).
+- Секретные настройки (`smtp.password`, SMS-токены, `radius.secret`,
+  `admin_token`) хранятся в `settings` в открытом виде (граница доверия —
+  доступ к БД), но **никогда не возвращаются** API/UI — только маска
+  `••••` и флаг «задано»; запись — только через PUT.
 - Резервные коды: 10 шт., формат `XXXXX-XXXXX` (алфавит без 0/O/1/I),
   хранятся SHA-256, показываются один раз.
 - Сессии web-UI: cookie `twofa_session` (HttpOnly, Secure, SameSite=Lax),
@@ -201,8 +211,8 @@ vendor-атрибуты), применяется ко всем Access-Accept. Pe
 Публичные: `POST /api/v1/auth/start`, `POST /api/v1/auth/verify`,
 `POST /api/v1/auth/combined` (см. §3.2).
 
-Админ (`Authorization: Bearer <admin_token>`, токен в конфиге
-`admin_token` — случайная строка):
+Админ (`Authorization: Bearer <admin_token>`; токен хранится в настройках
+БД, генерируется при первом старте, виден/перегенерируется в админке):
 
 ```
 GET    /api/v1/admin/users            список
@@ -213,6 +223,9 @@ DELETE /api/v1/admin/users/{id}
 POST   /api/v1/admin/users/{id}/reset-totp     отвязать TOTP + регенерировать резервные коды
 GET    /api/v1/admin/audit?username=&event=&since=&until=&limit=
 GET    /api/v1/admin/challenges       активные challenge (без кодов, только метаданные)
+GET    /api/v1/admin/settings         все настройки (секреты — маской)
+PUT    /api/v1/admin/settings         частичное обновление; пустое/маскированное значение = «не менять»
+POST   /api/v1/admin/settings/regenerate  {key: "admin_token"|"radius.secret"|...}
 ```
 
 Кабинет (session-cookie):
@@ -226,76 +239,56 @@ POST /api/v1/me/backup-codes/regenerate  → {codes[]} (показ один ра
 POST /api/v1/me/send-code             {channel} — тестовая/предварительная отправка
 ```
 
-## 8. Конфигурация (пример)
+## 8. Конфигурация (в БД, таблица `settings`)
 
-```yaml
-# twofa.yaml
-listen:
-  http: ":8080"
-  radius_auth: ":1812"
-  radius_acct: ":1813"
-  radius_secret_env: TWOFA_RADIUS_SECRET   # shared secret RADIUS
+Единственная внешняя настройка — строка подключения: env `TWOFA_DB_DSN`
+или флаг `-dsn`. Всё остальное — ключи в `settings`, при первом старте
+инициализируются дефолтами (см. §10), затем редактируются через
+`/admin → Настройки` или `PUT /api/v1/admin/settings`. Изменения применяются
+на лету, кроме `listen.*` (порты — перезапуск; UI помечает это явно).
 
-database_dsn_env: TWOFA_DB_DSN
-master_key_env: TWOFA_MASTER_KEY
+Ключи (value — JSON):
 
-admin_token_env: TWOFA_ADMIN_TOKEN
-
-smtp:
-  host: smtp.example.com
-  port: 587
-  starttls: true
-  user: noreply@example.com
-  password_env: TWOFA_SMTP_PASSWORD
-  from: "2FA <noreply@example.com>"
-  subject: "Код подтверждения"
-  timeout: 10s
-
-sms:
-  gateway:
-    preset: ""            # "" = полностью ручной шаблон ниже
-    method: POST
-    url: "https://sms.example.com/send"
-    headers: {Authorization: "Bearer {TWOFA_SMS_TOKEN}"}
-    body: '{"phone": "{phone}", "text": "{text}"}'
-    content_type: application/json
-    success: {http_status: 200}      # и/или {body_contains: "OK"} / {json_path: "$.status", equals: "ok"}
-  presets:
-    smsc:   {...}
-    twilio: {...}
-
-totp:
-  issuer: "MyLab"
-  digits: 6
-  period: 30s
-  skew: 1
-
-policy:
-  code_ttl: 5m
-  code_length: 6
-  max_attempts: 5
-  resend_cooldown: 60s
-  default_prefer_channels: ["totp", "email", "sms"]
-
-radius:
-  code_lengths: [6, 8]
-  max_fail_per_user: 10
-  fail_window: 5m
-  reply_attributes: {}    # напр. {"Mikrotik-Group": "vpn-users"}
-
-web:
-  session_ttl: 12h
+```
+listen.http ":8080"        listen.radius_auth ":1812"   listen.radius_acct ":1813"
+master_key "<base64, gen>" admin_token "<gen>"          radius.secret "<gen>"
+radius.code_lengths [6,8]  radius.max_fail_per_user 10  radius.fail_window "5m"
+radius.reply_attributes {}
+smtp {host, port, starttls, user, password, from, subject, timeout}
+sms.gateway {preset, method, url, headers, body, content_type, success}
+sms.presets {smsc: {...}, twilio: {...}}
+totp {issuer, digits, period, skew}
+policy {code_ttl, code_length, max_attempts, resend_cooldown, default_prefer_channels}
+web.session_ttl "12h"
 ```
 
-Значения `*_env` — имена переменных окружения, из которых берутся секреты.
+`<gen>` — случайное значение, сгенерированное при первом старте
+(crypto/rand) и доступное админу в UI (admin_token, radius.secret) —
+то, что нужно сразу для подключения MikroTik и API. Пример SMS-шлюза
+(руками, без пресета) и success-критерия:
+
+```
+sms.gateway = {
+  "preset": "",
+  "method": "POST",
+  "url": "https://sms.example.com/send",
+  "headers": {"Authorization": "Bearer <токен>"},
+  "body": "{\"phone\": \"{phone}\", \"text\": \"{text}\"}",
+  "content_type": "application/json",
+  "success": {"http_status": 200}
+}
+```
+
+`success` — любой набор из `http_status` / `body_contains` /
+`{json_path, equals}`; всё перечисленное должно сойтись.
 
 ## 9. Структура репозитория
 
 ```
 2fa/
-  cmd/twofa/main.go              # флаги: -config, миграции при старте
+  cmd/twofa/main.go              # флаги: -dsn (или env TWOFA_DB_DSN), миграции при старте
   internal/
-    config/                      # YAML + env-подстановка
+    settings/                    # настройки в БД: дефолты, чтение/запись, маскировка секретов
     store/                       # pgx, миграции (embedded SQL), запросы
     auth/                        # PasswordVerifier, AuthCore: challenges,
     │                            # TOTP, резервные коды, сплит «пароль+код»
@@ -308,7 +301,6 @@ web:
   web/templates/…, web/static/…  # исходники UI (в бинарник через embed)
   Dockerfile                     # multi-stage → gcr.io/distroless/static
   docker-compose.yml             # twofa + postgres:16-alpine
-  twofa.example.yaml
   README.md                      # настройка, пример MikroTik, API
   Makefile                       # build / test / lint / docker
 ```
@@ -320,13 +312,17 @@ web:
 ## 10. Развёртывание
 
 - **docker-compose** (основной путь): `twofa` + `postgres:16-alpine`,
-  том на pgdata, порты 8080/tcp, 1812/udp, 1813/udp. Секреты — `.env`.
-- Голый бинарник: `-config` + env; systemd-unit в `deploy/twofa.service`.
-- Первый запуск: миграции применяются автоматически; админ создаётся при
-  старте, если `users` пуст: имя `admin`, пароль из `TWOFA_ADMIN_PASSWORD`
-  (обязательна при пустой БД).
-- Пример настройки MikroTik (`/radius` → новый сервер, secret, timeout)
-  и замечание про PAP — в README.
+  том на pgdata, порты 8080/tcp, 1812/udp, 1813/udp. Env приложения —
+  только `TWOFA_DB_DSN`; у контейнера postgres — свой стандартный
+  `POSTGRES_PASSWORD` (бутстрап самой базы).
+- Голый бинарник: `-dsn`/`TWOFA_DB_DSN`; systemd-unit в `deploy/twofa.service`.
+- **Первый запуск:** миграции применяются автоматически; `settings`
+  инициализируются дефолтами, `master_key`/`admin_token`/`radius.secret`
+  генерируются; если `users` пуст — создаётся `admin` со случайным паролем,
+  который **один раз печатается в лог** (стиль MinIO/Jenkins). Дальше —
+  вход в `/admin → Настройки` и конфигурация SMTP/SMS через UI.
+- Пример настройки MikroTik (`/radius` → новый сервер, secret из админки,
+  timeout) и замечание про PAP — в README.
 
 ## 11. Тестирование
 
@@ -350,3 +346,4 @@ web:
 | Пользователь без привязанных каналов | Политика `prefer` + явная ошибка в `start` (`409 no_channel`), в RADIUS — Reject c аудитом |
 | Потеря TOTP | Резервные коды + админский reset-totp |
 | Утечка БД | Пароли argon2id, коды/сессии хешами, TOTP-секреты AES-GCM |
+| Секреты в `settings` в открытом виде | Граница доверения — доступ к Postgres; API/UI их не отдаёт (маска); при желании ключ шифрования TOTP позже выносится в env без смены схемы |
