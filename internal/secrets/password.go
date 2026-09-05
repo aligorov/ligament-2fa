@@ -15,10 +15,10 @@ import (
 
 // Параметры argon2id (согласованы со спецификацией, RFC 9106 вторая
 // рекомендованная конфигурация с уменьшенным числом итераций):
-// 64 MiB памяти, 1 итерация, 4 потока.
+// 64 MiB памяти (argon2 принимает память в KiB), 1 итерация, 4 потока.
 const (
 	argonTime    = 1
-	argonMemory  = 1 << 26 // 64 MiB
+	argonMemory  = 1 << 16 // 64 MiB = 65536 KiB (argon2.IDKey принимает KiB)
 	argonThreads = 4
 	argonSaltLen = 16
 	argonKeyLen  = 32
