@@ -106,7 +106,13 @@ CREATE TABLE trusted_devices (
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(), expires_at TIMESTAMPTZ NOT NULL);
 CREATE TABLE webauthn_credentials (
   id BIGSERIAL PRIMARY KEY, user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-  credential_id BYTEA NOT NULL UNIQUE, credential_json JSONB NOT NULL,
+  credential_id BYTEA NOT NULL UNIQUE, rpid TEXT NOT NULL,
+  public_key BYTEA NOT NULL, sign_count BIGINT NOT NULL DEFAULT 0,
+  clone_warning BOOL NOT NULL DEFAULT false, aaguid TEXT,
+  attestation_type TEXT, attestation_format TEXT, attachment TEXT,
+  transports TEXT NOT NULL DEFAULT '',
+  present BOOL NOT NULL DEFAULT false, verified BOOL NOT NULL DEFAULT false,
+  backup_eligible BOOL NOT NULL DEFAULT false, backup_state BOOL NOT NULL DEFAULT false,
   name TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_used_at TIMESTAMPTZ);
 ```
@@ -124,8 +130,10 @@ func HashPassword(pw string) string                          // argon2id, m=1<<2
 func VerifyPassword(hash, pw string) bool                    // constant-time
 func NewMasterKeyB64() string                                // 32B crypto/rand → base64
 func NewBox(keyB64 string) (*Box, error)
-func (b *Box) Encrypt(p []byte) []byte                       // 12B nonce || AES-GCM
+func (b *Box) Encrypt(p []byte) []byte                       // 12B nonce || AES-GCM (без AAD)
 func (b *Box) Decrypt(c []byte) ([]byte, error)
+func (b *Box) EncryptAAD(aad string, p []byte) []byte        // AES-GCM с additional-data (привязка к таблице:пользователю)
+func (b *Box) DecryptAAD(aad string, c []byte) ([]byte, error)
 func GenDigits(n int) string                                 // crypto/rand, ведущие нули разрешены
 func SHA256(s string) []byte
 func GenBackupCodes() []string                               // 10 шт "XXXXX-XXXXX", алфавит ABCDEFGHJKMNPQRSTUVWXYZ23456789
@@ -144,13 +152,13 @@ func RandomToken(n int) string                               // base64url
 type T struct { // снимок настроек, читается конкурентно
     Listen struct{ HTTP, RadiusAuth, RadiusAcct string }
     MasterKeyB64, AdminToken, RadiusSecret string
-    Radius struct{ CodeLengths []int; MaxFailPerUser int; FailWindow time.Duration; ReplyAttributes map[string]string }
+    Radius struct{ CodeLengths []int; MaxFailPerUser int; FailWindow time.Duration; PushWait time.Duration; ReplyAttributes map[string]string }
     SMTP struct{ Host string; Port int; StartTLS bool; User, Password, From, Subject string; Timeout time.Duration }
     SMS   sms.GatewayConfig   // из Task 6 — см. ниже; здесь хранить как json.RawMessage + метод
     TOTP  struct{ Issuer string; Digits, Period int; Skew uint }
     TG    struct{ BotToken string }
     WebAuthn struct{ RPID, RPName string }
-    Policy struct{ CodeTTL, ResendCooldown, PushTTL, PushCooldown, TrustedDeviceTTL, SessionTTL time.Duration; CodeLength, MaxAttempts, PushPerHour int; DefaultPrefer []Channel }
+    Policy struct{ CodeTTL, ResendCooldown, PushCooldown, TrustedDeviceTTL, SessionTTL, FailWindow, BanTime time.Duration; CodeLength, MaxAttempts, PushPerHour, MaxFail int; DefaultPrefer []Channel }
 }
 func Load(ctx, st *store.Store) (*T, error)  // читает settings; отсутствующие ключи → дефолты из defaults.go; при пустой таблице INSERT'ит дефолты и генерирует master_key/admin_token/radius.secret (secrets.NewMasterKeyB64 / RandomToken(32))
 type M struct{ /*...*/ }
@@ -161,7 +169,7 @@ func (m *M) Put(ctx, key string, val json.RawMessage) error // точечная 
 func (m *M) Masked(ctx) (map[string]any, error)             // всё, секреты → {"set":true,"value":"••••"}
 ```
 
-Дефолты: listen как в спеке; policy: CodeTTL 5m, ResendCooldown 60s, PushTTL 2m, PushCooldown 30s, TrustedDeviceTTL 720h, SessionTTL 12h, CodeLength 6, MaxAttempts 5, PushPerHour 10, DefaultPrefer ["totp","telegram","email","sms"].
+Дефолты: listen как в спеке; policy: CodeTTL 5m, ResendCooldown 60s, PushCooldown 30s, TrustedDeviceTTL 720h, SessionTTL 12h, CodeLength 6, MaxAttempts 5, PushPerHour 10, MaxFail 5, FailWindow 5m, BanTime 15m, radius.PushWait 20s, DefaultPrefer ["totp","telegram","email","sms"].
 
 - [ ] integration-тест: Load на пустой БД создаёт ключи (master_key — валидный base64 32B), повторный Load даёт те же значения; Put("smtp", ...) → Get().SMTP изменился; Masked не содержит реального admin_token.
 - [ ] Commit `feat: settings в БД`.
@@ -201,7 +209,11 @@ func (s *Store) TOTPDelete(ctx, userID uuid.UUID) error
 // sessions.go: SessionCreate(ctx, tokenHash []byte, userID, csrf string, ttl) error; SessionGet(ctx, tokenHash) (userID, csrf, error); SessionDelete(ctx, tokenHash) error; SessionDeleteAllForUser(ctx, userID)
 // devices.go: DeviceCreate/DeviceGet/DeviceTouch/DeviceDelete/DeviceListForUser/DeviceDeleteAllForUser
 // audit.go: Audit(ctx, username, event string, detail map[string]any, ip, result string) error; AuditList(ctx, filter) ([]AuditRow, error)
-// webauthn.go: WACredUpsert(ctx, userID, credID []byte, credJSON []byte, name string); WACredListForUser(ctx, userID) ([]WACred); WACredUpdate(ctx, id int64, credJSON, lastUsed) ; WACredDelete(ctx, id, userID); WACredsDeleteForUser(ctx, userID)
+// webauthn.go — плоские колонки (Authelia-паттерн), без JSON-блоба:
+type WACred struct { ID int64; CredentialID []byte; RPID string; PublicKey []byte; SignCount uint32; CloneWarning bool; AAGUID, AttestationType, AttestationFormat, Attachment, Transports, Name string; Present, Verified, BackupEligible, BackupState bool; LastUsedAt *time.Time }
+WACredUpsert(ctx, userID, c *WACred) error; WACredListForUser(ctx, userID) ([]WACred, error)
+WACredUpdateSignIn(ctx, credID []byte, signCount uint32, cloneWarning bool) error
+WACredDelete(ctx, id, userID); WACredsDeleteForUser(ctx, userID)
 ```
 
 - [ ] integration-тест на каждый репозиторий (CRUD + граничные: не найдено → ErrNotFound; BackupConsume дважды → второй false).
@@ -249,8 +261,14 @@ func (c *Core) VerifyAnyCode(ctx, user *store.User, code string) (Channel, error
 // последовательность: backup-код → totp (c replay) → активные code-challenges пользователя
 func (c *Core) VerifyPasswordAndCode(ctx, username, password, code string) (*store.User, bool, error)
 // для RADIUS/combined: сначала по code выбрать split-кандидата (SplitCandidates), VerifyAnyCode, затем ОДИН VerifyPassword на пароль кандидата
+func (c *Core) FailLocked(ctx, userID uuid.UUID) bool
+// единый счётчик неуспехов (пароль и код) из audit_log за policy.fail_window:
+// ≥ policy.max_fail и последний неуспех моложе policy.ban_time → true; успех сбрасывает (пишем audit result=ok)
 func (c *Core) RADIUSAuth(ctx, username, papString, srcIP string) (accept bool, reason string)
-// полный алгоритм §3.1+§3.6: сплит-кандидаты → VerifyAnyCode → VerifyPassword; push-режим (radius_push): FreshApprovedPush → accept; иначе создать push (cooldown PushCooldown + лимит PushPerHour) → reject("push_sent")
+// полный алгоритм §3.1+§3.6 (push_wait-удержание из privacyIDEA): FailLocked-проверка →
+// сплит-кандидаты → VerifyAnyCode → VerifyPassword; при верном пароле без кода и флаге
+// radius_push — создать push (cooldown+лимит) и УДЕРЖИВАТЬ запрос циклом 1с до
+// radius.push_wait → accept(«Подтвердить»)/reject(«Это не я»/таймаут)
 ```
 
 TOTP replay: `totp.ValidateCustom(...)` из research-дока; после успеха вычислить counter=t.Unix()/period принятого окна и `TOTPSetTimestep(max(counter, last))`; отвергать counter ≤ last (с учётом skew — хранить counter фактически принятого кода).
@@ -316,10 +334,10 @@ Admin-роуты — §7 спеки (users CRUD, reset-totp, reset-webauthn, unl
 ### Task 12: RADIUS-сервер
 
 **Files:** Create: `internal/radiusserver/server.go`, `server_test.go`.
-**Interfaces (Consumes):** auth.Core (`RADIUSAuth`), settings, store (аудит, throttle-счётчик через PushCountSince-like запросы + собственная таблица-без-таблицы: in-memory окно отказов `map[string][]time.Time` под мьютексом — per-username, окно FailWindow, лимит MaxFailPerUser).
+**Interfaces (Consumes):** auth.Core (`RADIUSAuth` с FailLocked и push_wait-удержанием), settings, store (аудит). Троттлинг — Core.FailLocked по audit_log (окно radius.fail_window, лимит radius.max_fail_per_user), БЕЗ in-memory состояния.
 PacketServer-ы (research-док): auth :1812 (handler: UserName_LookupString+UserPassword_LookupString → RADIUSAuth → r.Response(CodeAccessAccept)+ReplyMessage+reply-атрибуты: сначала per-user RadiusReply, иначе глобальные; имена атрибутов: строка "Mikrotik-Group" → mt.MikrotikGroup_SetString, "Reply-Message"→rfc2865, прочие стандартные через rfc2865 `Attr(*)` по имени через radius.AttributesType lookup; неизвестные → скип+лог) ; acct :1813 → CodeAccountingResponse + лог.
 SecretSource: StaticSecretSource(radius.secret). Accept-путь: ChallengeMarkUsed для потраченного push.
-- [ ] Integration-тест: поднять сервер на 127.0.0.1:0 (Serve на net.ListenConfig().ListenPacket), radius.Exchange: пароль+код (accept), неверный код (reject), push-окно (reject → approve → accept), throttle (11-й reject без проверки — по времени выполнения/счётчику).
+- [ ] Integration-тест: поднять сервер на 127.0.0.1:0 (Serve на net.ListenConfig().ListenPacket), radius.Exchange: пароль+код (accept), неверный код (reject), push_wait-удержание (создать push-challenge, во время удержания выставить approved → accept; не подтверждён → reject по таймауту push_wait), throttle (FailLocked по audit_log — 6-й неуспех отвергается без проверки).
 - [ ] Commit `feat: RADIUS auth+acct`.
 
 ### Task 13: Web-UI

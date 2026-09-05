@@ -38,6 +38,8 @@
   не разрабатываем);
 - Magic link по email (ссылка вместо кода);
 - Passwordless-режим: passkey — только второй фактор, пароль остаётся первым;
+- RADIUS Access-Challenge (двухпакетный, паттерн Casdoor) и таблица учёта
+  сессий NAS (RadiusAccounting) — v2;
 - MS-CHAPv2 / EAP в RADIUS (несовместимы с проверкой одноразового кода;
   используется PAP);
 - HA/репликация, мульти-тенантность;
@@ -108,11 +110,14 @@ TOTP-коду предварительный запрос не нужен.
 пользователя в окно `radius.fail_window` (по умолчанию 10 / 5 мин), иначе
 Reject без проверки.
 
-Push-режим Telegram для VPN (флаг пользователя `radius_push`, §3.6): если код
-в пароле не опознан, но пароль верен и у пользователя привязан Telegram —
-если существует approved-push младше `policy.push_ttl` → Access-Accept;
-иначе создаётся push (не чаще одного в `policy.push_cooldown`) и следует
-Reject — нативный клиент переподключится после подтверждения на телефоне.
+Push-режим Telegram для VPN (флаг пользователя `radius_push`, §3.6; паттерн
+`push_wait` из privacyIDEA): если код в пароле не опознан, но пароль верен и
+у пользователя привязан Telegram — сервер создаёт push и **удерживает
+Access-Request**, опрашивая challenge раз в 1 с до `radius.push_wait`
+(по умолчанию 20 c): «Подтвердить» → Access-Accept, «Это не я»/таймаут →
+Reject. Один запрос клиента — один ответ, переподключение не нужно.
+Требование: timeout RADIUS-клиента (MikroTik) > `push_wait`. Push не чаще
+одного в `policy.push_cooldown` и не более `policy.push_per_hour` в час.
 
 ### 3.2 REST API (приложения)
 
@@ -223,9 +228,9 @@ vendor-атрибуты), применяется ко всем Access-Accept. Pe
   `pending|approved|denied|expired`.
 - **Push для VPN (RADIUS)** — пользователь с флагом `radius_push`
   подключается нативным клиентом с одним паролем (без кода): сервер создаёт
-  push и отвечает Reject; после «Подтвердить» повторное подключение тем же
-  паролем в окне `policy.push_ttl` → Access-Accept (см. §3.1). UX без
-  ввода кодов для L2TP/IPsec-клиентов.
+  push и удерживает запрос (`push_wait`, см. §3.1) до подтверждения на
+  телефоне — Access-Accept/Reject одним ответом. UX без ввода кодов для
+  L2TP/IPsec-клиентов.
 - Бот: Bot API напрямую (net/http), long polling `getUpdates` — входящих
   портов и TLS-сертификата не нужно; включается заданием
   `telegram.bot_token` в настройках.
@@ -268,7 +273,7 @@ anti-fatigue-правила — §6.
 | `backup_codes` | id, user_id FK, code_hash SHA-256 UNIQUE, used_at NULL |
 | `challenges` | id UUID PK, user_id FK, channel, code_hash SHA-256 **NULL для channel=totp** (код не хранится, проверяется против TOTP-секрета), push_state TEXT NULL (`pending`\|`approved`\|`denied` — для telegram_push), expires_at, attempts_left, used_at NULL, purpose (`api`\|`radius_prefetch`\|`ui_confirm`\|`webauthn_session`), created_at |
 | `sessions` | token_hash PK, user_id FK, csrf, expires_at, created_at |
-| `webauthn_credentials` | id, user_id FK, credential_id BYTEA UNIQUE, public_key BYTEA, sign_count, transports TEXT[], aaguid, name, created_at, last_used_at |
+| `webauthn_credentials` | id, user_id FK, credential_id BYTEA UNIQUE, rpid, public_key BYTEA, sign_count, clone_warning BOOL, aaguid, attestation_type, attestation_format, attachment, transports TEXT, flags present/verified/backup_eligible/backup_state BOOL (плоские колонки 1:1 с webauthn.Credential — паттерн Authelia, без JSON-блоба), name, created_at, last_used_at |
 | `trusted_devices` | id, user_id FK, token_hash UNIQUE, ua, ip, created_at, last_seen_at, expires_at |
 | `settings` | key TEXT PK, value JSONB — **вся конфигурация сервера** (см. §8); секретные ключи помечены и маскируются в API/UI |
 | `audit_log` | id BIGSERIAL, ts, username, event (`login_ok`, `login_fail`, `code_sent`, `code_ok`, `code_fail`, `totp_enroll`, `admin_action`, …), detail JSONB, src_ip, result |
@@ -284,6 +289,9 @@ anti-fatigue-правила — §6.
 ## 6. Безопасность
 
 - Пароли: argon2id (m=64 МБ, t=1, p=4 — фиксируется в коде, параметры в хеше).
+- Шифрование секретов AES-256-GCM с **AAD-привязкой** шифротекста к месту
+  хранения (AAD = `twofa:storage:<таблица>:<username>` — паттерн Authelia):
+  подмена шифротекста между строками невозможна.
 - TOTP-секреты: AES-256-GCM. Мастер-ключ 32 байта генерируется при первом
   старте и хранится в `settings` (ключ `master_key`). Компромисс осознан:
   ключ лежит рядом с данными, шифрование защищает от частичных утечек
@@ -298,6 +306,11 @@ anti-fatigue-правила — §6.
   в БД хеш токена; CSRF-токен для форм; TTL 12 ч.
 - Троттлинг: `/auth/start` — per-username и per-IP token bucket;
   RADIUS — окно отказов (§3.1); `/auth/verify` — счётчик попыток challenge.
+- Единый per-user счётчик неуспехов (неверный пароль И неверный код) по
+  `audit_log`: более `policy.max_fail` (5) за `policy.fail_window` (5 мин) →
+  блокировка входа на `policy.ban_time` (15 мин), успех сбрасывает счётчик
+  (объединение паттернов Authelia regulation / Casdoor freeze / privacyIDEA
+  auth_max_fail — «аудит как источник rate-limit»).
 - Аудит всех событий аутентификации и админ-действий, ответ на bad-credentials
   единообразен по времени (фиксированная задержка при отсутствии пользователя).
 - Push-fatigue: не более одного push в `policy.push_cooldown` (30 с) и не
@@ -364,7 +377,7 @@ DELETE /api/v1/me/devices/{id}        отозвать устройство
 ```
 listen.http ":8080"        listen.radius_auth ":1812"   listen.radius_acct ":1813"
 master_key "<base64, gen>" admin_token "<gen>"          radius.secret "<gen>"
-radius.code_lengths [6,8]  radius.max_fail_per_user 10  radius.fail_window "5m"
+radius.code_lengths [6,8]  radius.max_fail_per_user 10  radius.fail_window "5m"  radius.push_wait "20s"
 radius.reply_attributes {}
 smtp {host, port, starttls, user, password, from, subject, timeout}
 sms.gateway {preset, method, url, headers, body, content_type, success}
@@ -372,7 +385,7 @@ sms.presets {smsc: {...}, twilio: {...}}
 totp {issuer, digits, period, skew}
 telegram {bot_token}          # "" = канал выключен
 webauthn {rp_id, rp_name}     # rp_id = домен сервера, напр. 2fa.example.com
-policy {code_ttl, code_length, max_attempts, resend_cooldown, default_prefer_channels, push_ttl, push_cooldown, trusted_device_ttl}
+policy {code_ttl, code_length, max_attempts, resend_cooldown, default_prefer_channels, push_cooldown, push_per_hour, trusted_device_ttl, max_fail, fail_window, ban_time}
 web.session_ttl "12h"
 ```
 
@@ -474,3 +487,4 @@ Telegram Bot API — напрямую через net/http (без внешних
 | Push-fatigue (спам «Подтвердить») | cooldown + лимит/час, в сообщении кто/IP/UA/время, «Это не я» блокирует и алертит |
 | Смена домена сервера ломает passkeys (RP ID) | RP ID задаётся в настройках осознанно; миграция — в README; коды/TOTP не страдают |
 | Telegram API недоступен | Авто-fallback на следующий канал из `prefer_channels` + событие в аудите |
+| BlastRADIUS (CVE-2024-3596) | Эхо Message-Authenticator в ответах; layeh/radius заморожен до стандарта — проверить поддержку, иначе README-заметка + опция форка maddsua/layeh-radius |
