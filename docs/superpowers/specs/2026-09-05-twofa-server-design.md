@@ -1,7 +1,8 @@
-# Дизайн: `twofa` — сервер двухфакторной аутентификации (email / SMS / TOTP)
+# Дизайн: `twofa` — сервер двухфакторной аутентификации (email / SMS / TOTP / passkeys / Telegram)
 
 Дата: 2026-09-05
-Статус: согласован с пользователем (устно), ожидает ревью спеки
+Статус: правки по ревью — конфигурация в БД; добавлены современные факторы
+(WebAuthn/passkeys, Telegram-канал с push-подтверждением, доверенные устройства)
 Проект: standalone-репозиторий `2fa/` (не подпроект routeros-aligorov)
 
 ## 1. Цель
@@ -12,11 +13,19 @@
   любое другое, говорящее по RADIUS);
 - **REST API** — подключение собственных приложений.
 
-Второй фактор — три канала:
+Второй фактор — каналы (классические + современные стандарты):
 
 - **Email** — одноразовый код по SMTP;
 - **SMS** — одноразовый код через настраиваемый HTTP-шлюз (любой провайдер);
-- **TOTP** — RFC 6238 (Google Authenticator и совместимые) + резервные коды.
+- **TOTP** — RFC 6238 (Google Authenticator и совместимые) + резервные коды;
+- **WebAuthn / Passkeys** — фишинг-устойчивый криптографический фактор:
+  Touch ID / Windows Hello / биометрия Android, синхронизируемые passkeys
+  (iCloud Keychain, Google Password Manager), аппаратные ключи (YubiKey
+  и совместимые с FIDO2);
+- **Telegram** — код в чат с ботом ИЛИ push-подтверждение входа кнопками
+  «Подтвердить / Это не я», включая режим для VPN без ввода кода (§3.6);
+- **Доверенные устройства** — «запомнить устройство на 30 дней» после
+  полного 2FA-входа (§3.7).
 
 Стек: **Go**, монолит (один бинарник), хранилище **PostgreSQL**, web-интерфейс
 на серверных шаблонах, встроенный в бинарник.
@@ -25,7 +34,10 @@
 
 - LDAP/AD-бэкенд паролей — архитектурно заложен интерфейс `PasswordVerifier`,
   реализация позже;
-- WebAuthn / push-уведомления;
+- Push-каналы, кроме Telegram (собственные мобильные приложения
+  не разрабатываем);
+- Magic link по email (ссылка вместо кода);
+- Passwordless-режим: passkey — только второй фактор, пароль остаётся первым;
 - MS-CHAPv2 / EAP в RADIUS (несовместимы с проверкой одноразового кода;
   используется PAP);
 - HA/репликация, мульти-тенантность;
@@ -58,6 +70,10 @@
                  │                            TOTP, хеши)     │    шлюзы    │
                  └────────────────────────────────────────────┘    └────────────┘
 ```
+
+Исходящие соединения (кроме БД): SMTP, HTTP-SMS-шлюз и **Telegram Bot API
+(long polling — входящих портов не нужно)**. WebAuthn-церемонии обслуживает
+тот же HTTP-слушатель.
 
 ### 2.1 Слой паролей (расширение под LDAP)
 
@@ -92,6 +108,12 @@ TOTP-коду предварительный запрос не нужен.
 пользователя в окно `radius.fail_window` (по умолчанию 10 / 5 мин), иначе
 Reject без проверки.
 
+Push-режим Telegram для VPN (флаг пользователя `radius_push`, §3.6): если код
+в пароле не опознан, но пароль верен и у пользователя привязан Telegram —
+если существует approved-push младше `policy.push_ttl` → Access-Accept;
+иначе создаётся push (не чаще одного в `policy.push_cooldown`) и следует
+Reject — нативный клиент переподключится после подтверждения на телефоне.
+
 ### 3.2 REST API (приложения)
 
 Двухшаговый флоу:
@@ -118,6 +140,14 @@ POST /api/v1/auth/combined  {username, password, code}
   → 200 {ok: true, username} | 401
 ```
 
+WebAuthn-церемония и push-опрос (для Telegram-push, §3.6):
+
+```
+POST /api/v1/auth/webauthn/begin   {username, password} → {options}   # PublicKeyCredentialRequestOptions (JSON)
+POST /api/v1/auth/webauthn/finish  {id, rawId, type, response} → 200/401
+POST /api/v1/auth/poll             {challenge_id} → {status: pending|approved|denied|expired}
+```
+
 Выбор канала доставки в `start`: политика пользователя — порядок приоритета
 каналов (например `["totp-or-email"]`; точнее: `prefer: [totp, email, sms]`,
 берётся первый привязанный и разрешённый). В ответе `channel` сообщает
@@ -127,20 +157,32 @@ TOTP в REST-флоу: `start` не высылает код — возвраща
 `{challenge_id, channel: "totp"}`; `verify` проверяет код против TOTP-секрета
 в окне ±1 шаг. Резервные коды принимаются наравне.
 
+Telegram-код — обычный доставляемый канал (участвует в `prefer_channels`).
+Push-подтверждение Telegram возвращает `channel: "telegram_push"`, кода нет —
+приложение опрашивает `POST /auth/poll {challenge_id}` до
+`approved|denied|expired` (§3.6). WebAuthn — отдельная пара эндпоинтов
+`/auth/webauthn/begin|finish` (§3.5).
+
 ### 3.3 Web-интерфейс
 
-- `/login` — логин+пароль → session-cookie. Пользователь с ролью `admin`
-  попадает в `/admin`, обычный — в `/me`. **Вход в сам web-UI без 2FA**
-  (кабинет защищён первым фактором; 2FA-код требуется на sensitive-действия:
-  смена email/телефона, подтверждение TOTP, регенерация резервных кодов —
-  поле «код из приложения/SMS» прямо в форме).
+- `/login` — логин+пароль → **второй фактор**: passkey, если привязан
+  (§3.5, включая conditional UI/autofill в поддерживающих браузерах),
+  иначе код выбранного канала; при валидном доверенном устройстве (§3.7)
+  вход сразу по паролю. Далее session-cookie: роль `admin` → `/admin`,
+  иначе `/me`. Sensitive-действия (смена контактов, подтверждение
+  TOTP/passkey, регенерация кодов) всегда требуют код или резервный код
+  в форме.
 - `/admin` — таблица пользователей (создать/редактировать/вкл-выкл, сбросить
-  TOTP, политика каналов), аудит-лог, список активных challenge,
-  **страница «Настройки»** (SMTP, SMS-шлюз, TOTP, политики, порты,
-  `admin_token`; секреты показаны маской, смена — вводом нового значения).
-- `/me` — профиль: email/телефон (смена с кодом подтверждения на старый
-  канал), привязка TOTP: показать QR (otpauth://) → ввести код → подтверждено;
-  резервные коды (показ один раз при регенерации); «отправить тестовый код».
+  TOTP / passkeys / Telegram, политика каналов, флаг `radius_push`),
+  аудит-лог, список активных challenge,
+  **страница «Настройки»** (SMTP, SMS-шлюз, Telegram-бот, WebAuthn, TOTP,
+  политики, порты, `admin_token`; секреты показаны маской, смена — вводом
+  нового значения).
+- `/me` — профиль: email/телефон/Telegram (смена с кодом подтверждения на
+  старый канал или резервный), привязка TOTP: показать QR (otpauth://) →
+  ввести код → подтверждено; привязка passkey; доверенные устройства
+  (список/отозвать); резервные коды (показ один раз при регенерации);
+  «отправить тестовый код».
 
 ### 3.4 RADIUS reply-атрибуты
 
@@ -149,16 +191,68 @@ TOTP в REST-флоу: `start` не высылает код — возвраща
 vendor-атрибуты), применяется ко всем Access-Accept. Per-user override:
 колонка `radius_reply` (JSON) у пользователя заменяет глобальный список.
 
+### 3.5 WebAuthn / Passkeys (web-UI и REST)
+
+- Регистрация: `/me → Добавить passkey` → браузер предлагает биометрию,
+  синхронизируемый passkey или USB-ключ; credential сохраняется с именем
+  («MacBook · Touch ID»). Требует код/резервный код (sensitive-действие).
+- Вход в web-UI: после пароля сервер предлагает passkey (кнопка; где браузер
+  умеет — conditional UI/autofill `username`).
+- REST-церемония (два вызова): `POST /auth/webauthn/begin` {username,
+  password} → `PublicKeyCredentialRequestOptions` (JSON) → клиент вызывает
+  `navigator.credentials.get()` → `POST /auth/webauthn/finish` с ответом
+  → 200/401.
+- RADIUS: WebAuthn не применим (нет интерактивной церемонии); VPN-пути —
+  коды/TOTP/Telegram-push.
+- Библиотека `github.com/go-webauthn/webauthn`; RP ID — домен сервера
+  (`webauthn.rp_id`), User Verification — preferred, аттестация — none
+  (потребительский сценарий).
+
+### 3.6 Telegram: коды и push-подтверждение
+
+Привязка: `/me → Привязать Telegram` показывает одноразовый код-связки
+(напр. `AB12-CD34`); пользователь отправляет его боту (`/start AB12-CD34`),
+сервер сохраняет `telegram_chat_id`.
+
+- **Режим «код»** — Telegram как обычный канал доставки кода
+  (участвует в `prefer_channels`).
+- **Режим push-approve** — challenge отправляет сообщение с inline-кнопками
+  «✅ Подтвердить / ❌ Это не я» и деталями: кто, IP, User-Agent, время.
+  «Это не я» мгновенно блокирует challenge и пишет alert в аудит.
+  Приложение опрашивает `POST /auth/poll {challenge_id}` →
+  `pending|approved|denied|expired`.
+- **Push для VPN (RADIUS)** — пользователь с флагом `radius_push`
+  подключается нативным клиентом с одним паролем (без кода): сервер создаёт
+  push и отвечает Reject; после «Подтвердить» повторное подключение тем же
+  паролем в окне `policy.push_ttl` → Access-Accept (см. §3.1). UX без
+  ввода кодов для L2TP/IPsec-клиентов.
+- Бот: Bot API напрямую (net/http), long polling `getUpdates` — входящих
+  портов и TLS-сертификата не нужно; включается заданием
+  `telegram.bot_token` в настройках.
+
+### 3.7 Доверенные устройства («запомнить устройство»)
+
+После успешного входа с полным 2FA — чекбокс «Запомнить это устройство»:
+выдаётся cookie `twofa_device` (токен-хеш в БД, TTL
+`policy.trusted_device_ttl`, 30 дней по умолчанию, метка User-Agent).
+Дальнейшие входы в web-UI — по одному паролю; sensitive-действия всё равно
+требуют код. Список и отзыв — в `/me` и админкой; смена пароля отзывает
+все устройства пользователя.
+
 ## 4. Каналы доставки
 
 | Канал | Механизм | Ключи настроек в БД |
 |---|---|---|
 | Email | SMTP, STARTTLS/TLS, логин/пароль; письмо из шаблона | `smtp.*` |
 | SMS | Универсальный HTTP-шлюз: метод, URL-шаблон с `{phone}` `{text}`, заголовки, тело-шаблон, Success-критерий (HTTP-код / подстрока / JSON-path) | `sms.gateway.*` + именованные пресеты `sms.presets.*` |
-| TOTP | RFC 6238, SHA-1, 6 цифр, 30 с, окно ±1; секрет 20 байт base32 | `totp:` |
+| TOTP | RFC 6238, SHA-1, 6 цифр, 30 с, окно ±1; секрет 20 байт base32 | `totp.*` |
+| Telegram | Bot API (net/http, long polling): код в чат или push-подтверждение кнопками; привязка через одноразовый код боту | `telegram.*` |
+| WebAuthn/Passkey | go-webauthn: биометрия, синхронизируемые passkeys, FIDO2-ключи; web-UI и REST, не RADIUS | `webauthn.*` |
 
 Пресеты в комплекте: `smsc`, `twilio`. Выбор пресета: `sms.gateway.preset: smsc`
 (значения-переменные пресета перекрываются полями `sms.gateway`).
+Режимы Telegram (код / push-approve / push-окно для RADIUS) — §3.6,
+anti-fatigue-правила — §6.
 
 Лимиты кода: длина 6 цифр, генерация crypto/rand; TTL 5 мин; максимум
 5 попыток; повторная отправка не раньше чем через 60 с; код одноразовый
@@ -169,11 +263,13 @@ vendor-атрибуты), применяется ко всем Access-Accept. Pe
 
 | Таблица | Ключевые поля |
 |---|---|
-| `users` | id UUID PK, username UNIQUE, password_hash (argon2id), role (`admin`\|`user`), enabled bool, email, phone, prefer_channels JSONB (`["totp","email"]`), radius_reply JSONB NULL, created_at, updated_at |
+| `users` | id UUID PK, username UNIQUE, password_hash (argon2id), role (`admin`\|`user`), enabled bool, email, phone, telegram_chat_id TEXT NULL, prefer_channels JSONB (`["totp","telegram","email","sms"]`), radius_push bool DEFAULT false, radius_reply JSONB NULL, created_at, updated_at |
 | `totp_secrets` | user_id PK/FK, secret_enc BLOB (AES-GCM), digits, period, confirmed_at NULL, drift_step INT |
 | `backup_codes` | id, user_id FK, code_hash SHA-256 UNIQUE, used_at NULL |
 | `challenges` | id UUID PK, user_id FK, channel, code_hash SHA-256 **NULL для channel=totp** (код не хранится, проверяется против TOTP-секрета), expires_at, attempts_left, used_at NULL, purpose (`api`\|`radius_prefetch`\|`ui_confirm`), created_at |
 | `sessions` | token_hash PK, user_id FK, csrf, expires_at, created_at |
+| `webauthn_credentials` | id, user_id FK, credential_id BYTEA UNIQUE, public_key BYTEA, sign_count, transports TEXT[], aaguid, name, created_at, last_used_at |
+| `trusted_devices` | id, user_id FK, token_hash UNIQUE, ua, ip, created_at, last_seen_at, expires_at |
 | `settings` | key TEXT PK, value JSONB — **вся конфигурация сервера** (см. §8); секретные ключи помечены и маскируются в API/UI |
 | `audit_log` | id BIGSERIAL, ts, username, event (`login_ok`, `login_fail`, `code_sent`, `code_ok`, `code_fail`, `totp_enroll`, `admin_action`, …), detail JSONB, src_ip, result |
 
@@ -204,6 +300,13 @@ vendor-атрибуты), применяется ко всем Access-Accept. Pe
   RADIUS — окно отказов (§3.1); `/auth/verify` — счётчик попыток challenge.
 - Аудит всех событий аутентификации и админ-действий, ответ на bad-credentials
   единообразен по времени (фиксированная задержка при отсутствии пользователя).
+- Push-fatigue: не более одного push в `policy.push_cooldown` (30 с) и не
+  более 10/час на пользователя; в сообщении всегда кто/IP/UA/время; кнопка
+  «Это не я» — мгновенный отказ challenge + alert в аудит.
+- WebAuthn: строгая проверка origin/RP ID, отслеживание sign_count (детект
+  клонов), аттестация none — потребительский сценарий.
+- Доверенные устройства: токен-хеш SHA-256 в БД, cookie HttpOnly+Secure;
+  смена пароля отзывает все устройства пользователя.
 - Экспорт метрик не входит в v1; `/healthz` — проверка БД.
 
 ## 7. REST API (полный список)
@@ -221,6 +324,9 @@ GET    /api/v1/admin/users/{id}
 PATCH  /api/v1/admin/users/{id}       смена полей, enabled, password
 DELETE /api/v1/admin/users/{id}
 POST   /api/v1/admin/users/{id}/reset-totp     отвязать TOTP + регенерировать резервные коды
+POST   /api/v1/admin/users/{id}/reset-webauthn удалить все passkeys пользователя
+POST   /api/v1/admin/users/{id}/unlink-telegram
+DELETE /api/v1/admin/users/{id}/devices        отозвать доверенные устройства
 GET    /api/v1/admin/audit?username=&event=&since=&until=&limit=
 GET    /api/v1/admin/challenges       активные challenge (без кодов, только метаданные)
 GET    /api/v1/admin/settings         все настройки (секреты — маской)
@@ -237,6 +343,12 @@ POST /api/v1/me/totp/enroll           → {secret, otpauth_url, qr_png_base64}
 POST /api/v1/me/totp/confirm          {code} → подтверждение привязки
 POST /api/v1/me/backup-codes/regenerate  → {codes[]} (показ один раз)
 POST /api/v1/me/send-code             {channel} — тестовая/предварительная отправка
+POST /api/v1/me/webauthn/register/begin|finish   добавить passkey (требует код)
+DELETE /api/v1/me/webauthn/credentials/{id}
+POST /api/v1/me/telegram/link         → {link_code} (показывается в UI, отправляется боту)
+DELETE /api/v1/me/telegram
+GET  /api/v1/me/devices               доверенные устройства (список)
+DELETE /api/v1/me/devices/{id}        отозвать устройство
 ```
 
 ## 8. Конфигурация (в БД, таблица `settings`)
@@ -258,7 +370,9 @@ smtp {host, port, starttls, user, password, from, subject, timeout}
 sms.gateway {preset, method, url, headers, body, content_type, success}
 sms.presets {smsc: {...}, twilio: {...}}
 totp {issuer, digits, period, skew}
-policy {code_ttl, code_length, max_attempts, resend_cooldown, default_prefer_channels}
+telegram {bot_token}          # "" = канал выключен
+webauthn {rp_id, rp_name}     # rp_id = домен сервера, напр. 2fa.example.com
+policy {code_ttl, code_length, max_attempts, resend_cooldown, default_prefer_channels, push_ttl, push_cooldown, trusted_device_ttl}
 web.session_ttl "12h"
 ```
 
@@ -292,7 +406,8 @@ sms.gateway = {
     store/                       # pgx, миграции (embedded SQL), запросы
     auth/                        # PasswordVerifier, AuthCore: challenges,
     │                            # TOTP, резервные коды, сплит «пароль+код»
-    delivery/                    # Interface Sender: EmailSender, SMSSender, LogSender
+    delivery/                    # Interface Sender: EmailSender, SMSSender, TelegramSender, LogSender
+    webauthn/                    # WebAuthn-церемонии (go-webauthn), credentials
     radiusserver/                # layeh.com/radius: Access-Request, accounting-лог
     api/                         # chi: публичные/админ/me роуты, JSON
     web/                         # html/template + static, go:embed
@@ -307,7 +422,9 @@ sms.gateway = {
 
 Зависимости (минимум): `layeh.com/radius`, `github.com/go-chi/chi/v5`,
 `github.com/jackc/pgx/v5`, `github.com/pquerna/otp`,
+`github.com/go-webauthn/webauthn`,
 `golang.org/x/crypto` (argon2), `github.com/google/uuid`.
+Telegram Bot API — напрямую через net/http (без внешних библиотек).
 
 ## 10. Развёртывание
 
@@ -323,6 +440,8 @@ sms.gateway = {
   вход в `/admin → Настройки` и конфигурация SMTP/SMS через UI.
 - Пример настройки MikroTik (`/radius` → новый сервер, secret из админки,
   timeout) и замечание про PAP — в README.
+- Telegram-бот: исходящий long polling к `api.telegram.org:443`, входящих
+  портов и сертификатов не требует; включается заданием `telegram.bot_token`.
 
 ## 11. Тестирование
 
@@ -332,10 +451,14 @@ sms.gateway = {
   URL-encoding); парсер success-критерия шлюза; TOTP-окно; argon2-хелперы.
 - **Интеграция** (`go test`, ephemeral Postgres через testcontainers):
   флоу start→verify (email через LogSender/SMTP-sink), combined,
-  сброс попыток, аудит-записи; RADIUS: реальный UDP Access-Request
-  (accept/reject/троттлинг) клиентом из `layeh.com/radius`.
-- **E2E вручную:** docker-compose up → /login → /me → привязка TOTP →
-  код через API; Winbox → Radius → VPN-подключение с `пароль+код`.
+  сброс попыток, аудит-записи; WebAuthn-церемония регистрация+логин
+  (тестовый authenticator); push: fake Telegram Bot API (HTTP-тест-сервер)
+  + окно `push_ttl` для RADIUS (подключение паролем до/после approve);
+  доверенные устройства (выдача/вход/отзыв); RADIUS: реальный UDP
+  Access-Request (accept/reject/троттлинг) клиентом из `layeh.com/radius`.
+- **E2E вручную:** docker-compose up → /login → /me → привязка TOTP,
+  passkey и Telegram → код через API; Winbox → Radius → VPN с `пароль+код`
+  и push-подключение через Telegram.
 
 ## 12. Риски и решения
 
@@ -347,3 +470,6 @@ sms.gateway = {
 | Потеря TOTP | Резервные коды + админский reset-totp |
 | Утечка БД | Пароли argon2id, коды/сессии хешами, TOTP-секреты AES-GCM |
 | Секреты в `settings` в открытом виде | Граница доверения — доступ к Postgres; API/UI их не отдаёт (маска); при желании ключ шифрования TOTP позже выносится в env без смены схемы |
+| Push-fatigue (спам «Подтвердить») | cooldown + лимит/час, в сообщении кто/IP/UA/время, «Это не я» блокирует и алертит |
+| Смена домена сервера ломает passkeys (RP ID) | RP ID задаётся в настройках осознанно; миграция — в README; коды/TOTP не страдают |
+| Telegram API недоступен | Авто-fallback на следующий канал из `prefer_channels` + событие в аудите |
