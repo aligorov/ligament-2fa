@@ -1044,9 +1044,19 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		p.admin.audit(ctx, "user_reset_totp", map[string]any{"user_id": u.ID.String()})
-		// Коды возвращаются один раз (как в JSON API) — только флешем.
-		redirectFlash(w, r, "/admin/users",
-			"TOTP сброшен. Новые резервные коды (показ один раз): "+strings.Join(codes, ", "), true)
+		// Коды показываются ровно один раз в ТЕЛЕ ответа (200), как в JSON
+		// API; редирект с кодами в query уносил бы их в Location, историю
+		// браузера и логи прокси.
+		users, err := p.st.UserList(ctx)
+		if err != nil {
+			flash500(w, r, "/admin/users", err)
+			return
+		}
+		p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
+			BaseData:    p.baseData(r, "Пользователи"),
+			Users:       derefUsers(users),
+			BackupCodes: codes,
+		})
 
 	case "reset-webauthn":
 		if err := p.st.WACredsDeleteForUser(ctx, u.ID); err != nil {
@@ -1147,6 +1157,13 @@ func (p *PagesAPI) handleAdminChallenges(w http.ResponseWriter, r *http.Request)
 // handleAdminSettings — GET /admin/settings: снимок по секциям; секреты —
 // только флаги «задано» (маска «••••»).
 func (p *PagesAPI) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
+	p.render(w, http.StatusOK, "admin_settings", p.adminSettingsData(r))
+}
+
+// adminSettingsData — данные страницы настроек: снимок по секциям, секреты —
+// только флаги «задано». Общий код GET-рендера и ответа регенерации секрета
+// (страница регенерации — те же данные + одноразовое значение).
+func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 	t := p.m.Get()
 	replyJSON := ""
 	if t.Radius.ReplyAttributes != nil {
@@ -1154,7 +1171,7 @@ func (p *PagesAPI) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 			replyJSON = string(b)
 		}
 	}
-	p.render(w, http.StatusOK, "admin_settings", web.AdminSettingsData{
+	return web.AdminSettingsData{
 		BaseData:        p.baseData(r, "Настройки"),
 		S:               t,
 		RadiusSecretSet: t.RadiusSecret != "",
@@ -1163,7 +1180,7 @@ func (p *PagesAPI) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		SMSGatewayJSON:  string(t.SMS),
 		SMSPresetsJSON:  string(t.SMSPresets),
 		ReplyAttrsJSON:  replyJSON,
-	})
+	}
 }
 
 // settingsField — одно поле формы /admin/settings: имя поля формы (для
@@ -1237,7 +1254,7 @@ var settingsForm = map[string][]settingsField{
 // settings-ключи; пустые значения и маска «••••» = «не менять»; мерж с
 // текущим значением (deep merge, как PUT JSON API) через m.Put. Кнопка
 // regenerate — генерируемые секреты (admin_token/radius.secret), новое
-// значение показывается один раз.
+// значение показывается один раз в теле ответа (не в redirect URL/flash).
 func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		redirectFlash(w, r, "/admin/settings", "Некорректная форма.", false)
@@ -1261,8 +1278,13 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		p.admin.audit(ctx, "settings_regenerate", map[string]any{"key": key, "via": "html"})
-		redirectFlash(w, r, "/admin/settings",
-			"Новое значение "+key+": "+val+" (сохраните, показ один раз).", true)
+		// Новое значение рендерится в ТЕЛЕ ответа (200) ровно один раз:
+		// редирект с ним в query уносил бы секрет в Location, историю
+		// браузера и логи прокси. Остальная страница — как при GET (маски).
+		d := p.adminSettingsData(r)
+		d.OneTimeLabel = key
+		d.OneTimeValue = val
+		p.render(w, http.StatusOK, "admin_settings", d)
 		return
 	}
 

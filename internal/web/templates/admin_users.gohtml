@@ -48,6 +48,14 @@
   {{template "userFields" .}}
 </form>
 {{end}}
+
+{{if .BackupCodes}}
+<div class="card">
+  <h3>Новые резервные коды</h3>
+  <p class="flash err">Показываются только один раз — сохраните!</p>
+  <pre>{{range .BackupCodes}}{{.}}<br>{{end}}</pre>
+</div>
+{{end}}
 {{end}}
 
 {{define "userFields"}}

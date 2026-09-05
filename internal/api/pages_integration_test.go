@@ -8,6 +8,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -374,6 +375,76 @@ func TestPagesTOTPEnrollConfirmHTML(t *testing.T) {
 
 	if _, _, _, confirmed, _, err := st.TOTPGet(ctx, user.ID); err != nil || !confirmed {
 		t.Fatalf("TOTP не подтверждён: confirmed=%v err=%v", confirmed, err)
+	}
+}
+
+// TestPagesAdminResetTOTPOneTimeCodes: сброс TOTP админом рендерит новые
+// резервные коды в ТЕЛЕ ответа (200), а не в Location/flash — одноразовые
+// секреты не должны попадать в URL, историю браузера и логи прокси.
+func TestPagesAdminResetTOTPOneTimeCodes(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	target := mkUser(t, ctx, st, "resetvictim", nil)
+	admin := mkUser(t, ctx, st, "resetadmin", func(u *store.User) { u.Role = "admin" })
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.login(t, admin.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	rec = c.postForm("/admin/users/"+target.ID.String(),
+		url.Values{"do": {"reset-totp"}}, true)
+	wantStatus(t, rec, http.StatusOK)
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Fatalf("Location не должен нести коды, got %q", loc)
+	}
+	// В теле — формат резервных кодов (XXXXX-XXXXX) и предупреждение.
+	if !regexp.MustCompile(`[A-Z2-9]{5}-`).MatchString(rec.Body.String()) {
+		t.Fatalf("тело без резервных кодов (XXXXX-XXXXX):\n%.600s", rec.Body.String())
+	}
+	wantBody(t, rec, "Показываются только один раз")
+
+	// Коды действительно заменены в БД (10 свежих, TOTP удалён).
+	if n, err := backupRemaining(ctx, st, target.ID); err != nil || n != 10 {
+		t.Fatalf("backupRemaining = %d (err %v), want 10", n, err)
+	}
+	if _, _, _, _, _, err := st.TOTPGet(ctx, target.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("TOTP-секрет не удалён: err = %v", err)
+	}
+}
+
+// TestPagesAdminSettingsRegenerateOneTime: перегенерация секрета в
+// /admin/settings рендерит новое значение в ТЕЛЕ ответа (200), не в
+// Location/flash; остальная страница остаётся с масками «••••».
+func TestPagesAdminSettingsRegenerateOneTime(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	admin := mkUser(t, ctx, st, "regenadmin", func(u *store.User) { u.Role = "admin" })
+	oldTok := set.Get().AdminToken
+	t.Cleanup(func() { // контейнер один на пакет — возвращаем токен
+		b, _ := json.Marshal(oldTok)
+		if err := set.Put(ctx, "admin_token", b); err != nil {
+			t.Errorf("восстановление admin_token: %v", err)
+		}
+	})
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.login(t, admin.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	rec = c.postForm("/admin/settings", url.Values{"regenerate": {"admin_token"}}, true)
+	wantStatus(t, rec, http.StatusOK)
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Fatalf("Location не должен нести секрет, got %q", loc)
+	}
+	fresh := set.Get().AdminToken
+	if fresh == "" || fresh == oldTok {
+		t.Fatalf("admin_token не перегенерирован: %q", fresh)
+	}
+	// Новый токен — в теле, с меткой ключа и предупреждением.
+	wantBody(t, rec, "admin_token", fresh, "Показывается только один раз")
+	// Маски остальных секретов не раскрыты: радиусный секрет в теле отсутствует.
+	if sec := set.Get().RadiusSecret; sec != "" && strings.Contains(rec.Body.String(), sec) {
+		t.Fatal("тело ответа раскрывает radius.secret")
 	}
 }
 

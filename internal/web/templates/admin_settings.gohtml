@@ -181,4 +181,12 @@
   </label>
   <button type="submit">Сохранить секцию</button>
 </form>
+
+{{if .OneTimeValue}}
+<div class="card">
+  <h3>Новое значение: {{.OneTimeLabel}}</h3>
+  <p class="flash err">Показывается только один раз — сохраните!</p>
+  <pre>{{.OneTimeValue}}</pre>
+</div>
+{{end}}
 {{end}}

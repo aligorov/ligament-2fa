@@ -90,12 +90,15 @@ type MeDevicesData struct {
 
 // AdminUsersData — /admin/users: таблица всех пользователей; Edit != nil —
 // под таблицей форма редактирования конкретного пользователя, иначе форма
-// создания. EditReplyJSON — radius_reply для textarea.
+// создания. EditReplyJSON — radius_reply для textarea. BackupCodes непуст
+// после сброса TOTP: новые резервные коды показываются один раз в теле
+// ответа (nil — блок не рендерится).
 type AdminUsersData struct {
 	BaseData
 	Users         []store.User
 	Edit          *store.User
 	EditReplyJSON string
+	BackupCodes   []string // новые резервные коды (показ один раз)
 }
 
 // AdminAuditData — /admin/audit: последние записи журнала.
@@ -115,6 +118,8 @@ type AdminChallengesData struct {
 // AdminSettingsData — /admin/settings: снимок настроек по секциям.
 // Секретные значения НЕ входят: только *Set-флаги («•••• (задано)»);
 // изменение — ввод нового значения в поле с placeholder.
+// OneTimeValue непусто после регенерации секрета: новое значение
+// показывается один раз в теле ответа (пусто — блок не рендерится).
 type AdminSettingsData struct {
 	BaseData
 	S               *settings.T
@@ -124,6 +129,8 @@ type AdminSettingsData struct {
 	SMSGatewayJSON  string // сырой JSON sms.gateway для textarea
 	SMSPresetsJSON  string // сырой JSON sms.presets для textarea
 	ReplyAttrsJSON  string // radius.reply_attributes для textarea
+	OneTimeValue    string // новое значение секрета (показ один раз)
+	OneTimeLabel    string // ключ секрета (admin_token / radius.secret)
 }
 
 // ErrorData — страница ошибки (код + сообщение по-русски).
