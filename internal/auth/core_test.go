@@ -616,3 +616,228 @@ func TestFailLockedBanTime(t *testing.T) {
 		t.Fatal("FailLocked=true ниже порога max_fail")
 	}
 }
+
+// ---- регрессии ревью (fix round 1) ----
+
+// countingPV — PasswordVerifier-декоратор над локальной проверкой:
+// считает вызовы Verify (инвариант «один argon2 на запрос»).
+type countingPV struct {
+	inner PasswordVerifier
+	mu    sync.Mutex
+	calls []string
+}
+
+func (p *countingPV) Verify(ctx context.Context, username, password string) (*store.User, error) {
+	p.mu.Lock()
+	p.calls = append(p.calls, password)
+	p.mu.Unlock()
+	return p.inner.Verify(ctx, username, password)
+}
+
+func (p *countingPV) count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.calls)
+}
+
+func (p *countingPV) requested() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.calls...)
+}
+
+func newCountingCore(st *store.Store, set *settings.M, box *secrets.Box, senders map[channel.Channel]delivery.Sender, push PushNotifier) (*Core, *countingPV) {
+	pv := &countingPV{inner: NewLocalVerifier(st)}
+	return NewCore(st, set, box, senders, pv, push), pv
+}
+
+// TestSinglePasswordVerifyPerRequest — регрессия «ONE password verify
+// per request»: argon2-проверка выполняется ровно один раз на запрос
+// при любом числе кандидатов-сплитов «пароль+код».
+func TestSinglePasswordVerifyPerRequest(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	mustPut(t, ctx, set, "radius.push_wait", `"1s"`)
+
+	// (a) верный код приклеен к неверному паролю: пароль первого
+	// подошедшего сплита проверяется ровно один раз; отказ.
+	ua := mkUser(t, ctx, st, "single-a", func(u *store.User) {
+		u.Email = "single-a@example.com"
+		u.PreferChannels = []channel.Channel{channel.Email}
+	})
+	email := &fakeSender{ch: channel.Email}
+	coreA, pvA := newCountingCore(st, set, box, map[channel.Channel]delivery.Sender{channel.Email: email}, nil)
+	if _, err := coreA.Start(ctx, ua, "api"); err != nil {
+		t.Fatalf("Start(single-a): %v", err)
+	}
+	got, ok, err := coreA.VerifyPasswordAndCode(ctx, ua.Username, "wrongpassword"+email.lastCode(), "")
+	if err != nil || ok || got != nil {
+		t.Fatalf("(a) код верен, пароль нет: user=%v ok=%v err=%v, хочу (nil,false,nil)", got, ok, err)
+	}
+	if n := pvA.count(); n != 1 {
+		t.Fatalf("(a) проверок пароля %d (%q), хочу ровно 1", n, pvA.requested())
+	}
+
+	// (b) неверный код и неверный пароль: код не опознан ни в одном
+	// сплите — ровно одна проверка полной строки.
+	ub := mkUser(t, ctx, st, "single-b", func(u *store.User) {
+		u.Email = "single-b@example.com"
+		u.PreferChannels = []channel.Channel{channel.Email}
+	})
+	coreB, pvB := newCountingCore(st, set, box, map[channel.Channel]delivery.Sender{channel.Email: email}, nil)
+	if _, err := coreB.Start(ctx, ub, "api"); err != nil {
+		t.Fatalf("Start(single-b): %v", err)
+	}
+	got, ok, err = coreB.VerifyPasswordAndCode(ctx, ub.Username, "wrongpassword000000", "")
+	if err != nil || ok || got != nil {
+		t.Fatalf("(b) неверный код и пароль: user=%v ok=%v err=%v, хочу (nil,false,nil)", got, ok, err)
+	}
+	if n := pvB.count(); n != 1 {
+		t.Fatalf("(b) проверок пароля %d (%q), хочу ровно 1", n, pvB.requested())
+	}
+
+	// (c) push-режим RADIUS: пароль без кода — ровно одна проверка
+	// полной строки, затем push-флоу (здесь — до таймаута).
+	uc := mkUser(t, ctx, st, "single-c", func(u *store.User) {
+		chat := int64(99)
+		u.TelegramChatID = &chat
+		u.RadiusPush = true
+	})
+	coreC, pvC := newCountingCore(st, set, box, nil, &fakePush{st: st})
+	accept, reason := coreC.RADIUSAuth(ctx, uc.Username, testPassword, "10.9.9.9")
+	if accept || reason != "push_timeout" {
+		t.Fatalf("(c) push-режим: accept=%v reason=%q, хочу push_timeout", accept, reason)
+	}
+	if n := pvC.count(); n != 1 {
+		t.Fatalf("(c) проверок пароля %d (%q), хочу ровно 1", n, pvC.requested())
+	}
+
+	// (d) RADIUS, верный код приклеен к неверному паролю: один argon2,
+	// bad_credentials без перебора остальных кандидатов.
+	ud := mkUser(t, ctx, st, "single-d", func(u *store.User) {
+		u.Email = "single-d@example.com"
+		u.PreferChannels = []channel.Channel{channel.Email}
+	})
+	coreD, pvD := newCountingCore(st, set, box, map[channel.Channel]delivery.Sender{channel.Email: email}, nil)
+	if _, err := coreD.Start(ctx, ud, "api"); err != nil {
+		t.Fatalf("Start(single-d): %v", err)
+	}
+	accept, reason = coreD.RADIUSAuth(ctx, ud.Username, "wrongpassword"+email.lastCode(), "10.9.9.9")
+	if accept || reason != "bad_credentials" {
+		t.Fatalf("(d) RADIUS код верен, пароль нет: accept=%v reason=%q, хочу bad_credentials", accept, reason)
+	}
+	if n := pvD.count(); n != 1 {
+		t.Fatalf("(d) проверок пароля %d (%q), хочу ровно 1", n, pvD.requested())
+	}
+}
+
+// TestVerifyChallengeCodeTOTPConcurrentSingleUse — гонка одноразовости
+// totp-челленджа: две конкурентные подачи кодов двух разных валидных
+// окон (C и C+1) по одному челленджу — ровно один успех.
+func TestVerifyChallengeCodeTOTPConcurrentSingleUse(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	core := newCore(st, set, box, nil, nil)
+
+	user := mkUser(t, ctx, st, "totprace", func(u *store.User) {
+		u.PreferChannels = []channel.Channel{channel.TOTP}
+	})
+	secret := enrollTOTP(t, ctx, st, box, user, true)
+	ch, err := core.Start(ctx, user, "api")
+	if err != nil || ch.Channel != channel.TOTP {
+		t.Fatalf("Start(totp): ch=%+v err=%v", ch, err)
+	}
+
+	cur := time.Now().Unix() / 30
+	codes := []string{codeAt(t, secret, cur), codeAt(t, secret, cur+1)}
+
+	start := make(chan struct{})
+	oks := make([]bool, len(codes))
+	errs := make([]error, len(codes))
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			oks[i], errs[i] = core.VerifyChallengeCode(ctx, ch, codes[i])
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	successes := 0
+	for i := range codes {
+		if oks[i] && errs[i] == nil {
+			successes++
+			continue
+		}
+		if oks[i] || errs[i] == nil {
+			t.Fatalf("подача #%d: ok=%v err=%v — неконсистентный итог", i+1, oks[i], errs[i])
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("успехов %d из двух конкурентных подач, хочу ровно 1 (err: %v / %v)",
+			successes, errs[0], errs[1])
+	}
+
+	// Детерминированная половина той же гонки: «конкурентный победитель»
+	// уже забрал одноразовый claim челленджа (fresh-пользователь, окно C).
+	u2 := mkUser(t, ctx, st, "totprace2", func(u *store.User) {
+		u.PreferChannels = []channel.Channel{channel.TOTP}
+	})
+	secret2 := enrollTOTP(t, ctx, st, box, u2, true)
+	ch2, err := core.Start(ctx, u2, "api")
+	if err != nil || ch2.Channel != channel.TOTP {
+		t.Fatalf("Start(totp, u2): ch=%+v err=%v", ch2, err)
+	}
+	cur2 := time.Now().Unix() / 30
+	if ok, err := core.VerifyChallengeCode(ctx, ch2, codeAt(t, secret2, cur2)); !ok || err != nil {
+		t.Fatalf("первая подача окна C: ok=%v err=%v, хочу успех", ok, err)
+	}
+	// Вторая подача кодом следующего валидного окна проходит TOTP
+	// (C+1 > last_timestep=C), но claim челленджа уже занят →
+	// ErrChallengeClosed, а не второй успех.
+	if ok, err := core.VerifyChallengeCode(ctx, ch2, codeAt(t, secret2, cur2+1)); ok || !errors.Is(err, ErrChallengeClosed) {
+		t.Fatalf("повторная подача после claim: ok=%v err=%v, хочу (false, ErrChallengeClosed)", ok, err)
+	}
+}
+
+// TestStartPushCooldownAndOrphanCleanup — Start по telegram_push
+// соблюдает push_cooldown/push_per_hour (как RADIUSAuth), а челлендж,
+// чей push не доставился, удаляется и не держит cooldown.
+func TestStartPushCooldownAndOrphanCleanup(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	mustPut(t, ctx, set, "policy", `{"push_per_hour":1}`)
+
+	user := mkUser(t, ctx, st, "pushstart", func(u *store.User) {
+		chat := int64(77)
+		u.TelegramChatID = &chat
+		u.PreferChannels = []channel.Channel{channel.TelegramPush}
+	})
+
+	// Доставка падает: осиротевший челлендж удаляется — cooldown и
+	// счётчик push_per_hour не растут.
+	broken := &fakePush{st: st, err: errors.New("telegram down")}
+	coreBroken := newCore(st, set, box, nil, broken)
+	if _, err := coreBroken.Start(ctx, user, "api"); !errors.Is(err, ErrNoChannel) {
+		t.Fatalf("Start при ошибке доставки: err=%v, хочу ErrNoChannel", err)
+	}
+	if _, err := coreBroken.Start(ctx, user, "api"); !errors.Is(err, ErrNoChannel) {
+		t.Fatalf("повторный Start: err=%v — осиротевший челлендж держит cooldown", err)
+	}
+	if n, err := st.PushCountSince(ctx, user.ID, time.Now().Add(-time.Hour)); err != nil || n != 0 {
+		t.Fatalf("push-челленджей после ошибки доставки: %d (err=%v), хочу 0", n, err)
+	}
+
+	// Успешная доставка → второй Start в пределах push_cooldown (или
+	// лимита push_per_hour=1) отклоняется ErrCooldown.
+	coreOK := newCore(st, set, box, nil, &fakePush{st: st})
+	if _, err := coreOK.Start(ctx, user, "api"); err != nil {
+		t.Fatalf("Start с доставкой: %v", err)
+	}
+	if _, err := coreOK.Start(ctx, user, "api"); !errors.Is(err, ErrCooldown) {
+		t.Fatalf("Start в cooldown: err=%v, хочу ErrCooldown", err)
+	}
+}

@@ -92,8 +92,9 @@ func (c *Core) binding(ch channel.Channel, user *store.User) (delivery.Sender, s
 // пользователя (fallback — policy.default_prefer): TOTP (без кода, метка
 // сессии-челленджа), email/sms/telegram (генерация кода, отправка,
 // SHA-256-хеш в БД) или telegram_push (pending + SendPush). Каналы без
-// привязки/отправителя пропускаются; ни одного → ErrNoChannel. Кодовый
-// канал в состоянии cooldown → ErrCooldown.
+// привязки/отправителя пропускаются; ни одного → ErrNoChannel. Канал в
+// состоянии cooldown (resend_cooldown у кодового, push_cooldown /
+// push_per_hour у push) → ErrCooldown.
 func (c *Core) Start(ctx context.Context, user *store.User, purpose string) (*store.Challenge, error) {
 	return c.StartWithMeta(ctx, user, purpose, "", "")
 }
@@ -171,6 +172,18 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 			if user.TelegramChatID == nil || c.push == nil {
 				continue
 			}
+			// Push-fatigue: те же границы, что в RADIUSAuth — не чаще
+			// push_cooldown и не более push_per_hour в час.
+			if last, err := c.st.LastPushAt(ctx, user.ID); err != nil {
+				return nil, fmt.Errorf("auth: push-cooldown проверка %s: %w", user.Username, err)
+			} else if !last.IsZero() && time.Since(last) < pol.PushCooldown {
+				return nil, ErrCooldown
+			}
+			if n, err := c.st.PushCountSince(ctx, user.ID, now.Add(-time.Hour)); err != nil {
+				return nil, fmt.Errorf("auth: push-лимит проверка %s: %w", user.Username, err)
+			} else if n >= pol.PushPerHour {
+				return nil, ErrCooldown
+			}
 			c2 := &store.Challenge{
 				UserID:       user.ID,
 				Channel:      channel.TelegramPush,
@@ -183,6 +196,14 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 				return nil, err
 			}
 			if err := c.push.SendPush(ctx, *user.TelegramChatID, user.Username, ip, ua, c2.ID); err != nil {
+				// Осиротевший челлендж держал бы cooldown следующего
+				// push — удаляем (WithoutCancel: доставка могла упасть
+				// из-за отмены ctx).
+				if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
+					`DELETE FROM challenges WHERE id = $1`, c2.ID); derr != nil {
+					slog.Warn("auth: удаление push-челленджа после ошибки доставки",
+						"id", c2.ID, "error", derr)
+				}
 				c.audit(ctx, user.Username, "push_sent",
 					map[string]any{"purpose": purpose, "error": err.Error()}, ip, "fail")
 				continue
@@ -232,8 +253,13 @@ func (c *Core) VerifyChallengeCode(ctx context.Context, ch *store.Challenge, cod
 			return false, fmt.Errorf("auth: TOTP-секрет %s: %w", user.Username, err)
 		}
 		// Одноразовое использование челленджа; гонку двойной подачи
-		// закрывает условный UPDATE в ChallengeMarkUsed.
-		if err := c.st.ChallengeMarkUsed(ctx, ch.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+		// закрывает условный UPDATE в ChallengeMarkUsed — ErrNotFound
+		// значит, что claim уже забрал конкурентный запрос (как в
+		// кодовом канале: челлендж закрыт, а не второй успех).
+		if err := c.st.ChallengeMarkUsed(ctx, ch.ID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return false, ErrChallengeClosed
+			}
 			return false, err
 		}
 		c.audit(ctx, user.Username, "code_ok",
@@ -294,36 +320,17 @@ func (c *Core) VerifyAnyCode(ctx context.Context, user *store.User, code string)
 	return "", ErrBadCode
 }
 
-// passwordCandidates — кандидаты «пароль без кода» для проверки первого
-// фактора, без повторов: полная исходная строка и части-пароли сплитов
-// (пароль может сам оканчиваться цифрами — тогда код «приклеен» не был).
-func passwordCandidates(password string, cands ...Split) []string {
-	seen := make(map[string]struct{}, len(cands)+1)
-	out := make([]string, 0, len(cands)+1)
-	add := func(p string) {
-		if p == "" {
-			return
-		}
-		if _, dup := seen[p]; dup {
-			return
-		}
-		seen[p] = struct{}{}
-		out = append(out, p)
-	}
-	add(password)
-	for _, sp := range cands {
-		add(sp.Password)
-	}
-	return out
-}
-
 // VerifyPasswordAndCode проверяет вход «пароль + второй фактор».
 // Отдельный код (UI-флоу) или сплиты «код приклеен к паролю»
-// (RADIUS-флоу, code == ""): для каждого кандидата сначала дёшево
-// проверяется код (VerifyAnyCode), для подошедшего — одна argon2id-
-// проверка пароля. Возвращает (user, true) при полном успехе;
-// (user, false) — пароль верен, но код не опознан; (nil, false) —
-// неверный логин или пароль. Блокировка fail-счётчика → ErrLocked.
+// (RADIUS-флоу, code == ""). Инвариант «один argon2 на запрос»:
+// фаза 1 — код дёшево проверяется по кандидатам (VerifyAnyCode);
+// у ПЕРВОГО кандидата с подошедшим кодом пароль проверяется ровно
+// один раз, неудача → неверные учётные данные без перебора остальных
+// кандидатов. Фаза 2 (код не опознан нигде) — ровно одна проверка
+// полной строки (push-режим «пароль без кода»). Возвращает
+// (user, true) при полном успехе; (user, false) — пароль верен, но
+// код не опознан; (nil, false) — неверный логин или пароль.
+// Блокировка fail-счётчика → ErrLocked.
 func (c *Core) VerifyPasswordAndCode(ctx context.Context, username, password, code string) (*store.User, bool, error) {
 	user, err := c.st.UserByUsername(ctx, username)
 	if err != nil {
@@ -342,22 +349,26 @@ func (c *Core) VerifyPasswordAndCode(ctx context.Context, username, password, co
 	if code == "" {
 		cands = SplitCandidates(password, c.set.Get().Radius.CodeLengths)
 	}
-	for _, sp := range cands {
-		if _, err := c.VerifyAnyCode(ctx, user, sp.Code); err != nil {
+
+	// Фаза 1: код дёшево по всем кандидатам; пароль — одна проверка у
+	// первого подошедшего (ONE password verify per request).
+	for i := range cands {
+		if _, err := c.VerifyAnyCode(ctx, user, cands[i].Code); err != nil {
 			continue
 		}
-		if _, err := c.pv.Verify(ctx, username, sp.Password); err == nil {
+		if _, err := c.pv.Verify(ctx, username, cands[i].Password); err == nil {
 			c.audit(ctx, username, "login_ok", map[string]any{"mode": "password+code"}, "", "ok")
 			return user, true, nil
 		}
+		c.audit(ctx, username, "login_fail", map[string]any{"reason": "bad_credentials"}, "", "fail")
+		return nil, false, nil
 	}
 
-	// Код не опознан ни в одном разбиении: верен ли сам пароль?
-	for _, p := range passwordCandidates(password, cands...) {
-		if _, err := c.pv.Verify(ctx, username, p); err == nil {
-			c.audit(ctx, username, "login_fail", map[string]any{"reason": "bad_code"}, "", "fail")
-			return user, false, nil
-		}
+	// Фаза 2: код не опознан ни в одном кандидате — верен ли сам пароль
+	// (полная строка, ровно одна проверка)?
+	if _, err := c.pv.Verify(ctx, username, password); err == nil {
+		c.audit(ctx, username, "login_fail", map[string]any{"reason": "bad_code"}, "", "fail")
+		return user, false, nil
 	}
 	c.audit(ctx, username, "login_fail", map[string]any{"reason": "bad_credentials"}, "", "fail")
 	return nil, false, nil
@@ -392,12 +403,13 @@ func (c *Core) FailLocked(ctx context.Context, userID uuid.UUID) bool {
 }
 
 // RADIUSAuth — полный алгоритм Access-Request (спека §3.1 + §3.6):
-// lookup → enabled → FailLocked → сплиты «пароль+код» (код дёшево,
-// пароль — один argon2 на подошедший код) → при верном пароле без кода
-// и флаге radius_push — push с cooldown/лимитом и удержанием запроса
-// (опрос 1 с до radius.push_wait). Любой исход пишется в аудит
-// (event radius_auth, detail.reason, src_ip, result). Вторая строка
-// radius_fail на плохие учётные данные кормит fail-счётчик (FailLocked).
+// lookup → enabled → FailLocked → сплиты «пароль+код» (код дёшево по
+// всем, пароль — ровно один argon2: у первого split с подошедшим кодом,
+// иначе полная строка) → при верном пароле без кода и флаге radius_push
+// — push с cooldown/лимитом и удержанием запроса (опрос 1 с до
+// radius.push_wait). Любой исход пишется в аудит (event radius_auth,
+// detail.reason, src_ip, result). Вторая строка radius_fail на плохие
+// учётные данные кормит fail-счётчик (FailLocked).
 func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string) (bool, string) {
 	audit := func(reason string, accept bool) {
 		result := "fail"
@@ -405,6 +417,12 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 			result = "ok"
 		}
 		c.audit(ctx, username, "radius_auth", map[string]any{"reason": reason}, srcIP, result)
+	}
+	badCredentials := func() (bool, string) {
+		audit("bad_credentials", false)
+		c.audit(ctx, username, "radius_fail",
+			map[string]any{"reason": "bad_credentials"}, srcIP, "fail")
+		return false, "bad_credentials"
 	}
 
 	user, err := c.st.UserByUsername(ctx, username)
@@ -421,31 +439,25 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		return false, "locked"
 	}
 
-	// 1. Сплиты «пароль+код»: сначала код, затем пароль подошедшего split.
+	// 1. Сплиты «пароль+код»: код дёшево по всем кандидатам; пароль —
+	// ровно одна argon2-проверка у ПЕРВОГО split с подошедшим кодом;
+	// неудача пароля → bad_credentials без перебора остальных.
 	splits := SplitCandidates(papString, c.set.Get().Radius.CodeLengths)
-	for _, sp := range splits {
-		if _, err := c.VerifyAnyCode(ctx, user, sp.Code); err != nil {
+	for i := range splits {
+		if _, err := c.VerifyAnyCode(ctx, user, splits[i].Code); err != nil {
 			continue
 		}
-		if _, err := c.pv.Verify(ctx, username, sp.Password); err == nil {
+		if _, err := c.pv.Verify(ctx, username, splits[i].Password); err == nil {
 			audit("code_ok", true)
 			return true, "code_ok"
 		}
+		return badCredentials()
 	}
 
-	// 2. Пароль без кода.
-	passwordOK := false
-	for _, p := range passwordCandidates(papString, splits...) {
-		if _, err := c.pv.Verify(ctx, username, p); err == nil {
-			passwordOK = true
-			break
-		}
-	}
-	if !passwordOK {
-		audit("bad_credentials", false)
-		c.audit(ctx, username, "radius_fail",
-			map[string]any{"reason": "bad_credentials"}, srcIP, "fail")
-		return false, "bad_credentials"
+	// 2. Пароль без кода: ровно одна проверка полной строки
+	// (push-режим «пароль без кода»).
+	if _, err := c.pv.Verify(ctx, username, papString); err != nil {
+		return badCredentials()
 	}
 
 	pol := c.set.Get().Policy
@@ -485,6 +497,13 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		return false, "push_send_fail"
 	}
 	if err := c.push.SendPush(ctx, *user.TelegramChatID, username, srcIP, "", pushCh.ID); err != nil {
+		// Осиротевший челлендж держал бы cooldown следующего push —
+		// удаляем (WithoutCancel: доставка могла упасть из-за отмены ctx).
+		if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
+			`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
+			slog.Warn("auth: удаление push-челленджа после ошибки доставки",
+				"id", pushCh.ID, "error", derr)
+		}
 		audit("push_send_fail", false)
 		return false, "push_send_fail"
 	}
@@ -497,7 +516,10 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 	for {
 		select {
 		case <-ctx.Done():
-			audit("push_timeout", false)
+			// Терминальный аудит — в контексте без отмены: событие не
+			// должно теряться вместе с отменённым ctx (Go 1.21+).
+			c.audit(context.WithoutCancel(ctx), username, "radius_auth",
+				map[string]any{"reason": "push_timeout"}, srcIP, "fail")
 			return false, "push_timeout"
 		case <-ticker.C:
 			if time.Now().After(deadline) {
