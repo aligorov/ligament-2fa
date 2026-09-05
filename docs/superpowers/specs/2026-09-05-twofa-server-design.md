@@ -266,7 +266,7 @@ anti-fatigue-правила — §6.
 | `users` | id UUID PK, username UNIQUE, password_hash (argon2id), role (`admin`\|`user`), enabled bool, email, phone, telegram_chat_id TEXT NULL, prefer_channels JSONB (`["totp","telegram","email","sms"]`), radius_push bool DEFAULT false, radius_reply JSONB NULL, webauthn_id BYTEA UNIQUE NULL (стабильный user handle для интерфейса go-webauthn), created_at, updated_at |
 | `totp_secrets` | user_id PK/FK, secret_enc BLOB (AES-GCM), digits, period, confirmed_at NULL, last_timestep BIGINT (replay-защита: pquerna/otp stateless, отвергать коды со счётчиком ≤ последнего принятого) |
 | `backup_codes` | id, user_id FK, code_hash SHA-256 UNIQUE, used_at NULL |
-| `challenges` | id UUID PK, user_id FK, channel, code_hash SHA-256 **NULL для channel=totp** (код не хранится, проверяется против TOTP-секрета), expires_at, attempts_left, used_at NULL, purpose (`api`\|`radius_prefetch`\|`ui_confirm`), created_at |
+| `challenges` | id UUID PK, user_id FK, channel, code_hash SHA-256 **NULL для channel=totp** (код не хранится, проверяется против TOTP-секрета), push_state TEXT NULL (`pending`\|`approved`\|`denied` — для telegram_push), expires_at, attempts_left, used_at NULL, purpose (`api`\|`radius_prefetch`\|`ui_confirm`\|`webauthn_session`), created_at |
 | `sessions` | token_hash PK, user_id FK, csrf, expires_at, created_at |
 | `webauthn_credentials` | id, user_id FK, credential_id BYTEA UNIQUE, public_key BYTEA, sign_count, transports TEXT[], aaguid, name, created_at, last_used_at |
 | `trusted_devices` | id, user_id FK, token_hash UNIQUE, ua, ip, created_at, last_seen_at, expires_at |
