@@ -73,6 +73,13 @@ type MeTelegramData struct {
 type MePasskeysData struct {
 	BaseData
 	Creds []store.WACred
+	// Handle/RegName/OptionsJSON — непусты, когда сервер начал регистрацию
+	// (POST /me/webauthn/credentials): страница несёт их в data-атрибутах
+	// #passkey-pending, webauthn.js проводит церемонию и завершает её через
+	// JSON API (T14).
+	Handle      string
+	RegName     string
+	OptionsJSON string
 }
 
 // MeDevicesData — /me/devices: доверенные устройства, отзыв по одному.
