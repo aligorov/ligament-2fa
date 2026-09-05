@@ -434,6 +434,21 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		audit("disabled", false)
 		return false, "disabled"
 	}
+	// RADIUS-специфичный per-user fail-счётчик (radius.max_fail_per_user за
+	// radius.fail_window, источник — аудит radius_fail) — в дополнение к
+	// общему FailLocked: окно и порог настраиваются отдельно для VPN-потока.
+	// Ошибка чтения трактуется как «не заблокирован» (как в FailLocked).
+	if rad := c.set.Get().Radius; rad.MaxFailPerUser > 0 {
+		var n int
+		if err := c.st.Pool().QueryRow(ctx, `
+			SELECT count(*) FROM audit_log
+			WHERE username = $1 AND event = 'radius_fail' AND result = 'fail'
+			  AND ts > $2`,
+			user.Username, time.Now().Add(-rad.FailWindow)).Scan(&n); err == nil && n >= rad.MaxFailPerUser {
+			audit("locked", false)
+			return false, "locked"
+		}
+	}
 	if c.FailLocked(ctx, user.ID) {
 		audit("locked", false)
 		return false, "locked"

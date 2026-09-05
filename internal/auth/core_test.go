@@ -566,6 +566,51 @@ func TestRADIUSAuth(t *testing.T) {
 	}
 }
 
+// TestRADIUSAuthPerUserFailWindow: radius.max_fail_per_user/radius.fail_window
+// — RADIUS-специфичный per-user fail-счётчик по аудиту radius_fail. Окно (1h)
+// и порог (2) отличны от policy.fail_window (5m) и policy.max_fail (5):
+// срабатывает именно RADIUS-окно, третий запрос отбивается «locked» даже с
+// верным паролем.
+func TestRADIUSAuthPerUserFailWindow(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	mustPut(t, ctx, set, "radius.max_fail_per_user", `2`)
+	mustPut(t, ctx, set, "radius.fail_window", `"1h"`)
+	t.Cleanup(func() {
+		mustPut(t, ctx, set, "radius.max_fail_per_user", `10`)
+		mustPut(t, ctx, set, "radius.fail_window", `"5m"`)
+	})
+
+	core := newCore(st, set, box, nil, nil)
+	u := mkUser(t, ctx, st, "radwindow", nil)
+
+	for i := 0; i < 2; i++ {
+		if accept, reason := core.RADIUSAuth(ctx, u.Username, "wrong-password", "10.7.7.7"); accept || reason != "bad_credentials" {
+			t.Fatalf("попытка %d: accept=%v reason=%q, want bad_credentials", i+1, accept, reason)
+		}
+	}
+	// Порог radius.max_fail_per_user=2 достигнут; policy.max_fail=5 ещё нет —
+	// верный пароль отклонён именно RADIUS-окном.
+	if accept, reason := core.RADIUSAuth(ctx, u.Username, testPassword, "10.7.7.7"); accept || reason != "locked" {
+		t.Fatalf("после %d неудач: accept=%v reason=%q, want locked", 2, accept, reason)
+	}
+
+	// Аудит отражает причину (radius_auth reason=locked, result=fail).
+	events, err := st.AuditList(ctx, store.AuditFilter{Username: u.Username, Event: "radius_auth"})
+	if err != nil {
+		t.Fatalf("AuditList: %v", err)
+	}
+	var sawLocked bool
+	for _, e := range events {
+		if e.Result == "fail" && e.Detail != nil && e.Detail["reason"] == "locked" {
+			sawLocked = true
+		}
+	}
+	if !sawLocked {
+		t.Fatalf("аудит radius_auth не содержит reason=locked: %+v", events)
+	}
+}
+
 func TestVerifyPasswordAndCodeLocked(t *testing.T) {
 	st, set, box := setup(t)
 	ctx := context.Background()

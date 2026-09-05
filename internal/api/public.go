@@ -144,6 +144,10 @@ func (p *PublicAPI) handleStart(w http.ResponseWriter, r *http.Request) {
 		// Единый 401: «нет пользователя» и «неверный пароль» неотличимы.
 		p.audit(ctx, req.Username, "api_start", ip, "fail",
 			map[string]any{"reason": "bad_credentials"})
+		// login_fail кормит единый fail-счётчик (FailLocked): без него
+		// брут по /auth/start обходил бы блокировку (api_start не считается).
+		p.audit(ctx, req.Username, "login_fail", ip, "fail",
+			map[string]any{"reason": "bad_credentials", "via": "api_start"})
 		writeError(w, http.StatusUnauthorized, "bad_credentials")
 		return
 	}
@@ -362,6 +366,10 @@ func (p *PublicAPI) handleWABegin(w http.ResponseWriter, r *http.Request) {
 
 	user, err := p.pv.Verify(ctx, req.Username, req.Password)
 	if errors.Is(err, auth.ErrBadCredentials) || errors.Is(err, store.ErrNotFound) {
+		// Путь раньше был тихим — теперь неудачный пароль кормит единый
+		// fail-счётчик (login_fail), как и /auth/start.
+		p.audit(ctx, req.Username, "login_fail", clientIP(r), "fail",
+			map[string]any{"reason": "bad_credentials", "via": "webauthn_begin"})
 		writeError(w, http.StatusUnauthorized, "bad_credentials")
 		return
 	}

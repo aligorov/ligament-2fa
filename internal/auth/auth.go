@@ -8,6 +8,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/google/uuid"
 
@@ -57,13 +58,45 @@ func NewLocalVerifier(st *store.Store) *LocalVerifier { return &LocalVerifier{st
 
 var _ PasswordVerifier = (*LocalVerifier)(nil)
 
+// dummyHashStore — фиксированный argon2id-хеш для ветки «пользователь не
+// найден»: Verify обязан тратить на отсутствующего пользователя ту же
+// работу argon2, что и на неверный пароль существующего, иначе время ответа
+// служит оракулом перечисления учётных записей. Генерируется один раз на
+// процесс (sync.Once).
+var dummyHashStore struct {
+	once sync.Once
+	val  string
+}
+
+// dummyArgon2Hash лениво создаёт и возвращает хеш-приманку (формат
+// secrets.HashPassword; пароль-источник фиксирован и публично безопасен).
+func dummyArgon2Hash() string {
+	dummyHashStore.once.Do(func() {
+		dummyHashStore.val = secrets.HashPassword("twofa-dummy-password")
+	})
+	return dummyHashStore.val
+}
+
+// burnDummyVerify выполняет полный argon2-цикл по хешу-приманке — та же
+// цена, что у secrets.VerifyPassword для реального хеша. Результат
+// заведомо ложен и отбрасывается.
+func burnDummyVerify(password string) {
+	_ = secrets.VerifyPassword(dummyArgon2Hash(), password)
+}
+
 // Verify возвращает пользователя при верном пароле. Отсутствующий
-// пользователь → store.ErrNotFound; неверный пароль или отключённый
-// (enabled = false) пользователь → ErrBadCredentials — единый ответ,
-// не раскрывающий причину.
+// пользователь → store.ErrNotFound (после полного argon2 по хешу-приманке —
+// обе ветки стоят одинаково, тайминг не различим); неверный пароль или
+// отключённый (enabled = false) пользователь → ErrBadCredentials — единый
+// ответ, не раскрывающий причину.
 func (v *LocalVerifier) Verify(ctx context.Context, username, password string) (*store.User, error) {
 	u, err := v.st.UserByUsername(ctx, username)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Тайминг-оракул: отсутствующий пользователь отвечает argon2-ценой
+			// неверного пароля, а не мгновенно.
+			burnDummyVerify(password)
+		}
 		return nil, err
 	}
 	if !u.Enabled || !secrets.VerifyPassword(u.PasswordHash, password) {

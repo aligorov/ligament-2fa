@@ -626,6 +626,74 @@ func TestAPIWebauthnBeginFinish(t *testing.T) {
 	}
 }
 
+// TestAPIStartCountsLoginFail: неверный пароль на /auth/start пишет И
+// login_fail (раньше — только api_start, единый fail-счётчик не считал эти
+// попытки); достигнув policy.max_fail, /auth/start отвечает 423 даже с
+// верным паролем.
+func TestAPIStartCountsLoginFail(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	h, _ := newTestRouter(t, st, set, box, nil)
+	user := mkUser(t, ctx, st, "startfail", nil)
+
+	// Неверный пароль → 401 и login_fail в аудите.
+	rec := doReq(t, h, http.MethodPost, "/api/v1/auth/start",
+		map[string]string{"username": user.Username, "password": "wrong-password"})
+	wantStatus(t, rec, http.StatusUnauthorized)
+	rows, err := st.AuditList(ctx, store.AuditFilter{Username: user.Username, Event: "login_fail"})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("login_fail после start(неверный пароль): rows=%d err=%v, want 1", len(rows), err)
+	}
+
+	// Добиваем счётчик до порога прямым аудитом и проверяем 423.
+	for i := 1; i < set.Get().Policy.MaxFail; i++ {
+		if err := st.Audit(ctx, user.Username, "login_fail", nil, "10.9.9.9", "fail"); err != nil {
+			t.Fatalf("seed login_fail: %v", err)
+		}
+	}
+	rec = doReq(t, h, http.MethodPost, "/api/v1/auth/start",
+		map[string]string{"username": user.Username, "password": testPassword})
+	wantStatus(t, rec, http.StatusLocked)
+	if jsonBody(t, rec)["error"] != "locked" {
+		t.Fatalf("body = %s, want locked", rec.Body.String())
+	}
+}
+
+// TestAPIWABeginCountsLoginFail: неверный пароль на /auth/webauthn/begin
+// пишет login_fail (путь раньше был тихим) и кормит fail-счётчик — после
+// порога begin отвечает 423.
+func TestAPIWABeginCountsLoginFail(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	if err := set.Put(ctx, "webauthn", json.RawMessage(`{"rp_id":"localhost","rp_name":"twofa-test"}`)); err != nil {
+		t.Fatalf("settings.Put(webauthn): %v", err)
+	}
+	wa, err := webauthn.New(st, set)
+	if err != nil {
+		t.Fatalf("webauthn.New: %v", err)
+	}
+	h, _ := newTestRouter(t, st, set, box, wa)
+	user := mkUser(t, ctx, st, "wabeginfail", nil)
+
+	// Неверный пароль → 401 и login_fail в аудите.
+	rec := doReq(t, h, http.MethodPost, "/api/v1/auth/webauthn/begin",
+		map[string]string{"username": user.Username, "password": "wrong-password"})
+	wantStatus(t, rec, http.StatusUnauthorized)
+	rows, err := st.AuditList(ctx, store.AuditFilter{Username: user.Username, Event: "login_fail"})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("login_fail после webauthn/begin(неверный пароль): rows=%d err=%v, want 1", len(rows), err)
+	}
+
+	for i := 1; i < set.Get().Policy.MaxFail; i++ {
+		if err := st.Audit(ctx, user.Username, "login_fail", nil, "10.9.9.9", "fail"); err != nil {
+			t.Fatalf("seed login_fail: %v", err)
+		}
+	}
+	rec = doReq(t, h, http.MethodPost, "/api/v1/auth/webauthn/begin",
+		map[string]string{"username": user.Username, "password": testPassword})
+	wantStatus(t, rec, http.StatusLocked)
+}
+
 // TestAPIRateLimit429OnBurst: 6-й start подряд по тому же username+IP →
 // 429 rate_limited с Retry-After; корзины username и IP независимы.
 func TestAPIRateLimit429OnBurst(t *testing.T) {
