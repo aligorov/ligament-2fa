@@ -277,7 +277,8 @@ func TestMeTelegramLink(t *testing.T) {
 	}
 }
 
-// TestMeWebauthn: begin выдаёт {handle, options} с creation-опциями; finish
+// TestMeWebauthn: begin требует код второго фактора (пустой → 400, неверный
+// → 401 bad_code, верный → {handle, options} с creation-опциями); finish
 // с мусорным ответом → 400; список ключей; удаление чужого/несуществующего.
 func TestMeWebauthn(t *testing.T) {
 	st, set, box := setup(t)
@@ -289,9 +290,23 @@ func TestMeWebauthn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("webauthn.New: %v", err)
 	}
-	h, _ := newWebRouter(t, st, set, box, wa)
-	user := mkUser(t, ctx, st, "mewa", nil)
-	c := loginSession(t, h, user.Username)
+	h, email := newWebRouter(t, st, set, box, wa)
+	// Email есть — вход требует второй фактор; TOTP настроен напрямую,
+	// коды подтверждения операций придут на email (fallback send-code).
+	user := mkUser(t, ctx, st, "mewa", func(u *store.User) {
+		u.Email = "mewa@example.com"
+	})
+	key := enrollTOTP(t, ctx, st, set, box, user)
+	c := newWebClient(t, h)
+	rec := c.login(user.Username, testPassword, false)
+	wantStatus(t, rec, http.StatusOK)
+	totpCode, err := totp.GenerateCode(key.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("totp.GenerateCode: %v", err)
+	}
+	rec = c.login2FA(user.Username, testPassword, totpCode, false)
+	wantStatus(t, rec, http.StatusOK)
+	c.adoptCSRF(rec)
 
 	// Ключ уже вставлен напрямую — список показывает метаданные.
 	if err := st.WACredUpsert(ctx, user.ID, &store.WACred{
@@ -301,7 +316,7 @@ func TestMeWebauthn(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WACredUpsert: %v", err)
 	}
-	rec := c.do(http.MethodGet, "/api/v1/me/webauthn/credentials", nil)
+	rec = c.do(http.MethodGet, "/api/v1/me/webauthn/credentials", nil)
 	wantStatus(t, rec, http.StatusOK)
 	creds := jsonBody(t, rec)["credentials"].([]any)
 	if len(creds) != 1 {
@@ -315,9 +330,38 @@ func TestMeWebauthn(t *testing.T) {
 		t.Fatalf("список раскрывает public_key: %v", cred)
 	}
 
-	// Register begin: {handle, options.publicKey.challenge}.
+	// Код подтверждения для чувствительной операции: доставленный на email.
+	rec = c.do(http.MethodPut, "/api/v1/me/contacts/send-code", map[string]string{})
+	wantStatus(t, rec, http.StatusOK)
+	goodCode := email.lastCode()
+	if goodCode == "" {
+		t.Fatal("код доставки не захвачен")
+	}
+
+	// Register begin без кода → 400 code_required (UI собирает код — сервер
+	// обязан его проверить).
 	rec = c.do(http.MethodPost, "/api/v1/me/webauthn/register/begin",
 		map[string]string{"name": "Новый ключ"})
+	wantStatus(t, rec, http.StatusBadRequest)
+	if jsonBody(t, rec)["error"] != "code_required" {
+		t.Fatalf("begin(без кода): body = %s, want code_required", rec.Body.String())
+	}
+
+	// Неверный код → 401 bad_code (аудит webauthn_register fail).
+	rec = c.do(http.MethodPost, "/api/v1/me/webauthn/register/begin",
+		map[string]string{"name": "Новый ключ", "code": "000000"})
+	wantStatus(t, rec, http.StatusUnauthorized)
+	if jsonBody(t, rec)["error"] != "bad_code" {
+		t.Fatalf("begin(неверный код): body = %s, want bad_code", rec.Body.String())
+	}
+	rows, err := st.AuditList(ctx, store.AuditFilter{Username: user.Username, Event: "webauthn_register"})
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("аудит webauthn_register(fail) не записан: rows=%d err=%v", len(rows), err)
+	}
+
+	// Верный код: 200 {handle, options.publicKey.challenge}.
+	rec = c.do(http.MethodPost, "/api/v1/me/webauthn/register/begin",
+		map[string]string{"name": "Новый ключ", "code": goodCode})
 	wantStatus(t, rec, http.StatusOK)
 	body := jsonBody(t, rec)
 	handle, _ := body["handle"].(string)

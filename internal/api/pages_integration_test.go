@@ -29,10 +29,16 @@ import (
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
 	"github.com/aligorov/twofa/internal/web"
+	"github.com/aligorov/twofa/internal/webauthn"
 )
 
 // newPagesRouter — полная композиция через BuildRouter (как main).
 func newPagesRouter(t *testing.T, st *store.Store, set *settings.M, box *secrets.Box) *Router {
+	return newPagesRouterWA(t, st, set, box, nil)
+}
+
+// newPagesRouterWA — как newPagesRouter, но с включённым WebAuthn.
+func newPagesRouterWA(t *testing.T, st *store.Store, set *settings.M, box *secrets.Box, wa *webauthn.Svc) *Router {
 	t.Helper()
 	email := &fakeSender{ch: channel.Email}
 	core := auth.NewCore(st, set, box,
@@ -43,7 +49,7 @@ func newPagesRouter(t *testing.T, st *store.Store, set *settings.M, box *secrets
 		t.Fatalf("web.New: %v", err)
 	}
 	rt := BuildRouter(Deps{
-		Core: core, St: st, Box: box, PV: auth.NewLocalVerifier(st), M: set, Rend: rend,
+		Core: core, WA: wa, St: st, Box: box, PV: auth.NewLocalVerifier(st), M: set, Rend: rend,
 	})
 	t.Cleanup(rt.Stop)
 	return rt
@@ -471,6 +477,68 @@ func TestPagesAdminSettingsFormContract(t *testing.T) {
 		t.Fatalf("контрактная отправка изменила настройки: totp.issuer %q→%q, max_fail_per_user %d→%d",
 			snapshot.TOTP.Issuer, after.TOTP.Issuer, snapshot.Radius.MaxFailPerUser, after.Radius.MaxFailPerUser)
 	}
+}
+
+// TestPagesPasskeyRegisterRequiresCode: форма /me/passkeys собирает код
+// подтверждения — сервер обязан его проверить: пустой код и неверный код —
+// флеш-ошибки без старта церемонии; верный код — страница с pending-блоком
+// (дальше церемонию ведёт webauthn.js).
+func TestPagesPasskeyRegisterRequiresCode(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	if err := set.Put(ctx, "webauthn", json.RawMessage(`{"rp_id":"localhost","rp_name":"twofa-test"}`)); err != nil {
+		t.Fatalf("settings.Put(webauthn): %v", err)
+	}
+	wa, err := webauthn.New(st, set)
+	if err != nil {
+		t.Fatalf("webauthn.New: %v", err)
+	}
+	rt := newPagesRouterWA(t, st, set, box, wa)
+	user := mkUser(t, ctx, st, "passcode", nil)
+	key := enrollTOTP(t, ctx, st, set, box, user)
+	// Резервный код для успешного пути (TOTP-код уже израсходован входом —
+	// replay-защита по окну).
+	backups, err := replaceBackupCodes(ctx, st, user.ID)
+	if err != nil {
+		t.Fatalf("replaceBackupCodes: %v", err)
+	}
+	c := newHTMLClient(t, rt.Handler)
+	// Вход «пароль + TOTP-код» одним запросом.
+	totpCode, err := totp.GenerateCode(key.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("totp.GenerateCode: %v", err)
+	}
+	rec := c.login(t, user.Username, testPassword, totpCode)
+	wantStatus(t, rec, http.StatusFound)
+
+	// Пустой код → флеш-ошибка, церемония не начинается (флеш живёт в
+	// query редиректа — страница читается по Location целиком).
+	followFlash := func(rec *httptest.ResponseRecorder, want string) {
+		t.Helper()
+		wantStatus(t, rec, http.StatusFound)
+		loc := rec.Header().Get("Location")
+		if !strings.HasPrefix(loc, "/me/passkeys?") {
+			t.Fatalf("Location = %q, want /me/passkeys с флешем", loc)
+		}
+		page := c.get(loc)
+		wantStatus(t, page, http.StatusOK)
+		wantBody(t, page, want)
+	}
+	followFlash(c.postForm("/me/webauthn/credentials",
+		url.Values{"name": {"Мой ключ"}, "code": {""}}, true), "Введите код подтверждения.")
+
+	// Неверный код → флеш-ошибка.
+	followFlash(c.postForm("/me/webauthn/credentials",
+		url.Values{"name": {"Мой ключ"}, "code": {"000000"}}, true), "Неверный код подтверждения.")
+	rows, err := st.AuditList(ctx, store.AuditFilter{Username: user.Username, Event: "webauthn_register"})
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("аудит webauthn_register(fail) не записан: rows=%d err=%v", len(rows), err)
+	}
+
+	// Верный код (резервный) → страница с pending-блоком (handle + options).
+	rec = c.postForm("/me/webauthn/credentials", url.Values{"name": {"Мой ключ"}, "code": {backups[0]}}, true)
+	wantStatus(t, rec, http.StatusOK)
+	wantBody(t, rec, `id="passkey-pending"`)
 }
 
 // TestPagesLogout: POST /logout с CSRF удаляет сессию (GET /me → /login).

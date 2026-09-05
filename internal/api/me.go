@@ -484,14 +484,43 @@ func (p *MeAPI) handleWACreds(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"credentials": out})
 }
 
-// handleWARegisterBegin — POST /api/v1/me/webauthn/register/begin {name}:
-// метка ключа используется на finish; здесь — {handle, options}.
+// waRegBeginReq — запрос начала регистрации passkey: метка ключа и код
+// второго фактора (чувствительная операция — код обязателен и проверяется).
+type waRegBeginReq struct {
+	Name string `json:"name"`
+	Code string `json:"code"`
+}
+
+// handleWARegisterBegin — POST /api/v1/me/webauthn/register/begin {name, code}:
+// чувствительная операция — код второго фактора (доставленный/TOTP/резервный)
+// проверяется ДО старта церемонии; метка ключа используется на finish;
+// здесь — {handle, options}.
 func (p *MeAPI) handleWARegisterBegin(w http.ResponseWriter, r *http.Request) {
 	if p.wa == nil {
 		writeError(w, http.StatusServiceUnavailable, "webauthn_disabled")
 		return
 	}
+	var req waRegBeginReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	req.Code = strings.TrimSpace(req.Code)
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if req.Code == "" {
+		writeError(w, http.StatusBadRequest, "code_required")
+		return
+	}
 	user, _ := userFrom(r.Context())
+	if _, err := p.core.VerifyAnyCode(r.Context(), user, req.Code); err != nil {
+		p.audit(r.Context(), user.Username, "webauthn_register", clientIP(r), "fail",
+			map[string]any{"reason": "bad_code"})
+		writeError(w, http.StatusUnauthorized, "bad_code")
+		return
+	}
 	opts, handle, err := p.wa.BeginRegister(r.Context(), user)
 	if err != nil {
 		slog.Error("api: me webauthn begin", "error", err)

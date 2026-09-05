@@ -764,8 +764,10 @@ func (p *PagesAPI) handlePasskeysPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleWARegisterBegin — POST /me/webauthn/credentials (form: name):
-// сервер начинает регистрацию (BeginRegister) и перерендеривает страницу с
+// handleWARegisterBegin — POST /me/webauthn/credentials (form: name, code):
+// чувствительная операция — код второго фактора проверяется ДО старта
+// церемонии (VerifyAnyCode: доставленный/TOTP/резервный). Затем сервер
+// начинает регистрацию (BeginRegister) и перерендеривает страницу с
 // handle+options в data-атрибутах #passkey-pending — webauthn.js создаёт
 // ключ и завершает через /api/v1/me/webauthn/register/finish (graceful
 // fallback без JS — просто перерендер, JSON API остаётся основным путём).
@@ -779,6 +781,17 @@ func (p *PagesAPI) handleWARegisterBegin(w http.ResponseWriter, r *http.Request)
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	if name == "" {
 		redirectFlash(w, r, "/me/passkeys", "Укажите имя ключа.", false)
+		return
+	}
+	code := strings.TrimSpace(r.PostFormValue("code"))
+	if code == "" {
+		redirectFlash(w, r, "/me/passkeys", "Введите код подтверждения.", false)
+		return
+	}
+	if _, err := p.core.VerifyAnyCode(r.Context(), user, code); err != nil {
+		p.auditPage(r.Context(), user.Username, "webauthn_register", clientIP(r), "fail",
+			map[string]any{"reason": "bad_code"})
+		redirectFlash(w, r, "/me/passkeys", "Неверный код подтверждения.", false)
 		return
 	}
 	opts, handle, err := p.wa.BeginRegister(r.Context(), user)
