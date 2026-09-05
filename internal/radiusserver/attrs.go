@@ -43,7 +43,7 @@ var standardAttrs = map[string]struct {
 }
 
 // applyReplyAttrs добавляет reply-атрибуты в ответ Access-Accept. Поддержаны:
-// четыре именованных MikroTik VSA (vendor 14988 из layeh-пакета mikrotik),
+// три именованных MikroTik VSA (vendor 14988 из layeh-пакета mikrotik),
 // Reply-Message и стандартные атрибуты из standardAttrs. Неизвестные
 // «Mikrotik-*» и любые прочие имена пропускаются с предупреждением в лог —
 // конфигурация не должна ронять аутентификацию.

@@ -29,7 +29,8 @@ func hasMessageAuthenticator(p *radius.Packet) bool {
 // verifyMessageAuthenticator проверяет Message-Authenticator запроса
 // (RFC 3579 §3.2): HMAC-MD5 секрета по всему пакету с обнулённым значением
 // атрибута. Запрос без Message-Authenticator считается корректным — обычная
-// MD5-проверка пакета уже выполнена библиотекой (IsAuthenticRequest).
+// Библиотека MD5-проверку Access-Request не делает; реальный fallback:
+// неверный секрет даёт мусор при расшифровке PAP и пароль не сойдётся.
 func verifyMessageAuthenticator(p *radius.Packet) bool {
 	attr, ok := p.Attributes.Lookup(messageAuthenticatorType)
 	if !ok {
