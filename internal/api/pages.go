@@ -1128,9 +1128,14 @@ func (p *PagesAPI) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminChallenges — GET /admin/challenges: активные челленджи
 // (только метаданные, code_hash не выбирается) + имена пользователей.
+// push_state — только для telegram_push: у webauthn_session в этой колонке
+// лежит сессия церемонии, которая не должна покидать сервер (тот же
+// CASE-щит, что у JSON API handleChallenges).
 func (p *PagesAPI) handleAdminChallenges(w http.ResponseWriter, r *http.Request) {
 	rows, err := p.st.Pool().Query(r.Context(), `
-		SELECT id, user_id, channel, push_state, expires_at, attempts_left, purpose, created_at
+		SELECT id, user_id, channel,
+		       CASE WHEN channel = 'telegram_push' THEN COALESCE(push_state, '') ELSE '' END,
+		       expires_at, attempts_left, purpose, created_at
 		FROM challenges
 		WHERE expires_at > now() AND used_at IS NULL
 		ORDER BY created_at DESC
@@ -1144,11 +1149,17 @@ func (p *PagesAPI) handleAdminChallenges(w http.ResponseWriter, r *http.Request)
 	d := web.AdminChallengesData{BaseData: p.baseData(r, "Challenge"), Usernames: map[uuid.UUID]string{}}
 	seen := map[uuid.UUID]struct{}{}
 	for rows.Next() {
-		var c store.Challenge
-		if err := rows.Scan(&c.ID, &c.UserID, &c.Channel, &c.PushState,
+		var (
+			c         store.Challenge
+			pushState string
+		)
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Channel, &pushState,
 			&c.ExpiresAt, &c.AttemptsLeft, &c.Purpose, &c.CreatedAt); err != nil {
 			flash500(w, r, "/admin/challenges", err)
 			return
+		}
+		if pushState != "" {
+			c.PushState = &pushState
 		}
 		d.Challenges = append(d.Challenges, c)
 		if _, ok := seen[c.UserID]; !ok {
@@ -1367,7 +1378,8 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		}
 		merged, err := p.admin.mergedValue(ctx, key, inc)
 		if err != nil {
-			redirectFlash(w, r, "/admin/settings", "Ключ "+key+": неверное значение.", false)
+			// Ошибка чтения БД — внутренняя, а не «неверное значение».
+			flash500(w, r, "/admin/settings", err)
 			return false
 		}
 		if err := p.m.Put(ctx, key, merged); err != nil {

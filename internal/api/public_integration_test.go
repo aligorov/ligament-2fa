@@ -43,6 +43,7 @@ var (
 	testSt   *store.Store
 	testSet  *settings.M
 	testBox  *secrets.Box
+	testDSN  string
 	initErr  error
 )
 
@@ -83,6 +84,7 @@ func setup(t *testing.T) (*store.Store, *settings.M, *secrets.Box) {
 			initErr = err
 			return
 		}
+		testDSN = dsn
 		if testSt, err = store.Open(ctx, dsn); err != nil {
 			initErr = err
 			return

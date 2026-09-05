@@ -488,3 +488,42 @@ func TestAdminSettingsPutAtomic(t *testing.T) {
 		t.Fatal("валидный PUT не записал settings_update с ключом totp")
 	}
 }
+
+// TestAdminMergedValueDBErrors: mergedValue различает «ключа нет в БД»
+// (pgx.ErrNoRows — входящее значение пишется как есть) и прочую ошибку БД
+// (проглатывалась как «нет значения» — теперь возвращается наверх → 500).
+func TestAdminMergedValueDBErrors(t *testing.T) {
+	st, set, box := setup(t)
+	_ = box
+	ctx := context.Background()
+	a := NewAdminAPI(st, set)
+
+	// ErrNoRows: строка ключа удалена — текущего значения нет, входное
+	// возвращается без мержа.
+	if _, err := st.Pool().Exec(ctx, `DELETE FROM settings WHERE key = 'totp'`); err != nil {
+		t.Fatalf("удаление ключа totp: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := set.Put(ctx, "totp", json.RawMessage(`{"issuer":"twofa","digits":6,"period":30,"skew":1}`)); err != nil {
+			t.Errorf("восстановление totp: %v", err)
+		}
+	})
+	merged, err := a.mergedValue(ctx, "totp", json.RawMessage(`{"issuer":"fresh"}`))
+	if err != nil {
+		t.Fatalf("mergedValue при отсутствии ключа: %v (хотел «нет значения», не ошибку)", err)
+	}
+	if string(merged) != `{"issuer":"fresh"}` {
+		t.Fatalf("merged = %s, want входное значение как есть", merged)
+	}
+
+	// Прочая ошибка БД (закрытый пул) возвращается наверх, а не трактуется
+	// как «нет значения».
+	dead, err := store.Open(ctx, testDSN)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	dead.Close()
+	if _, err := (NewAdminAPI(dead, set)).mergedValue(ctx, "totp", json.RawMessage(`{}`)); err == nil {
+		t.Fatal("mergedValue проглотил ошибку БД (закрытый пул)")
+	}
+}

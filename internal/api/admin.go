@@ -14,6 +14,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aligorov/twofa/internal/secrets"
@@ -600,7 +602,9 @@ func (a *AdminAPI) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		}
 		merged, err := a.mergedValue(ctx, key, val)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "bad_key")
+			// Ошибка чтения текущего значения из БД — не вина клиента.
+			slog.Error("api: admin settings мерж", "key", key, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal")
 			return
 		}
 		if err := a.m.Put(ctx, key, merged); err != nil {
@@ -615,14 +619,21 @@ func (a *AdminAPI) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 }
 
 // mergedValue сливает входящее значение ключа с текущим из БД (deep merge
-// объектов; скаляры и массивы заменяются целиком). Отсутствующий ключ —
-// входящее значение как есть.
+// объектов; скаляры и массивы заменяются целиком). Отсутствующий ключ
+// (pgx.ErrNoRows) — входящее значение как есть; любая другая ошибка БД
+// возвращается наверх (вызывающий отвечает 500, а не молча заменяет значение).
 func (a *AdminAPI) mergedValue(ctx context.Context, key string, inc json.RawMessage) (json.RawMessage, error) {
 	var cur json.RawMessage
 	err := a.st.Pool().QueryRow(ctx,
 		`SELECT value FROM settings WHERE key = $1`, key).Scan(&cur)
-	if err != nil || len(cur) == 0 {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return inc, nil // текущего значения нет — просто записать
+	}
+	if err != nil {
+		return nil, fmt.Errorf("чтение текущего значения %s: %w", key, err)
+	}
+	if len(cur) == 0 {
+		return inc, nil
 	}
 	return mergeSettingValue(cur, inc), nil
 }

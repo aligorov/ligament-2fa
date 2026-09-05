@@ -541,6 +541,52 @@ func TestPagesPasskeyRegisterRequiresCode(t *testing.T) {
 	wantBody(t, rec, `id="passkey-pending"`)
 }
 
+// TestPagesAdminChallengesHidesWebauthnSession: HTML /admin/challenges не
+// раскрывает push_state строк webauthn_session (там лежит сессия церемонии
+// WebAuthn, не покидающая сервер) — тот же CASE-щит, что у JSON API;
+// состояние telegram_push остаётся видимым.
+func TestPagesAdminChallengesHidesWebauthnSession(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	admin := mkUser(t, ctx, st, "challadmin", func(u *store.User) { u.Role = "admin" })
+	user := mkUser(t, ctx, st, "challvictim", nil)
+
+	const sessionPayload = "TOP-SECRET-CEREMONY-SESSION-PAYLOAD"
+	if err := st.ChallengeCreate(ctx, &store.Challenge{
+		UserID:       user.ID,
+		Channel:      channel.WebAuthn,
+		CodeHash:     secrets.SHA256("wa-session-handle"),
+		PushState:    ptr(sessionPayload),
+		ExpiresAt:    time.Now().Add(time.Minute),
+		AttemptsLeft: 1,
+		Purpose:      "webauthn_session",
+	}); err != nil {
+		t.Fatalf("создать webauthn_session-челлендж: %v", err)
+	}
+	if err := st.ChallengeCreate(ctx, &store.Challenge{
+		UserID:       user.ID,
+		Channel:      channel.TelegramPush,
+		PushState:    ptr("pending"),
+		ExpiresAt:    time.Now().Add(time.Minute),
+		AttemptsLeft: 1,
+		Purpose:      "radius",
+	}); err != nil {
+		t.Fatalf("создать push-челлендж: %v", err)
+	}
+
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.login(t, admin.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+	rec = c.get("/admin/challenges")
+	wantStatus(t, rec, http.StatusOK)
+	if strings.Contains(rec.Body.String(), sessionPayload) {
+		t.Fatal("HTML /admin/challenges раскрывает payload webauthn_session")
+	}
+	// Состояние telegram_push по-прежнему видно администратору.
+	wantBody(t, rec, "pending")
+}
+
 // TestPagesLogout: POST /logout с CSRF удаляет сессию (GET /me → /login).
 func TestPagesLogout(t *testing.T) {
 	st, set, box := setup(t)
