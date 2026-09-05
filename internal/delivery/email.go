@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"mime"
 	"net"
 	"net/smtp"
 	"strconv"
@@ -87,17 +88,23 @@ func (e *EmailSender) Send(ctx context.Context, to, code string) error {
 }
 
 // buildMessage собирает MIME-письмо (RFC 5322, CRLF): заголовки
-// From/To/Subject (в теме плейсхолдер {code} заменяется на код) и тело
-// по BodyTemplate.
+// From/To/Subject/Date/MIME-Version/Content-Type/Content-Transfer-Encoding.
+// В теме плейсхолдер {code} заменяется на код, после чего тема
+// кодируется кодированным словом RFC 2047 (Q-encoding) — код оказывается
+// внутри закодированного слова; тело — по BodyTemplate.
 func (e *EmailSender) buildMessage(to, code string) []byte {
-	subject := strings.ReplaceAll(e.subject, "{code}", code)
+	// Кодирование ПОСЛЕ подстановки {code}: цифры кода попадают внутрь
+	// закодированного слова.
+	subject := mime.QEncoding.Encode("UTF-8", sanitizeHeader(strings.ReplaceAll(e.subject, "{code}", code)))
 	body := strings.ReplaceAll(BodyTemplate, "{code}", code)
 	var b strings.Builder
 	b.WriteString("From: " + sanitizeHeader(e.from) + "\r\n")
 	b.WriteString("To: " + sanitizeHeader(to) + "\r\n")
-	b.WriteString("Subject: " + sanitizeHeader(subject) + "\r\n")
+	b.WriteString("Subject: " + subject + "\r\n")
+	b.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
+	b.WriteString("Content-Transfer-Encoding: 8bit\r\n")
 	b.WriteString("\r\n")
 	b.WriteString(body)
 	b.WriteString("\r\n")

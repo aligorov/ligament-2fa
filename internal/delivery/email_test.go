@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"errors"
+	"mime"
 	"net/smtp"
 	"strings"
 	"testing"
@@ -62,12 +63,32 @@ func TestEmailMessage(t *testing.T) {
 
 			msg := string(rec.msg)
 			wantSubject := strings.ReplaceAll(tc.subject, "{code}", tc.code)
+
+			// Subject — кодированное слово RFC 2047: код должен
+			// оказаться ВНУТРИ закодированного слова.
+			subjectVal := headerValue(t, msg, "Subject")
+			if !strings.HasPrefix(subjectVal, "=?UTF-8?q?") {
+				t.Errorf("Subject %q не Q-кодирован (ожидан префикс =?UTF-8?q?)", subjectVal)
+			}
+			if dec, err := new(mime.WordDecoder).DecodeHeader(subjectVal); err != nil || dec != wantSubject {
+				t.Errorf("Subject после декодирования = %q (err %v), want %q", dec, err, wantSubject)
+			}
+			if strings.Contains(tc.subject, "{code}") && !strings.Contains(subjectVal, tc.code) {
+				t.Errorf("код %q должен быть внутри кодированного слова Subject: %q", tc.code, subjectVal)
+			}
+
+			// Date — RFC 5322 в формате RFC1123Z.
+			dateVal := headerValue(t, msg, "Date")
+			if _, err := time.Parse(time.RFC1123Z, dateVal); err != nil {
+				t.Errorf("Date %q не парсится как RFC1123Z: %v", dateVal, err)
+			}
+
 			for _, want := range []string{
 				"From: noreply@example.com\r\n",
 				"To: user@example.com\r\n",
-				"Subject: " + wantSubject + "\r\n",
 				"MIME-Version: 1.0\r\n",
 				"Content-Type: text/plain; charset=\"UTF-8\"\r\n",
+				"Content-Transfer-Encoding: 8bit\r\n",
 				"\r\n\r\n" + "Ваш код подтверждения: " + tc.code,
 			} {
 				if !strings.Contains(msg, want) {
@@ -146,4 +167,22 @@ func TestEmailCtxCanceled(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Send err = %v, want context.Canceled", err)
 	}
+}
+
+// headerValue возвращает значение заголовка name из блока заголовков
+// письма msg (тело отбрасывается; свёрнутые пробелом продолжающиеся
+// строки разворачиваются).
+func headerValue(t *testing.T, msg, name string) string {
+	t.Helper()
+	headers := msg
+	if i := strings.Index(msg, "\r\n\r\n"); i >= 0 {
+		headers = msg[:i]
+	}
+	for _, line := range strings.Split(headers, "\r\n") {
+		if val, ok := strings.CutPrefix(line, name+": "); ok {
+			return val
+		}
+	}
+	t.Fatalf("заголовок %s не найден:\n%s", name, msg)
+	return ""
 }

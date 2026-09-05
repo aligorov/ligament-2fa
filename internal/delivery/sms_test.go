@@ -182,6 +182,43 @@ func TestPresetUnknown(t *testing.T) {
 	}
 }
 
+// TestPresetTwilioSuccessStatuses — реальный Twilio на успешное создание
+// сообщения отвечает 201 Created, поэтому успех пресета — любой 2xx
+// (HTTPStatus не задан), а 4xx/5xx — ошибка.
+func TestPresetTwilioSuccessStatuses(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		wantOK bool
+	}{
+		{"201 Created — реальный ответ Twilio при успехе", http.StatusCreated, true},
+		{"200 OK — любой 2xx тоже успех", http.StatusOK, true},
+		{"400 Bad Request — ошибка", http.StatusBadRequest, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+
+			cfg, ok := Preset("twilio")
+			if !ok {
+				t.Fatal("Preset(\"twilio\") вернул ok=false")
+			}
+			cfg.URL = strings.Replace(cfg.URL, "https://api.twilio.com", srv.URL, 1)
+			cfg.Headers = map[string]string{"sid": "AC123", "token": "tok456", "from": "+15005550006"}
+			err := NewSMS(cfg, srv.Client()).Send(context.Background(), "+79161234567", "777888")
+			if tc.wantOK && err != nil {
+				t.Fatalf("Send при HTTP %d: %v (реальный Twilio отвечает 201 — это успех)", tc.status, err)
+			}
+			if !tc.wantOK && err == nil {
+				t.Fatalf("Send при HTTP %d должен вернуть ошибку", tc.status)
+			}
+		})
+	}
+}
+
 // capturedReq — зафиксированный шлюзом запрос.
 type capturedReq struct {
 	method   string
@@ -257,8 +294,10 @@ func TestPresetTwilio(t *testing.T) {
 	if cfg.Method != http.MethodPost {
 		t.Fatalf("метод пресета = %s, want POST", cfg.Method)
 	}
-	if cfg.Success.HTTPStatus != 200 {
-		t.Fatalf("Success.HTTPStatus = %d, want 200", cfg.Success.HTTPStatus)
+	// Нулевое правило успеха: Twilio отвечает 201 Created, точный
+	// статус отсекал бы реальные успехи — остаётся общий 2xx-гейт.
+	if cfg.Success != (SuccessRule{}) {
+		t.Fatalf("Success = %+v, want нулевое значение (любой 2xx)", cfg.Success)
 	}
 	capReq, srv := captureServer(t)
 	defer srv.Close()
