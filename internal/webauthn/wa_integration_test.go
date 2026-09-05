@@ -9,9 +9,12 @@ package webauthn
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -305,6 +308,161 @@ func TestBeginRegisterIntegration(t *testing.T) {
 	if len(opts3.PublicKey.ExcludeCredentials) != 1 ||
 		opts3.PublicKey.ExcludeCredentials[0].ID != base64.RawURLEncoding.EncodeToString(wc.CredentialID) {
 		t.Errorf("excludeCredentials = %+v", opts3.PublicKey.ExcludeCredentials)
+	}
+}
+
+// TestUserHandleAdoptPersistedIntegration — «двойной клик»: пользователь с
+// nil WebAuthnID; первый резолв генерирует и сохраняет handle; у «второй
+// вкладки» объект загружен до записи первой — handle в памяти всё ещё nil.
+// Второй резолв обязан принять СОХРАНЁННОЕ значение из БД, а не генерировать
+// новое: обе церемонии сходятся на одном user handle, значение в БД стабильно.
+func TestUserHandleAdoptPersistedIntegration(t *testing.T) {
+	st := sharedStore(t)
+	ctx := t.Context()
+	svc, _ := newWASvc(t, st)
+	u := newWAUser(t, st)
+
+	// Первая церемония: генерация + сохранение.
+	if _, _, err := svc.BeginRegister(ctx, u); err != nil {
+		t.Fatalf("BeginRegister #1: %v", err)
+	}
+	persisted1, err := st.UserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("UserByID: %v", err)
+	}
+	if len(persisted1.WebAuthnID) != userHandleLen {
+		t.Fatalf("webauthn_id: %d байт, want %d", len(persisted1.WebAuthnID), userHandleLen)
+	}
+
+	// «Вторая вкладка»: копия пользователя с nil handle в памяти.
+	second := *u
+	second.WebAuthnID = nil
+	optsJSON, _, err := svc.BeginRegister(ctx, &second)
+	if err != nil {
+		t.Fatalf("BeginRegister #2: %v", err)
+	}
+
+	// Вторая церемония приняла сохранённый handle (options + объект).
+	var opts creationOpts
+	if err := json.Unmarshal(optsJSON, &opts); err != nil {
+		t.Fatalf("opts не JSON: %v\n%s", err, optsJSON)
+	}
+	userID, err := base64.RawURLEncoding.DecodeString(opts.PublicKey.User.ID)
+	if err != nil || !bytes.Equal(userID, persisted1.WebAuthnID) {
+		t.Fatalf("user.id = %q (%v), want сохранённый webauthn_id", opts.PublicKey.User.ID, err)
+	}
+	if !bytes.Equal(second.WebAuthnID, persisted1.WebAuthnID) {
+		t.Fatal("вторая церемония не приняла сохранённый webauthn_id")
+	}
+
+	// Второй вызов ничего не генерировал: значение в БД не изменилось.
+	persisted2, err := st.UserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("UserByID после второго резолва: %v", err)
+	}
+	if !bytes.Equal(persisted2.WebAuthnID, persisted1.WebAuthnID) {
+		t.Fatal("webauthn_id в БД изменился после второго резолва — сгенерирован новый handle")
+	}
+}
+
+// installWAIDRedirectTrigger детерминированно эмулирует гонку двух первых
+// BeginRegister: BEFORE UPDATE триггер подменяет ПЕРВУЮ запись webauthn_id
+// пользователя на handle «победителя» — в точности эффект «наша запись
+// перезаписана параллельной церемонией сразу после UPDATE» (UserUpdate —
+// последний-записавший-побеждает, без WHERE webauthn_id IS NULL). Триггер
+// выстреливает только для userID и только при NULL→NOT NULL переходе.
+func installWAIDRedirectTrigger(t *testing.T, st *store.Store, userID uuid.UUID, winner []byte) {
+	t.Helper()
+	const fn = "twofa_test_wa_race_redirect"
+	if _, err := st.Pool().Exec(t.Context(), fmt.Sprintf(
+		`CREATE OR REPLACE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $fn$
+		 BEGIN
+		   NEW.webauthn_id := decode('%s', 'hex');
+		   RETURN NEW;
+		 END $fn$`, fn, hex.EncodeToString(winner))); err != nil {
+		t.Fatalf("CREATE FUNCTION перенаправителя webauthn_id: %v", err)
+	}
+	if _, err := st.Pool().Exec(t.Context(), fmt.Sprintf(
+		`CREATE TRIGGER twofa_test_wa_race BEFORE UPDATE ON users
+		 FOR EACH ROW
+		 WHEN (OLD.webauthn_id IS NULL AND NEW.webauthn_id IS NOT NULL AND OLD.id = '%s')
+		 EXECUTE FUNCTION %s()`, userID, fn)); err != nil {
+		t.Fatalf("CREATE TRIGGER перенаправителя webauthn_id: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = st.Pool().Exec(cleanupCtx, `DROP TRIGGER IF EXISTS twofa_test_wa_race ON users`)
+		_, _ = st.Pool().Exec(cleanupCtx, `DROP FUNCTION IF EXISTS `+fn+`()`)
+	})
+}
+
+// TestUserHandleRaceAdoptsDBValueIntegration — ядро фикса: при гонке первой
+// генерации обе церемонии прочитали пустой webauthn_id и сгенерировали свои
+// handle; побеждает последняя запись. Резолв обязан вернуть авторитетный
+// handle ИЗ БД (перечитать после UPDATE), а не локально сгенерированный:
+// иначе сессия проигравшего embed'ит устаревший handle, его FinishRegister
+// навсегда падает на bytes.Equal(user.WebAuthnID(), session.UserID), хотя
+// аутентификатор уже создал discoverable credential на устаревшем handle.
+func TestUserHandleRaceAdoptsDBValueIntegration(t *testing.T) {
+	st := sharedStore(t)
+	ctx := t.Context()
+	svc, _ := newWASvc(t, st)
+	u := newWAUser(t, st)
+
+	// Handle «победителя гонки»: случайные 32 байта (колонка UNIQUE — значение
+	// должно быть уникально и между прогонами теста).
+	winner := make([]byte, userHandleLen)
+	if _, err := rand.Read(winner); err != nil {
+		t.Fatalf("генерация handle победителя: %v", err)
+	}
+	installWAIDRedirectTrigger(t, st, u.ID, winner)
+
+	// «Проигравшая» церемония: генерирует свой handle, но её UPDATE
+	// перезаписывается handle победителя.
+	optsJSON, handle, err := svc.BeginRegister(ctx, u)
+	if err != nil {
+		t.Fatalf("BeginRegister: %v", err)
+	}
+
+	// Авторитет — БД: после записи хранится handle победителя.
+	dbu, err := st.UserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("UserByID: %v", err)
+	}
+	if !bytes.Equal(dbu.WebAuthnID, winner) {
+		t.Fatalf("webauthn_id в БД = %x, want winner %x", dbu.WebAuthnID, winner)
+	}
+
+	// Церемония обязана использовать БД-handle, а не свой локальный:
+	// options и объект пользователя несут авторитетное значение.
+	var opts creationOpts
+	if err := json.Unmarshal(optsJSON, &opts); err != nil {
+		t.Fatalf("opts не JSON: %v\n%s", err, optsJSON)
+	}
+	userID, err := base64.RawURLEncoding.DecodeString(opts.PublicKey.User.ID)
+	if err != nil || !bytes.Equal(userID, dbu.WebAuthnID) {
+		t.Fatalf("user.id = %q (%v), want БД webauthn_id %x (handle победителя)", opts.PublicKey.User.ID, err, dbu.WebAuthnID)
+	}
+	if !bytes.Equal(u.WebAuthnID, dbu.WebAuthnID) {
+		t.Fatal("резолв не принял БД webauthn_id в объект пользователя")
+	}
+
+	// Сессия церемонии embed'ит тот же авторитетный handle — иначе
+	// FinishRegister упадёт на сверке session.UserID.
+	ch, err := st.ChallengeGet(ctx, sessionChallengeID(handle))
+	if err != nil {
+		t.Fatalf("ChallengeGet(handle): %v", err)
+	}
+	if ch.PushState == nil {
+		t.Fatal("push_state (JSON сессии) пуст")
+	}
+	var session gowebauthn.SessionData
+	if err := json.Unmarshal([]byte(*ch.PushState), &session); err != nil {
+		t.Fatalf("разбор SessionData: %v", err)
+	}
+	if !bytes.Equal(session.UserID, dbu.WebAuthnID) {
+		t.Fatal("session.UserID != БД webauthn_id — сессия embed'ит устаревший handle")
 	}
 }
 

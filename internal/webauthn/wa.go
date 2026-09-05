@@ -343,9 +343,16 @@ func (s *Svc) ceremonyUser(ctx context.Context, user *store.User) (*waUser, erro
 	return &waUser{u: user, creds: creds}, nil
 }
 
-// genUserHandle генерирует и сохраняет users.webauthn_id. Пишется ровно это
-// поле: из БД берётся свежая копия пользователя, чтобы не затереть
-// параллельные изменения остальных колонок.
+// genUserHandle резолвит users.webauthn_id: существующий handle принимается
+// из БД, отсутствующий — генерируется и сохраняется. Пишется ровно это поле:
+// из БД берётся свежая копия пользователя, чтобы не затереть параллельные
+// изменения остальных колонок. После записи handle ПЕРЕЧИТЫВАЕТСЯ и в
+// церемонию уходит только значение из БД: UserUpdate без WHERE
+// webauthn_id IS NULL — последний-записавший-побеждает, поэтому при гонке
+// двух первых BeginRegister (двойной клик, две вкладки) проигравшая церемония
+// встаёт на авторитетный handle из БД, а не на свой локально сгенерированный
+// — обе сессии сходятся на одном user handle, и FinishRegister проигравшего
+// не падает на bytes.Equal(user.WebAuthnID(), session.UserID).
 func (s *Svc) genUserHandle(ctx context.Context, user *store.User) error {
 	fresh, err := s.st.UserByID(ctx, user.ID)
 	if err != nil {
@@ -363,7 +370,19 @@ func (s *Svc) genUserHandle(ctx context.Context, user *store.User) error {
 	if err := s.st.UserUpdate(ctx, fresh); err != nil {
 		return err
 	}
-	user.WebAuthnID = id
+	// Авторитет — только БД: если параллельная церемония успела перезаписать
+	// наш handle между записью и перечитыванием (последний-записавший-
+	// побеждает), принимаем её значение. Локальный id — лишь кандидат.
+	persisted, err := s.st.UserByID(ctx, user.ID)
+	if err != nil {
+		return err
+	}
+	if len(persisted.WebAuthnID) == 0 {
+		// Fail closed: сессия с непостоянным handle не создаётся, повторный
+		// BeginRegister сходит на значении из БД.
+		return errors.New("webauthn: webauthn_id пуст после сохранения")
+	}
+	user.WebAuthnID = persisted.WebAuthnID
 	return nil
 }
 
