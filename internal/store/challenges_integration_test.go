@@ -124,8 +124,12 @@ func TestActiveCodeChallengesIntegration(t *testing.T) {
 		t.Fatalf("mark used: %v", err)
 	}
 
+	// expired создаём с будущим expires_at: ленивый janitor внутри каждого
+	// ChallengeCreate (DELETE ... WHERE expires_at < now()) не должен выметать
+	// строку до вызова ActiveCodeChallenges. Просроченным её делаем прямым
+	// UPDATE уже после всех созданий (ниже) — иначе проверка исключения
+	// vacuous: janitor следующих созданий удалял бы строку до запроса.
 	expired := newCodeChallenge(t, u.ID)
-	expired.ExpiresAt = time.Now().Add(-time.Minute)
 	if err := st.ChallengeCreate(ctx, expired); err != nil {
 		t.Fatalf("создание expired: %v", err)
 	}
@@ -140,6 +144,22 @@ func TestActiveCodeChallengesIntegration(t *testing.T) {
 		PushState: sptr("pending"), ExpiresAt: future, AttemptsLeft: 1, Purpose: "api"}
 	if err := st.ChallengeCreate(ctx, push); err != nil {
 		t.Fatalf("создание push: %v", err)
+	}
+
+	// Все создания позади — janitor больше не запустится. Делаем expired
+	// просроченным прямым UPDATE (паттерн как с created_at выше): строка
+	// гарантированно остаётся в таблице, и исключить её обязан сам запрос
+	// ActiveCodeChallenges через условие expires_at > now().
+	if _, err := st.Pool().Exec(ctx,
+		`UPDATE challenges SET expires_at = now() - make_interval(secs => $1) WHERE id = $2`,
+		(1 * time.Minute).Seconds(), expired.ID); err != nil {
+		t.Fatalf("backdate expires_at: %v", err)
+	}
+	// Предусловие: просроченная строка физически лежит в таблице.
+	if got, err := st.ChallengeGet(ctx, expired.ID); err != nil {
+		t.Fatalf("просроченный челлендж должен лежать в таблице до запроса: %v", err)
+	} else if !got.ExpiresAt.Before(time.Now()) {
+		t.Fatalf("expires_at = %v, want в прошлом", got.ExpiresAt)
 	}
 
 	list, err := st.ActiveCodeChallenges(ctx, u.ID)
