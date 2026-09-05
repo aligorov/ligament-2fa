@@ -1,0 +1,33 @@
+# twofa + PostgreSQL: docker compose up -d && docker compose logs twofa |
+# grep "ADMIN PASSWORD" (пароль первого администратора печатается один раз).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: twofa
+      POSTGRES_PASSWORD: ${TWOFA_PG_PASSWORD:-changeme}
+      POSTGRES_DB: twofa
+    volumes:
+      - twofa_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U twofa -d twofa"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  twofa:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TWOFA_DB_DSN: postgres://twofa:${TWOFA_PG_PASSWORD:-changeme}@db:5432/twofa
+    ports:
+      - "8080:8080"
+      - "1812:1812/udp"
+      - "1813:1813/udp"
+    restart: unless-stopped
+
+volumes:
+  twofa_pgdata:
