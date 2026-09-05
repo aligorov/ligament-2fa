@@ -222,6 +222,106 @@ func TestParseHelpers(t *testing.T) {
 	}
 }
 
+// TestBuildTNullValues: JSON null в БД означает «значение не задано» и
+// обязан откатываться к дефолту. json.Unmarshal("null", &v) — no-op без
+// ошибки, поэтому без явной проверки null возвращал нулевое значение
+// (например listen.http == "" вместо ":8080").
+func TestBuildTNullValues(t *testing.T) {
+	raw := map[string]json.RawMessage{
+		"listen.http":              json.RawMessage(`null`),
+		"listen.radius_auth":       json.RawMessage(`null`),
+		"radius.max_fail_per_user": json.RawMessage(`null`),
+		"radius.fail_window":       json.RawMessage(`null`),
+		"radius.code_lengths":      json.RawMessage(`null`),
+		"radius.reply_attributes":  json.RawMessage(`null`),
+		"totp":                     json.RawMessage(`{"skew":null,"issuer":null,"digits":null,"period":null}`),
+		"smtp":                     json.RawMessage(`{"starttls":null,"port":null,"timeout":null}`),
+		"policy":                   json.RawMessage(`{"default_prefer_channels":null,"code_ttl":null,"code_length":null,"max_attempts":null}`),
+		"web.session_ttl":          json.RawMessage(`null`),
+	}
+	snap := buildT(raw)
+
+	if snap.Listen.HTTP != ":8080" {
+		t.Errorf("listen.http(null) = %q, ожидался дефолт :8080", snap.Listen.HTTP)
+	}
+	if snap.Listen.RadiusAuth != ":1812" {
+		t.Errorf("listen.radius_auth(null) = %q, ожидался дефолт :1812", snap.Listen.RadiusAuth)
+	}
+	if snap.Radius.MaxFailPerUser != 10 {
+		t.Errorf("radius.max_fail_per_user(null) = %d, ожидался дефолт 10", snap.Radius.MaxFailPerUser)
+	}
+	if snap.Radius.FailWindow != 5*time.Minute {
+		t.Errorf("radius.fail_window(null) = %s, ожидался дефолт 5m", snap.Radius.FailWindow)
+	}
+	if len(snap.Radius.CodeLengths) != 2 || snap.Radius.CodeLengths[0] != 6 || snap.Radius.CodeLengths[1] != 8 {
+		t.Errorf("radius.code_lengths(null) = %v, ожидался дефолт [6 8]", snap.Radius.CodeLengths)
+	}
+	if snap.Radius.ReplyAttributes == nil {
+		t.Error("radius.reply_attributes(null) = nil, ожидался пустой map")
+	}
+	if snap.TOTP.Issuer != "twofa" || snap.TOTP.Digits != 6 || snap.TOTP.Period != 30 || snap.TOTP.Skew != 1 {
+		t.Errorf("totp(null-поля) = %+v, ожидались дефолты", snap.TOTP)
+	}
+	if snap.SMTP.StartTLS {
+		t.Error("smtp.starttls(null) = true, ожидался дефолт false")
+	}
+	if snap.SMTP.Port != 0 || snap.SMTP.Timeout != 0 {
+		t.Errorf("smtp(null-поля) = %+v, ожидались нулевые дефолты", snap.SMTP)
+	}
+	want := []channel.Channel{channel.TOTP, channel.Telegram, channel.Email, channel.SMS}
+	if len(snap.Policy.DefaultPrefer) != len(want) {
+		t.Fatalf("policy.default_prefer(null) = %v, ожидался дефолт %v", snap.Policy.DefaultPrefer, want)
+	}
+	for i, c := range want {
+		if snap.Policy.DefaultPrefer[i] != c {
+			t.Errorf("policy.default_prefer[%d] = %q, ожидалось %q", i, snap.Policy.DefaultPrefer[i], c)
+		}
+	}
+	if snap.Policy.CodeTTL != 5*time.Minute || snap.Policy.CodeLength != 6 || snap.Policy.MaxAttempts != 5 {
+		t.Errorf("policy(null-поля) = %+v, ожидались дефолты", snap.Policy)
+	}
+	if snap.Policy.SessionTTL != 12*time.Hour {
+		t.Errorf("web.session_ttl(null) = %s, ожидался дефолт 12h", snap.Policy.SessionTTL)
+	}
+}
+
+// TestParseHelpersNull: null на входе любого парсера — как отсутствие
+// значения: возвращается дефолт, а не нулевое значение типа.
+func TestParseHelpersNull(t *testing.T) {
+	if got := parseString(json.RawMessage(`null`), ":8080"); got != ":8080" {
+		t.Errorf("parseString(null) = %q, ожидался дефолт", got)
+	}
+	if got := parseInt(json.RawMessage(`null`), 10); got != 10 {
+		t.Errorf("parseInt(null) = %d, ожидался дефолт", got)
+	}
+	if got := parseUint(json.RawMessage(`null`), 1); got != 1 {
+		t.Errorf("parseUint(null) = %d, ожидался дефолт", got)
+	}
+	if got := parseBool(json.RawMessage(`null`), true); got != true {
+		t.Errorf("parseBool(null) = %v, ожидался дефолт true", got)
+	}
+	if got := parseBool(json.RawMessage(`null`), false); got != false {
+		t.Errorf("parseBool(null) = %v, ожидался дефолт false", got)
+	}
+	if got := parseDur(json.RawMessage(`null`), 5*time.Minute); got != 5*time.Minute {
+		t.Errorf("parseDur(null) = %s, ожидался дефолт", got)
+	}
+	if got := parseInts(json.RawMessage(`null`), []int{6, 8}); len(got) != 2 {
+		t.Errorf("parseInts(null) = %v, ожидался дефолт", got)
+	}
+	if got := parseStringMap(json.RawMessage(`null`), map[string]string{}); got == nil {
+		t.Error("parseStringMap(null) = nil, ожидался пустой map")
+	}
+	// Пустой массив каналов — как отсутствующее значение: дефолтный список.
+	def := []channel.Channel{channel.TOTP, channel.Telegram, channel.Email, channel.SMS}
+	if got := parseChannels(json.RawMessage(`null`), def); len(got) != 4 {
+		t.Errorf("parseChannels(null) = %v, ожидался дефолт", got)
+	}
+	if got := parseChannels(json.RawMessage(`[]`), def); len(got) != 4 {
+		t.Errorf("parseChannels(пустой массив) = %v, ожидался дефолт", got)
+	}
+}
+
 // TestMaskedUnit: маскировка по key path без БД.
 func TestMaskedUnit(t *testing.T) {
 	const (

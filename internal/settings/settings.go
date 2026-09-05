@@ -162,8 +162,16 @@ func defaultT() *T {
 
 // ---- парсеры значений: отсутствующее/битое -> дефолт + лог ----
 
+// isNullJSON — отсутствующее значение или JSON-литерал null. Оба случая
+// трактуются как «ключ не задан»: json.Unmarshal("null", &v) — no-op
+// без ошибки, поэтому без явной проверки null проскакивал как нулевое
+// значение вместо дефолта.
+func isNullJSON(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(raw) == "null"
+}
+
 func parseString(raw json.RawMessage, def string) string {
-	if len(raw) == 0 {
+	if isNullJSON(raw) {
 		return def
 	}
 	var s string
@@ -175,7 +183,7 @@ func parseString(raw json.RawMessage, def string) string {
 }
 
 func parseInt(raw json.RawMessage, def int) int {
-	if len(raw) == 0 {
+	if isNullJSON(raw) {
 		return def
 	}
 	var n int
@@ -187,7 +195,7 @@ func parseInt(raw json.RawMessage, def int) int {
 }
 
 func parseUint(raw json.RawMessage, def uint) uint {
-	if len(raw) == 0 {
+	if isNullJSON(raw) {
 		return def
 	}
 	var n uint
@@ -199,7 +207,7 @@ func parseUint(raw json.RawMessage, def uint) uint {
 }
 
 func parseBool(raw json.RawMessage, def bool) bool {
-	if len(raw) == 0 {
+	if isNullJSON(raw) {
 		return def
 	}
 	var b bool
@@ -212,7 +220,7 @@ func parseBool(raw json.RawMessage, def bool) bool {
 
 // parseDur разбирает duration в виде JSON-строки ("5m", "720h").
 func parseDur(raw json.RawMessage, def time.Duration) time.Duration {
-	if len(raw) == 0 {
+	if isNullJSON(raw) {
 		return def
 	}
 	var s string
@@ -229,7 +237,7 @@ func parseDur(raw json.RawMessage, def time.Duration) time.Duration {
 }
 
 func parseInts(raw json.RawMessage, def []int) []int {
-	if len(raw) == 0 {
+	if isNullJSON(raw) {
 		return def
 	}
 	var v []int
@@ -241,7 +249,7 @@ func parseInts(raw json.RawMessage, def []int) []int {
 }
 
 func parseStringMap(raw json.RawMessage, def map[string]string) map[string]string {
-	if len(raw) == 0 {
+	if isNullJSON(raw) {
 		return def
 	}
 	var m map[string]string
@@ -253,12 +261,16 @@ func parseStringMap(raw json.RawMessage, def map[string]string) map[string]strin
 }
 
 func parseChannels(raw json.RawMessage, def []channel.Channel) []channel.Channel {
-	if len(raw) == 0 {
+	if isNullJSON(raw) {
 		return def
 	}
 	var names []string
 	if err := json.Unmarshal(raw, &names); err != nil {
 		log.Printf("settings: значение %s не массив строк — использую дефолт %v", raw, def)
+		return def
+	}
+	// Пустой список — как отсутствующее значение: дефолтный набор каналов.
+	if len(names) == 0 {
 		return def
 	}
 	ch := make([]channel.Channel, len(names))
@@ -268,11 +280,21 @@ func parseChannels(raw json.RawMessage, def []channel.Channel) []channel.Channel
 	return ch
 }
 
+// warnShortSecret логирует предупреждение о пустом/коротком генерируемом
+// секрете: такие ключи создаются длинными (см. generatedKeys), поэтому
+// пустое или короткое значение в БД — почти всегда ручная правка или
+// ошибка конфигурации. Поведение не меняет — только диагностика в лог.
+func warnShortSecret(key, val string) {
+	if len(val) < 16 {
+		log.Printf("settings: предупреждение: секрет %s пустой или подозрительно короткий (%d символов)", key, len(val))
+	}
+}
+
 // fields разбирает JSON-объект настройки в карту полей; битое/не-объект
 // значение даёт пустую карту (все поля откатятся к дефолтам).
 func fields(raw json.RawMessage) map[string]json.RawMessage {
 	m := make(map[string]json.RawMessage)
-	if len(raw) == 0 {
+	if isNullJSON(raw) {
 		return m
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -284,7 +306,7 @@ func fields(raw json.RawMessage) map[string]json.RawMessage {
 
 // rawJSON возвращает сырое JSON-значение как есть; отсутствующий ключ -> def.
 func rawJSON(raw, def json.RawMessage) json.RawMessage {
-	if len(raw) == 0 {
+	if isNullJSON(raw) {
 		return def
 	}
 	return raw
@@ -303,6 +325,9 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.MasterKeyB64 = parseString(raw["master_key"], def.MasterKeyB64)
 	t.AdminToken = parseString(raw["admin_token"], def.AdminToken)
 	t.RadiusSecret = parseString(raw["radius.secret"], def.RadiusSecret)
+	warnShortSecret("master_key", t.MasterKeyB64)
+	warnShortSecret("admin_token", t.AdminToken)
+	warnShortSecret("radius.secret", t.RadiusSecret)
 
 	t.Radius.CodeLengths = parseInts(raw["radius.code_lengths"], def.Radius.CodeLengths)
 	t.Radius.MaxFailPerUser = parseInt(raw["radius.max_fail_per_user"], def.Radius.MaxFailPerUser)
