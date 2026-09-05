@@ -263,8 +263,8 @@ anti-fatigue-правила — §6.
 
 | Таблица | Ключевые поля |
 |---|---|
-| `users` | id UUID PK, username UNIQUE, password_hash (argon2id), role (`admin`\|`user`), enabled bool, email, phone, telegram_chat_id TEXT NULL, prefer_channels JSONB (`["totp","telegram","email","sms"]`), radius_push bool DEFAULT false, radius_reply JSONB NULL, created_at, updated_at |
-| `totp_secrets` | user_id PK/FK, secret_enc BLOB (AES-GCM), digits, period, confirmed_at NULL, drift_step INT |
+| `users` | id UUID PK, username UNIQUE, password_hash (argon2id), role (`admin`\|`user`), enabled bool, email, phone, telegram_chat_id TEXT NULL, prefer_channels JSONB (`["totp","telegram","email","sms"]`), radius_push bool DEFAULT false, radius_reply JSONB NULL, webauthn_id BYTEA UNIQUE NULL (стабильный user handle для интерфейса go-webauthn), created_at, updated_at |
+| `totp_secrets` | user_id PK/FK, secret_enc BLOB (AES-GCM), digits, period, confirmed_at NULL, last_timestep BIGINT (replay-защита: pquerna/otp stateless, отвергать коды со счётчиком ≤ последнего принятого) |
 | `backup_codes` | id, user_id FK, code_hash SHA-256 UNIQUE, used_at NULL |
 | `challenges` | id UUID PK, user_id FK, channel, code_hash SHA-256 **NULL для channel=totp** (код не хранится, проверяется против TOTP-секрета), expires_at, attempts_left, used_at NULL, purpose (`api`\|`radius_prefetch`\|`ui_confirm`), created_at |
 | `sessions` | token_hash PK, user_id FK, csrf, expires_at, created_at |
@@ -420,11 +420,12 @@ sms.gateway = {
   Makefile                       # build / test / lint / docker
 ```
 
-Зависимости (минимум): `layeh.com/radius`, `github.com/go-chi/chi/v5`,
+Go 1.25+. Зависимости (минимум): `layeh.com/radius`, `github.com/go-chi/chi/v5`,
 `github.com/jackc/pgx/v5`, `github.com/pquerna/otp`,
-`github.com/go-webauthn/webauthn`,
+`github.com/go-webauthn/webauthn` (v0.18+),
 `golang.org/x/crypto` (argon2), `github.com/google/uuid`.
 Telegram Bot API — напрямую через net/http (без внешних библиотек).
+Проверенные сигнатуры и гочхи — docs/research/2026-09-06-library-references.md.
 
 ## 10. Развёртывание
 
