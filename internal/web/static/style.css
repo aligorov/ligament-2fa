@@ -75,6 +75,7 @@ button:hover { filter: brightness(1.06); }
 .flash { padding: 0.6rem 0.8rem; border-radius: 4px; margin: 0.5rem 0; border: 1px solid transparent; }
 .flash.ok { background: #ecfdf5; border-color: var(--ok); color: #065f46; }
 .flash.err { background: #fef2f2; border-color: var(--err); color: #991b1b; }
+.flash.warn { background: #fffbeb; border-color: #b45309; color: #92400e; }
 .badge {
   display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px;
   font-size: 0.78rem; border: 1px solid var(--line); background: #fff;

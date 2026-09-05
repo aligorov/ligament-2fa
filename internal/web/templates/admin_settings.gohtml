@@ -51,6 +51,18 @@
   </div>
 </form>
 
+<h2>Токены доступа</h2>
+<form action="/admin/settings" method="post" class="wide">
+  {{csrf .CSRF}}
+  <p class="muted">admin_token — Bearer-токен REST API <code>/api/v1/admin/*</code>.
+  Новое значение показывается один раз; интеграции со старым токеном
+  перестанут работать сразу после перегенерации.</p>
+  <div class="row-actions">
+    <button type="submit" name="regenerate" value="admin_token" class="danger"
+      onclick="return confirm('Перегенерировать admin_token? Все интеграции со старым токеном перестанут работать.')">Перегенерировать admin_token</button>
+  </div>
+</form>
+
 <h2>SMTP <span class="badge off">применяется после SIGHUP/перезапуска</span></h2>
 <form action="/admin/settings" method="post" class="wide">
   {{csrf .CSRF}}<input type="hidden" name="section" value="smtp">

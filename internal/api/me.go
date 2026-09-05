@@ -66,6 +66,7 @@ func (p *MeAPI) Register(r chi.Router) {
 		r.Post("/totp/enroll", p.handleTOTPEnroll)
 		r.Post("/totp/confirm", p.handleTOTPConfirm)
 		r.Post("/totp/delete", p.handleTOTPDelete)
+		r.Post("/backup-codes/regenerate", p.handleBackupCodesRegenerate)
 		r.Get("/webauthn/credentials", p.handleWACreds)
 		r.Post("/webauthn/register/begin", p.handleWARegisterBegin)
 		r.Post("/webauthn/register/finish", p.handleWARegisterFinish)
@@ -447,6 +448,37 @@ func (p *MeAPI) handleTOTPDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	p.audit(ctx, user.Username, "totp_delete", clientIP(r), "ok", nil)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleBackupCodesRegenerate — POST /api/v1/me/backup-codes/regenerate
+// {code} (спека §7): чувствительная операция — код вторым фактором любым
+// способом (VerifyAnyCode); старая партия аннулируется, новая показывается
+// ровно один раз в теле ответа (HTML-аналог — /me/backup/regenerate).
+func (p *MeAPI) handleBackupCodesRegenerate(w http.ResponseWriter, r *http.Request) {
+	user, _ := userFrom(r.Context())
+	var req codeReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Code == "" {
+		writeError(w, http.StatusBadRequest, "code_required")
+		return
+	}
+	ctx := r.Context()
+	if _, err := p.core.VerifyAnyCode(ctx, user, req.Code); err != nil {
+		p.audit(ctx, user.Username, "backup_regen", clientIP(r), "fail",
+			map[string]any{"reason": "bad_code"})
+		writeError(w, http.StatusUnauthorized, "bad_code")
+		return
+	}
+	codes, err := replaceBackupCodes(ctx, p.st, user.ID)
+	if err != nil {
+		slog.Error("api: backup regenerate", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	p.audit(ctx, user.Username, "backup_regen", clientIP(r), "ok", nil)
+	writeJSON(w, http.StatusOK, map[string]any{"codes": codes})
 }
 
 // ---- WebAuthn ----

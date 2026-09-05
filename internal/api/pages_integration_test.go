@@ -335,7 +335,7 @@ func TestPagesAdminSettingsPost(t *testing.T) {
 
 	// Секция telegram: dotted-имя пишет bot_token ВНУТРИ объекта telegram.
 	form = url.Values{
-		"section":           {"telegram"},
+		"section":            {"telegram"},
 		"telegram.bot_token": {"123456:AA-test-token"},
 	}
 	rec = c.postForm("/admin/settings", form, true)

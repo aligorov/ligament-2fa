@@ -4,7 +4,7 @@
 Неиспользованных кодов осталось: <strong>{{.Remaining}}</strong>.</p>
 
 {{if .Generated}}
-<div class="flash err">Сохраните эти коды — они показываются только один раз!</div>
+<div class="flash warn">Сохраните эти коды — они показываются только один раз!</div>
 <ul class="codes">
   {{range .Codes}}<li><code>{{.}}</code></li>{{end}}
 </ul>

@@ -177,6 +177,63 @@ func TestMeContacts(t *testing.T) {
 	wantStatus(t, rec, http.StatusBadRequest)
 }
 
+// TestMeBackupCodesRegenerate: POST /api/v1/me/backup-codes/regenerate {code}
+// (спека §7): пустой код → 400, неверный → 401 + аудит, верный → {codes:[10]}
+// один раз; старая партия аннулируется (в БД ровно 10 свежих хешей).
+func TestMeBackupCodesRegenerate(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	h, _ := newWebRouter(t, st, set, box, nil)
+	user := mkUser(t, ctx, st, "mebackup", nil)
+	c := loginSession(t, h, user.Username)
+	key := enrollTOTP(t, ctx, st, set, box, user)
+
+	// Пустой код → 400 code_required.
+	rec := c.do(http.MethodPost, "/api/v1/me/backup-codes/regenerate", map[string]string{})
+	wantStatus(t, rec, http.StatusBadRequest)
+	if jsonBody(t, rec)["error"] != "code_required" {
+		t.Fatalf("пустой код: body = %s", rec.Body.String())
+	}
+
+	// Неверный код → 401 bad_code.
+	rec = c.do(http.MethodPost, "/api/v1/me/backup-codes/regenerate",
+		map[string]string{"code": "000000"})
+	wantStatus(t, rec, http.StatusUnauthorized)
+	if jsonBody(t, rec)["error"] != "bad_code" {
+		t.Fatalf("неверный код: body = %s", rec.Body.String())
+	}
+
+	// Верный TOTP-код → {codes: [10 кодов XXXXX-XXXXX]}.
+	code, err := totp.GenerateCode(key.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("totp.GenerateCode: %v", err)
+	}
+	rec = c.do(http.MethodPost, "/api/v1/me/backup-codes/regenerate",
+		map[string]string{"code": code})
+	wantStatus(t, rec, http.StatusOK)
+	codesRaw, ok := jsonBody(t, rec)["codes"].([]any)
+	if !ok || len(codesRaw) != 10 {
+		t.Fatalf("codes = %v, want 10", codesRaw)
+	}
+	codeRe := regexp.MustCompile(`^[A-Z2-9]{5}-[A-Z2-9]{5}$`)
+	for _, bc := range codesRaw {
+		if s, ok := bc.(string); !ok || !codeRe.MatchString(s) {
+			t.Fatalf("код неверного формата: %v", bc)
+		}
+	}
+
+	// В БД ровно 10 свежих хешей (старая партия аннулирована); аудит ok.
+	var n int
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM backup_codes WHERE user_id = $1`, user.ID).Scan(&n); err != nil || n != 10 {
+		t.Fatalf("backup_codes в БД = %d (err %v), want 10", n, err)
+	}
+	rows, err := st.AuditList(ctx, store.AuditFilter{Username: user.Username, Event: "backup_regen"})
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("аудит backup_regen: rows=%d err=%v", len(rows), err)
+	}
+}
+
 // TestMeDevices: remember_device создаёт устройство; список; отзыв;
 // отозванное устройство снова требует второй фактор.
 func TestMeDevices(t *testing.T) {

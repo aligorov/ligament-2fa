@@ -150,25 +150,6 @@ func (s *Store) ActiveCodeChallenges(ctx context.Context, userID uuid.UUID) ([]*
 	return out, nil
 }
 
-// FreshApprovedPush возвращает самый свежий одобренный push пользователя,
-// созданный не раньше now-maxAge и ещё не использованный; ErrNotFound, если
-// такого нет.
-func (s *Store) FreshApprovedPush(ctx context.Context, userID uuid.UUID, maxAge time.Duration) (*Challenge, error) {
-	cutoff := time.Now().Add(-maxAge)
-	c, err := scanChallenge(s.Pool().QueryRow(ctx, `SELECT `+challengeCols+` FROM challenges
-		WHERE user_id = $1 AND channel = $2 AND push_state = 'approved'
-		  AND used_at IS NULL AND created_at > $3
-		ORDER BY created_at DESC
-		LIMIT 1`, userID, channel.TelegramPush, cutoff))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("store: свежий approved push %s: %w", userID, err)
-	}
-	return c, nil
-}
-
 // LastPushAt возвращает время последнего push-челленджа пользователя
 // (для cooldown/лимита в час); нулевое время, если пушей не было.
 func (s *Store) LastPushAt(ctx context.Context, userID uuid.UUID) (time.Time, error) {

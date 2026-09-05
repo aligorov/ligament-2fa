@@ -132,8 +132,11 @@ curl -s "localhost:8080/api/v1/auth/webauthn/finish?handle=..." -d @credential.j
 Web-сессии: `POST /api/v1/login` → `{"two_factor":"required"}` →
 `POST /api/v1/login/2fa` (или `POST /api/v1/auth/webauthn/finish` + пустой
 код) — cookie `twofa_session` + CSRF-токен; кабинет `/api/v1/me/*` (TOTP
-enroll/confirm, passkeys, Telegram, устройства), админ `/api/v1/admin/*` по
-`Authorization: Bearer <admin_token>` (токен в админке, Настройки).
+enroll/confirm, `POST /api/v1/me/backup-codes/regenerate` — новая партия
+резервных кодов с кодом подтверждения, показ один раз; passkeys, Telegram,
+устройства), админ `/api/v1/admin/*` по
+`Authorization: Bearer <admin_token>` (токен в админке, Настройки →
+«Перегенерировать admin_token»; новое значение показывается один раз).
 Полный список — спека §7.
 
 Ошибки: 401 `bad_credentials`/`bad_code` (с `attempts_left`), 410 `expired`,
@@ -160,6 +163,16 @@ enroll/confirm, passkeys, Telegram, устройства), админ `/api/v1/a
   регистрация).
 - **LDAP / внешние каталоги пользователей** — в будущих версиях (спека §12).
 - Смена `listen.*` требует рестарта процесса.
+- Passkey-вход в web-UI выполняется REST-церемонией
+  (`/api/v1/auth/webauthn/begin` → `finish`): кнопки браузерного autofill
+  (Conditional UI) нет.
+- Эндпоинт отправки кода подтверждения фактически называется
+  `PUT /api/v1/me/contacts/send-code` (в спеке фигурирует как
+  `/api/v1/me/send-code`).
+- QR для REST-энролла TOTP рендерится клиентом по `otpauth_url` из ответа
+  enroll (поля `qr_png_base64` в API нет; web-UI рисует QR сам).
+- Cookie web-сессий выпускаются с флагом Secure — web-UI по plain HTTP
+  работает только на localhost либо за TLS-прокси.
 
 ## Сборка и разработка
 

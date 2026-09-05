@@ -12,12 +12,3 @@ const (
 	TelegramPush Channel = "telegram_push"
 	WebAuthn     Channel = "webauthn"
 )
-
-// IsCodeChannel — каналы доставки кодов/подтверждений (webauthn — церемония, не канал кода).
-func (c Channel) IsCodeChannel() bool {
-	switch c {
-	case Email, SMS, Telegram, TOTP:
-		return true
-	}
-	return false
-}

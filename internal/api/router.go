@@ -15,11 +15,11 @@ import (
 	"github.com/aligorov/twofa/internal/webauthn"
 )
 
-// NewRouter собирает минимальный роутер (healthz) — для smoke-тестов;
+// NewRouter собирает минимальный роутер (healthz без БД) — для smoke-тестов;
 // полная композиция — BuildRouter.
 func NewRouter() http.Handler {
 	r := chi.NewRouter()
-	r.Get("/healthz", handleHealthz)
+	r.Get("/healthz", healthzHandler(nil))
 	return r
 }
 
@@ -54,7 +54,7 @@ func (rt *Router) Stop() {
 // HTML-404. Вызывается из main и интеграционных тестов.
 func BuildRouter(d Deps) *Router {
 	r := chi.NewRouter()
-	r.Get("/healthz", handleHealthz)
+	r.Get("/healthz", healthzHandler(d.St))
 
 	pub := NewPublicAPI(d.Core, d.WA, d.St, d.PV, d.M)
 	sess := NewSessionAPI(d.Core, d.St, d.PV, d.M)
