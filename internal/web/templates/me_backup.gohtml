@@ -1,0 +1,23 @@
+{{define "content"}}
+<h1>Резервные коды</h1>
+<p class="muted">Одноразовые коды на случай, когда основной канал недоступен.
+Неиспользованных кодов осталось: <strong>{{.Remaining}}</strong>.</p>
+
+{{if .Generated}}
+<div class="flash err">Сохраните эти коды — они показываются только один раз!</div>
+<ul class="codes">
+  {{range .Codes}}<li><code>{{.}}</code></li>{{end}}
+</ul>
+{{end}}
+
+<h2>Перегенерировать</h2>
+<p class="muted">Старые коды аннулируются. Требуется код из приложения или
+резервный код.</p>
+<form action="/me/backup/regenerate" method="post">
+  {{csrf .CSRF}}
+  <label>Код подтверждения
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+  </label>
+  <button type="submit">Перегенерировать коды</button>
+</form>
+{{end}}

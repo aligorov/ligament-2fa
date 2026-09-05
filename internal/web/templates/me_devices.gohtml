@@ -1,0 +1,27 @@
+{{define "content"}}
+<h1>Доверенные устройства</h1>
+<p class="muted">Устройства, отмеченные «Запомнить» при входе: без второго
+фактора до истечения срока доверия.</p>
+
+{{if .Devices}}
+<table>
+  <tr><th>Устройство (User-Agent)</th><th>IP</th><th>Активность</th><th>Истекает</th><th></th></tr>
+  {{range .Devices}}
+  <tr>
+    <td class="ua">{{.UA}}</td>
+    <td>{{.IP}}</td>
+    <td>{{dt .LastSeenAt}}</td>
+    <td>{{dt .ExpiresAt}}</td>
+    <td>
+      <form action="/me/devices/{{.ID}}/delete" method="post" class="inline-del">
+        {{csrf $.CSRF}}
+        <button type="submit" class="danger">Отозвать</button>
+      </form>
+    </td>
+  </tr>
+  {{end}}
+</table>
+{{else}}
+<p>Доверенных устройств нет.</p>
+{{end}}
+{{end}}

@@ -1,0 +1,100 @@
+/* twofa — минималистичный стиль без фреймворков. Светлая тема. */
+:root {
+  --line: #d2d6dc;
+  --muted: #667085;
+  --accent: #1a56db;
+  --ok: #047857;
+  --err: #dc2626;
+  --bg: #f6f7f9;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: #1f2430;
+  background: var(--bg);
+  line-height: 1.5;
+}
+main { max-width: 960px; margin: 0 auto; padding: 1rem 1rem 3rem; }
+h1 { font-size: 1.4rem; margin: 0.8rem 0 0.6rem; }
+h2 { font-size: 1.1rem; margin: 1.6rem 0 0.5rem; }
+a { color: var(--accent); }
+
+/* шапка */
+header.top {
+  display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  background: #fff; border-bottom: 1px solid var(--line); padding: 0.6rem 1rem;
+}
+header .brand { font-weight: 700; }
+header nav { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+header nav a { text-decoration: none; }
+header form.inline { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
+header .user { font-weight: 600; }
+
+/* таблицы */
+table {
+  border-collapse: collapse; width: 100%; background: #fff;
+  margin: 0.5rem 0 1rem; font-size: 0.92rem;
+}
+th, td { border: 1px solid var(--line); padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
+th { background: #eef1f4; }
+tr.disabled td { color: var(--muted); }
+.nowrap { white-space: nowrap; }
+td.detail pre { margin: 0; white-space: pre-wrap; font-size: 0.8rem; }
+
+/* формы */
+form {
+  max-width: 480px; display: flex; flex-direction: column; gap: 0.7rem;
+  background: #fff; border: 1px solid var(--line);
+  padding: 1rem; border-radius: 6px; margin: 0.5rem 0 1rem;
+}
+form.wide { max-width: none; }
+label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.9rem; }
+label.check { flex-direction: row; align-items: center; gap: 0.5rem; }
+label.check input { width: auto; }
+input, select, textarea {
+  font: inherit; padding: 0.45rem 0.5rem; border: 1px solid var(--line);
+  border-radius: 4px; width: 100%;
+}
+textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; min-height: 5rem; }
+fieldset { border: 1px solid var(--line); border-radius: 4px; display: flex; flex-direction: column; gap: 0.4rem; }
+legend { font-size: 0.9rem; color: var(--muted); padding: 0 0.4rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.7rem; }
+
+/* кнопки */
+button {
+  font: inherit; padding: 0.45rem 0.9rem; border: 1px solid var(--accent);
+  background: var(--accent); color: #fff; border-radius: 4px; cursor: pointer;
+  width: max-content;
+}
+button.secondary { background: #fff; color: var(--accent); }
+button.danger { background: var(--err); border-color: var(--err); }
+button:hover { filter: brightness(1.06); }
+
+/* флеш и бейджи */
+.flash { padding: 0.6rem 0.8rem; border-radius: 4px; margin: 0.5rem 0; border: 1px solid transparent; }
+.flash.ok { background: #ecfdf5; border-color: var(--ok); color: #065f46; }
+.flash.err { background: #fef2f2; border-color: var(--err); color: #991b1b; }
+.badge {
+  display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px;
+  font-size: 0.78rem; border: 1px solid var(--line); background: #fff;
+}
+.badge.ok { border-color: var(--ok); color: #065f46; }
+.badge.off { color: var(--muted); }
+
+/* спецэлементы */
+code { background: #eef1f4; padding: 0.05rem 0.3rem; border-radius: 3px; font-size: 0.9em; }
+code.otpauth { display: block; word-break: break-all; }
+.linkcode {
+  font-size: 1.6rem; letter-spacing: 0.15em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #fff; border: 1px dashed var(--accent);
+  padding: 0.6rem 1rem; display: inline-block;
+}
+ul.codes { columns: 2; list-style: none; padding: 0; }
+ul.codes li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0.15rem 0.5rem; }
+img.qr { background: #fff; border: 1px solid var(--line); padding: 0.5rem; }
+.muted { color: var(--muted); }
+.row-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
+.row-actions form, form.inline-del { display: inline-flex; padding: 0; border: 0; background: none; margin: 0; }
+footer { color: var(--muted); text-align: center; font-size: 0.8rem; padding: 1rem; }
