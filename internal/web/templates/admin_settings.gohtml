@@ -51,7 +51,7 @@
   </div>
 </form>
 
-<h2>SMTP</h2>
+<h2>SMTP <span class="badge off">применяется после SIGHUP/перезапуска</span></h2>
 <form action="/admin/settings" method="post" class="wide">
   {{csrf .CSRF}}<input type="hidden" name="section" value="smtp">
   <div class="grid">
@@ -81,7 +81,7 @@
   <button type="submit">Сохранить секцию</button>
 </form>
 
-<h2>SMS-шлюз</h2>
+<h2>SMS-шлюз <span class="badge off">применяется после SIGHUP/перезапуска</span></h2>
 <form action="/admin/settings" method="post" class="wide">
   {{csrf .CSRF}}<input type="hidden" name="section" value="sms">
   <label>Шлюз (JSON: preset, method, url, headers, body, content_type, success)
@@ -93,7 +93,7 @@
   <button type="submit">Сохранить секцию</button>
 </form>
 
-<h2>Telegram</h2>
+<h2>Telegram <span class="badge off">смена токена — перезапуск</span></h2>
 <form action="/admin/settings" method="post" class="wide">
   {{csrf .CSRF}}<input type="hidden" name="section" value="telegram">
   <label>Токен бота {{if .TGBotTokenSet}}<span class="badge">•••• (задано)</span>{{else}}<span class="badge off">не задан — бот выключен</span>{{end}}

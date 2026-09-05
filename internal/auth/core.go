@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,9 +25,14 @@ const pushTick = time.Second
 // каналам, проверка кодов всех типов, fail-счётчик и RADIUS-флоу
 // (сплиты «пароль+код», push_wait).
 type Core struct {
-	st      *store.Store
-	set     *settings.M
-	box     *secrets.Box
+	st  *store.Store
+	set *settings.M
+	box *secrets.Box
+
+	// senders/push меняются на лету (SetSenders после SIGHUP-перезагрузки
+	// настроек доставки) под RWMutex — HTTP-хендлеры и RADIUS-цикл читают
+	// их конкурентно.
+	mu      sync.RWMutex
 	senders map[channel.Channel]delivery.Sender
 	pv      PasswordVerifier
 	push    PushNotifier // nil → канал telegram_push недоступен
@@ -44,11 +50,37 @@ func NewCore(
 	pv PasswordVerifier,
 	push PushNotifier,
 ) *Core {
+	c := &Core{st: st, set: set, box: box, pv: pv}
+	c.SetSenders(senders, push)
+	return c
+}
+
+// SetSenders атомарно подменяет карту отправителей и push-нотификатор
+// (горячая перезагрузка настроек доставки — SIGHUP в main). Карта
+// копируется: последующие мутации карты вызывающего не видны ядру.
+func (c *Core) SetSenders(senders map[channel.Channel]delivery.Sender, push PushNotifier) {
 	m := make(map[channel.Channel]delivery.Sender, len(senders))
 	for k, v := range senders {
 		m[k] = v
 	}
-	return &Core{st: st, set: set, box: box, senders: m, pv: pv, push: push}
+	c.mu.Lock()
+	c.senders = m
+	c.push = push
+	c.mu.Unlock()
+}
+
+// senderFor возвращает зарегистрированного отправителя канала (nil — нет).
+func (c *Core) senderFor(ch channel.Channel) delivery.Sender {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.senders[ch]
+}
+
+// pushNotifier возвращает текущий push-нотификатор (nil — недоступен).
+func (c *Core) pushNotifier() PushNotifier {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.push
 }
 
 // audit записывает событие аудита, не ломая основной поток: ошибка записи
@@ -81,8 +113,8 @@ func (c *Core) binding(ch channel.Channel, user *store.User) (delivery.Sender, s
 	if to == "" {
 		return nil, "", false
 	}
-	sender, ok := c.senders[ch]
-	if !ok || sender == nil {
+	sender := c.senderFor(ch)
+	if sender == nil {
 		return nil, "", false
 	}
 	return sender, to, true
@@ -169,7 +201,8 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 			return c2, nil
 
 		case channel.TelegramPush:
-			if user.TelegramChatID == nil || c.push == nil {
+			push := c.pushNotifier()
+			if user.TelegramChatID == nil || push == nil {
 				continue
 			}
 			// Push-fatigue: те же границы, что в RADIUSAuth — не чаще
@@ -195,7 +228,7 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 			if err := c.st.ChallengeCreate(ctx, c2); err != nil {
 				return nil, err
 			}
-			if err := c.push.SendPush(ctx, *user.TelegramChatID, user.Username, ip, ua, c2.ID); err != nil {
+			if err := push.SendPush(ctx, *user.TelegramChatID, user.Username, ip, ua, c2.ID); err != nil {
 				// Осиротевший челлендж держал бы cooldown следующего
 				// push — удаляем (WithoutCancel: доставка могла упасть
 				// из-за отмены ctx).
@@ -476,7 +509,8 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 	}
 
 	pol := c.set.Get().Policy
-	if !user.RadiusPush || user.TelegramChatID == nil || c.push == nil {
+	push := c.pushNotifier()
+	if !user.RadiusPush || user.TelegramChatID == nil || push == nil {
 		// Пароль верен, но кода нет и push недоступен — Reject.
 		audit("bad_credentials", false)
 		return false, "bad_credentials"
@@ -511,7 +545,7 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		audit("push_send_fail", false)
 		return false, "push_send_fail"
 	}
-	if err := c.push.SendPush(ctx, *user.TelegramChatID, username, srcIP, "", pushCh.ID); err != nil {
+	if err := push.SendPush(ctx, *user.TelegramChatID, username, srcIP, "", pushCh.ID); err != nil {
 		// Осиротевший челлендж держал бы cooldown следующего push —
 		// удаляем (WithoutCancel: доставка могла упасть из-за отмены ctx).
 		if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),

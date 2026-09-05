@@ -3,7 +3,8 @@
 // администратора, сборка ядра аутентификации (каналы доставки, Telegram-бот,
 // WebAuthn), HTTP-сервер (JSON API + HTML-страницы + статика) и RADIUS.
 // Запуск: SIGINT/SIGTERM — graceful shutdown, SIGHUP — горячая перезагрузка
-// настроек (listen.* применяется после рестарта процесса).
+// настроек: политики/TOTP — сразу, слой доставки (SMTP/SMS/Telegram) —
+// пересборкой senders; listen.* и webauthn.rp_id — после рестарта процесса.
 package main
 
 import (
@@ -80,7 +81,9 @@ func main() {
 	}
 
 	// Каналы доставки кодов и Telegram-бот (он же PushNotifier).
-	senders, bot := buildSenders(st, m)
+	// botToken — токен, из которого собран текущий бот (для повторного
+	// использования при неизменном токене после SIGHUP).
+	senders, bot, botToken := rebuildSenders(st, m, nil, "")
 	var push auth.PushNotifier
 	if bot != nil {
 		push = bot
@@ -95,6 +98,7 @@ func main() {
 		slog.Warn("main: WebAuthn выключен", "error", err)
 		wa = nil
 	}
+	waRPID := m.Get().WebAuthn.RPID
 
 	rend, err := web.New()
 	if err != nil {
@@ -118,7 +122,10 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// SIGHUP — горячая перезагрузка настроек.
+	// SIGHUP — горячая перезагрузка настроек. Политики и параметры TOTP
+	// подхватываются снимком; слой доставки (SMTP/SMS/Telegram-бот)
+	// пересобирается заново и подменяется в ядре; listen.* и webauthn.rp_id
+	// применяются после рестарта процесса.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
@@ -131,9 +138,19 @@ func main() {
 				rctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				if err := m.Reload(rctx); err != nil {
 					slog.Warn("main: перезагрузка настроек (SIGHUP) не удалась", "error", err)
-				} else {
-					slog.Info("main: настройки перечитаны (SIGHUP); listen.* — после рестарта")
+					cancel()
+					continue
 				}
+				senders, bot, botToken = rebuildSenders(st, m, bot, botToken)
+				var push auth.PushNotifier
+				if bot != nil {
+					push = bot
+				}
+				core.SetSenders(senders, push)
+				if rpid := m.Get().WebAuthn.RPID; rpid != waRPID {
+					slog.Warn("main: webauthn.rp_id изменён — применяется после перезапуска (смена отвязывает существующие passkeys)")
+				}
+				slog.Info("main: настройки перечитаны (SIGHUP); доставка пересобрана; listen.* — после рестарта")
 				cancel()
 			}
 		}
@@ -223,11 +240,14 @@ func bootstrapAdmin(ctx context.Context, st *store.Store) error {
 	return nil
 }
 
-// buildSenders собирает каналы доставки кодов из текущего снимка настроек:
-// email при настроенном SMTP, SMS при настроенном шлюзе, Telegram-бот при
-// заданном токене (он же реализует SendPush). Ненастроенные каналы просто
-// отсутствуют в карте — Core их пропускает при выборе.
-func buildSenders(st *store.Store, m *settings.M) (map[channel.Channel]delivery.Sender, *telegram.Bot) {
+// rebuildSenders собирает каналы доставки кодов из текущего снимка настроек:
+// email при настроенном SMTP и SMS при настроенном шлюзе — всегда свежие
+// экземпляры (горячая перезагрузка доставки по SIGHUP). Telegram-бот
+// переиспользуется при неизменном токене; смена/появление токена требует
+// перезапуска (long polling живёт в своей горутине). Возвращает карту
+// отправителей, бота и токен, из которого бот собран. Ненастроенные каналы
+// просто отсутствуют в карте — Core их пропускает при выборе.
+func rebuildSenders(st *store.Store, m *settings.M, existing *telegram.Bot, existingToken string) (map[channel.Channel]delivery.Sender, *telegram.Bot, string) {
 	t := m.Get()
 	senders := make(map[channel.Channel]delivery.Sender)
 
@@ -253,10 +273,19 @@ func buildSenders(st *store.Store, m *settings.M) (map[channel.Channel]delivery.
 			},
 		}, nil)
 	}
-	var bot *telegram.Bot
-	if t.TG.BotToken != "" {
-		bot = telegram.New(st, m)
-		senders[channel.Telegram] = bot
+	switch {
+	case t.TG.BotToken == "":
+		// Токен убран: канал telegram отключается. Работающий бот не
+		// останавливается (push продолжает жить до рестарта).
+	case existing != nil && t.TG.BotToken == existingToken:
+		senders[channel.Telegram] = existing // токен не менялся — переиспользуем
+	case existing != nil:
+		slog.Warn("main: токен telegram-бота изменён — требуется перезапуск для telegram; работает прежний бот")
+		senders[channel.Telegram] = existing
+	default:
+		existing = telegram.New(st, m)
+		existingToken = t.TG.BotToken
+		senders[channel.Telegram] = existing
 	}
-	return senders, bot
+	return senders, existing, existingToken
 }

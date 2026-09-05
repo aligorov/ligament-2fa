@@ -566,6 +566,34 @@ func TestRADIUSAuth(t *testing.T) {
 	}
 }
 
+// TestCoreSetSendersHotSwap: подмена отправителей через SetSenders применяется
+// к последующим Start'ам без пересоздания ядра — так main перестраивает слой
+// доставки после SIGHUP (SMTP/SMS/Telegram).
+func TestCoreSetSendersHotSwap(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	core := newCore(st, set, box, nil, nil)
+	user := mkUser(t, ctx, st, "hotsender", func(u *store.User) {
+		u.Email = "hot@example.com"
+		u.PreferChannels = []channel.Channel{channel.Email}
+	})
+
+	// До подмены: канал email не зарегистрирован → ErrNoChannel.
+	if _, err := core.Start(ctx, user, "api"); !errors.Is(err, ErrNoChannel) {
+		t.Fatalf("Start без отправителя: err = %v, want ErrNoChannel", err)
+	}
+
+	// Подмена на лету (как SIGHUP): доставка идёт через нового отправителя.
+	email := &fakeSender{ch: channel.Email}
+	core.SetSenders(map[channel.Channel]delivery.Sender{channel.Email: email}, nil)
+	if _, err := core.Start(ctx, user, "api"); err != nil {
+		t.Fatalf("Start после SetSenders: %v", err)
+	}
+	if got := email.lastCode(); got == "" {
+		t.Fatal("код не доставлен через подменённого отправителя")
+	}
+}
+
 // TestRADIUSAuthPerUserFailWindow: radius.max_fail_per_user/radius.fail_window
 // — RADIUS-специфичный per-user fail-счётчик по аудиту radius_fail. Окно (1h)
 // и порог (2) отличны от policy.fail_window (5m) и policy.max_fail (5):
