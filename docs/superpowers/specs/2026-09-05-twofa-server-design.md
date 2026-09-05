@@ -97,7 +97,10 @@ Reject без проверки.
 ```
 POST /api/v1/auth/start    {username, password}
   → 200 {challenge_id, channel, expires_in}   # код отправлен пользователю
+                                                # (channel=totp — код не отправляется,
+                                                #  пользователь берёт его из приложения)
   → 401 (плохой пароль / пользователь выключен)
+  → 409 no_channel (нет ни одного привязанного канала доставки)
   → 429 (троттлинг; Retry-After)
 
 POST /api/v1/auth/verify   {challenge_id, code}
@@ -164,7 +167,7 @@ vendor-атрибуты), применяется ко всем Access-Accept. Pe
 | `users` | id UUID PK, username UNIQUE, password_hash (argon2id), role (`admin`\|`user`), enabled bool, email, phone, prefer_channels JSONB (`["totp","email"]`), radius_reply JSONB NULL, created_at, updated_at |
 | `totp_secrets` | user_id PK/FK, secret_enc BLOB (AES-GCM), digits, period, confirmed_at NULL, drift_step INT |
 | `backup_codes` | id, user_id FK, code_hash SHA-256 UNIQUE, used_at NULL |
-| `challenges` | id UUID PK, user_id FK, channel, code_hash SHA-256, expires_at, attempts_left, used_at NULL, purpose (`api`\|`radius_prefetch`\|`ui_confirm`), created_at |
+| `challenges` | id UUID PK, user_id FK, channel, code_hash SHA-256 **NULL для channel=totp** (код не хранится, проверяется против TOTP-секрета), expires_at, attempts_left, used_at NULL, purpose (`api`\|`radius_prefetch`\|`ui_confirm`), created_at |
 | `sessions` | token_hash PK, user_id FK, csrf, expires_at, created_at |
 | `audit_log` | id BIGSERIAL, ts, username, event (`login_ok`, `login_fail`, `code_sent`, `code_ok`, `code_fail`, `totp_enroll`, `admin_action`, …), detail JSONB, src_ip, result |
 
@@ -345,5 +348,5 @@ web:
 | SMS-шлюз у каждого провайдера свой | Шаблонный HTTP-шлюз + success-критерий + пресеты; LogSender для локальной отладки |
 | Неоднозначный сплит пароль/код | Перебор длин кода, дешёвая проверка кода до argon2; длины настраиваются |
 | Пользователь без привязанных каналов | Политика `prefer` + явная ошибка в `start` (`409 no_channel`), в RADIUS — Reject c аудитом |
-| Потеря TOTP | Резервные коди + админский reset-totp |
+| Потеря TOTP | Резервные коды + админский reset-totp |
 | Утечка БД | Пароли argon2id, коды/сессии хешами, TOTP-секреты AES-GCM |
