@@ -9,10 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -266,8 +269,9 @@ func TestPagesAdminAccess(t *testing.T) {
 }
 
 // TestPagesAdminSettingsPost: сохранение секции (мерж объектного ключа) и
-// пропуск пустых секретных полей. Настройки восстанавливаются — контейнер
-// один на пакет, остальные тесты ждут дефолтов.
+// пропуск пустых секретных полей. Поля отправляются с ТЕМИ ЖЕ именами, что
+// рендерит шаблон admin_settings.gohtml (контракт имён — TestPagesAdminSettingsFormContract).
+// Настройки восстанавливаются — контейнер один на пакет, остальные тесты ждут дефолтов.
 func TestPagesAdminSettingsPost(t *testing.T) {
 	st, set, box := setup(t)
 	ctx := context.Background()
@@ -275,8 +279,9 @@ func TestPagesAdminSettingsPost(t *testing.T) {
 	admin := mkUser(t, ctx, st, "setadmin", func(u *store.User) { u.Role = "admin" })
 	t.Cleanup(func() {
 		restore := map[string]string{
-			"totp": `{"issuer":"twofa","digits":6,"period":30,"skew":1}`,
-			"smtp": `{"host":"","port":0,"starttls":false,"user":"","password":"","from":"","subject":"","timeout":"0s"}`,
+			"totp":     `{"issuer":"twofa","digits":6,"period":30,"skew":1}`,
+			"smtp":     `{"host":"","port":0,"starttls":false,"user":"","password":"","from":"","subject":"","timeout":"0s"}`,
+			"telegram": `{"bot_token":""}`,
 		}
 		for key, val := range restore {
 			if err := set.Put(ctx, key, json.RawMessage(val)); err != nil {
@@ -289,12 +294,11 @@ func TestPagesAdminSettingsPost(t *testing.T) {
 	wantStatus(t, rec, http.StatusFound)
 
 	form := url.Values{
-		"section":    {"totp"},
-		"issuer":     {"corp-2fa"},
-		"digits":     {"8"},
-		"period":     {"30"},
-		"skew":       {"1"},
-		"csrf_token": {""},
+		"section":     {"totp"},
+		"totp.issuer": {"corp-2fa"},
+		"totp.digits": {"8"},
+		"totp.period": {"30"},
+		"totp.skew":   {"1"},
 	}
 	rec = c.postForm("/admin/settings", form, true)
 	wantStatus(t, rec, http.StatusFound)
@@ -305,14 +309,14 @@ func TestPagesAdminSettingsPost(t *testing.T) {
 	// Секция smtp с пустым password: секрет не сбрасывается, объект мержится.
 	before := set.Get().SMTP.Password
 	form = url.Values{
-		"section":  {"smtp"},
-		"host":     {"smtp.corp.example"},
-		"port":     {"587"},
-		"user":     {"noreply"},
-		"password": {""}, // пустое = «не менять»
-		"from":     {"2fa@corp.example"},
-		"subject":  {"Код"},
-		"timeout":  {"10s"},
+		"section":       {"smtp"},
+		"smtp.host":     {"smtp.corp.example"},
+		"smtp.port":     {"587"},
+		"smtp.user":     {"noreply"},
+		"smtp.password": {""}, // пустое = «не менять»
+		"smtp.from":     {"2fa@corp.example"},
+		"smtp.subject":  {"Код"},
+		"smtp.timeout":  {"10s"},
 	}
 	rec = c.postForm("/admin/settings", form, true)
 	wantStatus(t, rec, http.StatusFound)
@@ -321,6 +325,151 @@ func TestPagesAdminSettingsPost(t *testing.T) {
 	}
 	if set.Get().SMTP.Password != before {
 		t.Fatal("пустой password не должен менять секрет")
+	}
+
+	// Секция telegram: dotted-имя пишет bot_token ВНУТРИ объекта telegram.
+	form = url.Values{
+		"section":           {"telegram"},
+		"telegram.bot_token": {"123456:AA-test-token"},
+	}
+	rec = c.postForm("/admin/settings", form, true)
+	wantStatus(t, rec, http.StatusFound)
+	if set.Get().TG.BotToken != "123456:AA-test-token" {
+		t.Fatalf("telegram.bot_token не сохранён: %q", set.Get().TG.BotToken)
+	}
+}
+
+// ---- контракт формы настроек: имена полей шаблона = имена settingsForm ----
+
+// formRe — одна форма /admin/settings (с секцией или без).
+var formRe = regexp.MustCompile(`(?s)<form action="/admin/settings".*?</form>`)
+
+// sectionRe — скрытое поле секции формы.
+var sectionRe = regexp.MustCompile(`<input type="hidden" name="section" value="([^"]+)"`)
+
+// inputRe — любой input с именем (кроме кнопок: они не input).
+var inputRe = regexp.MustCompile(`<input[^>]*name="([^"]+)"[^>]*>`)
+
+// valueRe — значение input в двойных или одинарных кавычках (шаблон
+// использует одинарные для JSON-значений jsonPretty).
+var valueRe = regexp.MustCompile(`value=(?:"([^"]*)"|'([^']*)')`)
+
+// textareaRe — textarea с именем; значение — внутренний текст.
+var textareaRe = regexp.MustCompile(`(?s)<textarea[^>]*name="([^"]+)"[^>]*>(.*?)</textarea>`)
+
+// parseSettingsForm разбирает блок <form> на секцию и карту «имя → значение»
+// (браузер отправил бы ровно это); checkbox без checked в форму не входит.
+func parseSettingsForm(block string) (section string, fields map[string]string) {
+	fields = map[string]string{}
+	if m := sectionRe.FindStringSubmatch(block); m != nil {
+		section = m[1]
+	}
+	for _, m := range inputRe.FindAllStringSubmatch(block, -1) {
+		name, tag := m[1], m[0]
+		if name == "csrf_token" || name == "section" || name == "regenerate" {
+			continue
+		}
+		if strings.Contains(tag, `type="checkbox"`) {
+			// Поле есть в разметке всегда; неотмеченный чекбокс браузер не
+			// отправляет — пустое значение (сервер трактует как «выключено»).
+			if strings.Contains(tag, "checked") {
+				fields[name] = "1"
+			} else {
+				fields[name] = ""
+			}
+			continue
+		}
+		if vm := valueRe.FindStringSubmatch(tag); vm != nil {
+			v := vm[1]
+			if v == "" {
+				v = vm[2]
+			}
+			fields[name] = html.UnescapeString(v)
+		} else {
+			fields[name] = "" // секретные поля с placeholder — «не менять»
+		}
+	}
+	for _, m := range textareaRe.FindAllStringSubmatch(block, -1) {
+		fields[m[1]] = html.UnescapeString(m[2])
+	}
+	return section, fields
+}
+
+// TestPagesAdminSettingsFormContract — контракт HTML-формы настроек:
+//  1. каждое поле settingsForm[section] реально отрендерено в этой секции
+//     (иначе POST молча сохраняет пустоту — как было с unprefixed-именами);
+//  2. наоборот: каждый именованный input/textarea секции известен серверу;
+//  3. отправка РОВНО разобранных полей (как сделал бы браузер) принимается —
+//     каждая секция отвечает 302.
+func TestPagesAdminSettingsFormContract(t *testing.T) {
+	st, set, box := setup(t)
+	rt := newPagesRouter(t, st, set, box)
+	admin := mkUser(t, context.Background(), st, "contractadmin", func(u *store.User) { u.Role = "admin" })
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.login(t, admin.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	rec = c.get("/admin/settings")
+	wantStatus(t, rec, http.StatusOK)
+	body := rec.Body.String()
+
+	sections := map[string]map[string]string{} // section → name → value
+	for _, block := range formRe.FindAllString(body, -1) {
+		sec, fields := parseSettingsForm(block)
+		if sec == "" {
+			continue // формы без section (кнопки regenerate) не несут полей
+		}
+		sections[sec] = fields
+	}
+	if len(sections) == 0 {
+		t.Fatal("на странице /admin/settings не найдено ни одной формы с секцией")
+	}
+	if _, ok := sections["smtp"]; !ok {
+		t.Fatal("форма секции smtp не найдена")
+	}
+
+	// Встреча: settingsForm ↔ шаблон, в обе стороны по каждой секции.
+	for sec, fields := range sections {
+		want, ok := settingsForm[sec]
+		if !ok {
+			t.Fatalf("секция %q отрендерена, но неизвестна settingsForm", sec)
+		}
+		rendered := map[string]bool{}
+		for name := range fields {
+			rendered[name] = true
+		}
+		for _, f := range want {
+			if !rendered[f.name] {
+				t.Errorf("секция %s: поле %q из settingsForm не отрендерено в шаблоне", sec, f.name)
+			}
+		}
+		for _, f := range want {
+			delete(rendered, f.name)
+		}
+		for name := range rendered {
+			t.Errorf("секция %s: поле %q отрендерено, но отсутствует в settingsForm (сохранено не будет)", sec, name)
+		}
+	}
+
+	// Отправка разобранных полей как есть (значения не меняются — контейнер
+	// общий) принимается: каждая секция отвечает 302 «Настройки сохранены».
+	snapshot := set.Get()
+	for _, sec := range slices.Sorted(maps.Keys(sections)) {
+		form := url.Values{"section": {sec}}
+		for name, val := range sections[sec] {
+			form.Set(name, val)
+		}
+		rec = c.postForm("/admin/settings", form, true)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("секция %s: POST разобранной формы = %d, want 302; тело:\n%.400s",
+				sec, rec.Code, rec.Body.String())
+		}
+	}
+	// Значения не изменились (перемены сломали бы остальные тесты пакета).
+	after := set.Get()
+	if after.TOTP.Issuer != snapshot.TOTP.Issuer || after.Radius.MaxFailPerUser != snapshot.Radius.MaxFailPerUser {
+		t.Fatalf("контрактная отправка изменила настройки: totp.issuer %q→%q, max_fail_per_user %d→%d",
+			snapshot.TOTP.Issuer, after.TOTP.Issuer, snapshot.Radius.MaxFailPerUser, after.Radius.MaxFailPerUser)
 	}
 }
 

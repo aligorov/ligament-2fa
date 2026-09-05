@@ -1183,16 +1183,19 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 	}
 }
 
-// settingsField — одно поле формы /admin/settings: имя поля формы (для
-// объектных ключей оно же — имя JSON-поля), ключ настроек и тип значения.
+// settingsField — одно поле формы /admin/settings: имя поля формы (то же,
+// что рендерит шаблон admin_settings.gohtml), ключ настроек (объектный или
+// скалярный) и тип значения. JSON-поле объектного ключа выводится из имени
+// отсечением префикса «key.» (поле smtp.host → ключ smtp, поле host).
 type settingsField struct {
-	name string // имя поля формы
+	name string // имя поля формы (совпадает с шаблоном)
 	key  string // ключ настроек (объектный или скалярный)
 	kind byte   // 's' строка (по умолчанию), 'i' целое, 'b' чекбокс, 'j' сырой JSON
 }
 
-// settingsForm — поля форм по секциям (шаблон admin_settings.gohtml:
-// каждая секция — отдельная форма с hidden section).
+// settingsForm — поля форм по секциям; имена В ТОЧНОСТИ как в шаблоне
+// admin_settings.gohtml (контракт проверяет TestPagesAdminSettingsFormContract:
+// расхождение имени = молчаливая потеря значения при сохранении).
 var settingsForm = map[string][]settingsField{
 	"listen": {
 		{name: "listen.http", key: "listen.http"},
@@ -1208,14 +1211,14 @@ var settingsForm = map[string][]settingsField{
 		{name: "radius.reply_attributes", key: "radius.reply_attributes", kind: 'j'},
 	},
 	"smtp": {
-		{name: "host", key: "smtp"},
-		{name: "port", key: "smtp", kind: 'i'},
-		{name: "user", key: "smtp"},
-		{name: "password", key: "smtp"},
-		{name: "from", key: "smtp"},
-		{name: "subject", key: "smtp"},
-		{name: "timeout", key: "smtp"},
-		{name: "starttls", key: "smtp", kind: 'b'},
+		{name: "smtp.host", key: "smtp"},
+		{name: "smtp.port", key: "smtp", kind: 'i'},
+		{name: "smtp.user", key: "smtp"},
+		{name: "smtp.password", key: "smtp"},
+		{name: "smtp.from", key: "smtp"},
+		{name: "smtp.subject", key: "smtp"},
+		{name: "smtp.timeout", key: "smtp"},
+		{name: "smtp.starttls", key: "smtp", kind: 'b'},
 	},
 	"sms": {
 		{name: "sms.gateway", key: "sms.gateway", kind: 'j'},
@@ -1225,27 +1228,27 @@ var settingsForm = map[string][]settingsField{
 		{name: "telegram.bot_token", key: "telegram"},
 	},
 	"totp": {
-		{name: "issuer", key: "totp"},
-		{name: "digits", key: "totp", kind: 'i'},
-		{name: "period", key: "totp", kind: 'i'},
-		{name: "skew", key: "totp", kind: 'i'},
+		{name: "totp.issuer", key: "totp"},
+		{name: "totp.digits", key: "totp", kind: 'i'},
+		{name: "totp.period", key: "totp", kind: 'i'},
+		{name: "totp.skew", key: "totp", kind: 'i'},
 	},
 	"webauthn": {
-		{name: "rp_id", key: "webauthn"},
-		{name: "rp_name", key: "webauthn"},
+		{name: "webauthn.rp_id", key: "webauthn"},
+		{name: "webauthn.rp_name", key: "webauthn"},
 	},
 	"policy": {
-		{name: "code_ttl", key: "policy"},
-		{name: "code_length", key: "policy", kind: 'i'},
-		{name: "max_attempts", key: "policy", kind: 'i'},
-		{name: "resend_cooldown", key: "policy"},
-		{name: "push_cooldown", key: "policy"},
-		{name: "push_per_hour", key: "policy", kind: 'i'},
-		{name: "trusted_device_ttl", key: "policy"},
-		{name: "max_fail", key: "policy", kind: 'i'},
-		{name: "fail_window", key: "policy"},
-		{name: "ban_time", key: "policy"},
-		{name: "default_prefer_channels", key: "policy", kind: 'j'},
+		{name: "policy.code_ttl", key: "policy"},
+		{name: "policy.code_length", key: "policy", kind: 'i'},
+		{name: "policy.max_attempts", key: "policy", kind: 'i'},
+		{name: "policy.resend_cooldown", key: "policy"},
+		{name: "policy.push_cooldown", key: "policy"},
+		{name: "policy.push_per_hour", key: "policy", kind: 'i'},
+		{name: "policy.trusted_device_ttl", key: "policy"},
+		{name: "policy.max_fail", key: "policy", kind: 'i'},
+		{name: "policy.fail_window", key: "policy"},
+		{name: "policy.ban_time", key: "policy"},
+		{name: "policy.default_prefer_channels", key: "policy", kind: 'j'},
 		{name: "web.session_ttl", key: "web.session_ttl"},
 	},
 }
@@ -1295,7 +1298,8 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Частичные значения по ключам настроек: скалярный ключ — значение
-	// целиком, объектный — карта «поле → значение» (потом deep merge).
+	// целиком, объектный — карта «JSON-поле → значение» (имя формы без
+	// префикса «key.», потом deep merge).
 	scalar := map[string]json.RawMessage{}
 	partial := map[string]map[string]json.RawMessage{}
 	for _, f := range fields {
@@ -1306,7 +1310,7 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 			if partial[f.key] == nil {
 				partial[f.key] = make(map[string]json.RawMessage)
 			}
-			partial[f.key][f.name] = v
+			partial[f.key][strings.TrimPrefix(f.name, f.key+".")] = v
 			continue
 		}
 		if raw == "" || raw == settingsMask {
@@ -1338,7 +1342,7 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 			if partial[f.key] == nil {
 				partial[f.key] = make(map[string]json.RawMessage)
 			}
-			partial[f.key][f.name] = v
+			partial[f.key][strings.TrimPrefix(f.name, f.key+".")] = v
 		}
 	}
 
