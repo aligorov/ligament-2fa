@@ -1,0 +1,16 @@
+# Бинарник
+/twofa
+/twofa-*
+
+# Секреты и локальное окружение
+.env
+*.local.yaml
+
+# Go
+/bin/
+*.test
+*.out
+coverage.*
+
+# macOS
+.DS_Store
