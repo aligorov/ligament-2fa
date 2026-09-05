@@ -518,3 +518,21 @@ func TestDefaultsCoverKnownKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestIsKnownKeyExported: экспортированная обёртка IsKnownKey зеркалит
+// isKnownKey — API-слой валидирует ключи PUT /settings до применения.
+func TestIsKnownKeyExported(t *testing.T) {
+	for _, k := range []string{"totp", "smtp", "policy", "web.session_ttl", "admin_token", "master_key", "radius.secret"} {
+		if !IsKnownKey(k) {
+			t.Errorf("IsKnownKey(%q) = false, want true", k)
+		}
+		if isKnownKey(k) != IsKnownKey(k) {
+			t.Errorf("IsKnownKey(%q) расходится с isKnownKey", k)
+		}
+	}
+	for _, k := range []string{"", "no-such-key", "totp.issuer", "smtp.host", "TOTP"} {
+		if IsKnownKey(k) {
+			t.Errorf("IsKnownKey(%q) = true, want false", k)
+		}
+	}
+}

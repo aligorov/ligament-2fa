@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
@@ -32,9 +34,6 @@ const (
 	csrfHeader = "X-CSRF-Token"
 	// tokenBytes — энтропия (байт) токенов сессии, CSRF и устройства.
 	tokenBytes = 32
-	// waLoginWindow — окно «недавнего успешного webauthn_login» из аудита,
-	// доказательство второго фактора для passkey-ветки входа web.
-	waLoginWindow = 5 * time.Minute
 )
 
 // ctxKey — тип ключей контекста запроса.
@@ -228,9 +227,10 @@ type login2FAReq struct {
 
 // handleLogin2FA — второй шаг: «пароль + код» одним запросом. Код проверяется
 // core.VerifyAnyCode (резервный / TOTP / активный код доставки); passkey-ветка
-// — пустой код при недавно завершённой успешной WebAuthn-церемонии входа
-// (webauthnRecentOk; сама церемония идёт публичными /api/v1/auth/webauthn/
-// begin|finish с password-гейтом в begin). Пароль проверяется РОВНО один раз
+// — пустой код при активном «webauthn_web_pending»-окне: его создаёт
+// публичный /api/v1/auth/webauthn/finish ПОСЛЕ проверки подписи passkey, и
+// оно атомарно погашается этим входом (consumeWebauthnPending — одноразовое
+// окно вместо прежнего скана аудита). Пароль проверяется РОВНО один раз
 // и только после прохождения кода (инвариант «один argon2 на запрос», см.
 // Core.VerifyPasswordAndCode).
 func (s *SessionAPI) handleLogin2FA(w http.ResponseWriter, r *http.Request) {
@@ -282,7 +282,7 @@ func (s *SessionAPI) handleLogin2FA(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "bad_code")
 			return
 		}
-	} else if !s.webauthnRecentOk(ctx, user) {
+	} else if !s.consumeWebauthnPending(ctx, user) {
 		s.audit(ctx, user.Username, "login_fail", ip, "fail",
 			map[string]any{"reason": "bad_code", "flow": "web_2fa"})
 		writeError(w, http.StatusUnauthorized, "bad_code")
@@ -407,23 +407,36 @@ func (s *SessionAPI) twoFactorMethods(ctx context.Context, user *store.User) []s
 	return methods
 }
 
-// webauthnRecentOk сообщает, завершилась ли за последние waLoginWindow
-// успешная WebAuthn-церемония входа этого пользователя. Событие
-// webauthn_login/ok пишет только Svc.FinishLogin ПОСЛЕ проверки подписи:
-// неуспешный finish погашает сессию церемонии, но события не пишет, поэтому
-// подделать «недавний passkey-вход» отказом нельзя.
-func (s *SessionAPI) webauthnRecentOk(ctx context.Context, user *store.User) bool {
-	var exists bool
+// consumeWebauthnPending атомарно погашает свежее «webauthn_web_pending»-
+// окно пользователя — доказательство только что завершённой успешной
+// WebAuthn-церемонии входа (строку создаёт handleWAFinish после проверки
+// подписи, TTL waPendingTTL). Поиск берёт самое свежее активное окно;
+// ChallengeMarkUsed — одноразовый claim: повторный вход и гонка двух
+// параллельных login/2fa получают ErrNotFound → false, replay окна
+// невозможен. Аудит webauthn_login остаётся только для наблюдаемости.
+func (s *SessionAPI) consumeWebauthnPending(ctx context.Context, user *store.User) bool {
+	var id uuid.UUID
 	err := s.st.Pool().QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM audit_log
-			WHERE username = $1 AND event = 'webauthn_login' AND result = 'ok'
-			  AND ts > $2)`,
-		user.Username, time.Now().Add(-waLoginWindow)).Scan(&exists)
+		SELECT id FROM challenges
+		WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL AND expires_at > now()
+		ORDER BY created_at DESC
+		LIMIT 1`, user.ID, purposeWAPending).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false // активного окна нет — passkey-вход не доказан
+	}
 	if err != nil {
-		slog.Warn("api: проверка недавнего webauthn_login", "error", err)
+		slog.Warn("api: поиск webauthn_web_pending", "error", err)
+		return false // fail closed
+	}
+	if err := s.st.ChallengeMarkUsed(ctx, id); err != nil {
+		// ErrNotFound — окно только что погасил конкурентный claim; прочее —
+		// ошибка БД, вход без доказательства не выпускаем.
+		if !errors.Is(err, store.ErrNotFound) {
+			slog.Warn("api: погашение webauthn_web_pending", "error", err)
+		}
 		return false
 	}
-	return exists
+	return true
 }
 
 // ---- POST /api/v1/logout ----

@@ -400,3 +400,91 @@ func TestAdminSettingsRegenerate(t *testing.T) {
 		t.Fatalf("GET settings раскрыл новый токен: %s", rec.Body.String())
 	}
 }
+
+// TestAdminSettingsPutAtomic: PUT {валидный+неизвестный} → 400 unknown_key,
+// причём ВАЛИДНЫЙ ключ не применён ни в снимке, ни в БД (проверка всех
+// ключей до записи любого); PUT только с валидными ключами применяется;
+// settings_update пишется только для применённого запроса.
+func TestAdminSettingsPutAtomic(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	h, _ := newWebRouter(t, st, set, box, nil)
+	tok := set.Get().AdminToken
+	defer func() {
+		if err := set.Put(ctx, "totp", json.RawMessage(`{"issuer":"twofa","digits":6,"period":30,"skew":1}`)); err != nil {
+			t.Fatalf("восстановление totp: %v", err)
+		}
+	}()
+
+	// Один PUT с валидным и неизвестным ключом → 400 unknown_key с именем ключа.
+	rec := adminReq(t, h, http.MethodPut, "/api/v1/admin/settings", map[string]any{
+		"totp":             map[string]any{"issuer": "atomic-issuer"},
+		"totp.bogus.group": 1,
+	}, tok)
+	wantStatus(t, rec, http.StatusBadRequest)
+	body := jsonBody(t, rec)
+	if body["error"] != "unknown_key" {
+		t.Fatalf("body = %s, want unknown_key", rec.Body.String())
+	}
+	if body["key"] != "totp.bogus.group" {
+		t.Fatalf("body = %s, want key=totp.bogus.group", rec.Body.String())
+	}
+
+	// Валидный ключ НЕ применён: ни в снимке, ни в БД.
+	if set.Get().TOTP.Issuer == "atomic-issuer" {
+		t.Fatal("валидный ключ применён при отклонённом PUT — запись неатомарна")
+	}
+	var raw json.RawMessage
+	if err := st.Pool().QueryRow(ctx, `SELECT value FROM settings WHERE key = 'totp'`).Scan(&raw); err != nil {
+		t.Fatalf("select totp: %v", err)
+	}
+	if strings.Contains(string(raw), "atomic-issuer") {
+		t.Fatalf("totp записан в БД при отклонённом PUT: %s", raw)
+	}
+
+	// Отклонённый PUT не пишет settings_update с неизвестным ключом.
+	rows, err := st.AuditList(ctx, store.AuditFilter{Event: "admin_action", Limit: 200})
+	if err != nil {
+		t.Fatalf("AuditList: %v", err)
+	}
+	for _, row := range rows {
+		if row.Detail != nil && row.Detail["action"] == "settings_update" {
+			if keys, _ := row.Detail["keys"].([]any); keys != nil {
+				for _, k := range keys {
+					if s, _ := k.(string); s == "totp.bogus.group" {
+						t.Fatal("отклонённый PUT попал в аудит settings_update")
+					}
+				}
+			}
+		}
+	}
+
+	// PUT только с валидным ключом применяется как раньше.
+	rec = adminReq(t, h, http.MethodPut, "/api/v1/admin/settings",
+		map[string]any{"totp": map[string]any{"issuer": "atomic-issuer"}}, tok)
+	wantStatus(t, rec, http.StatusOK)
+	if set.Get().TOTP.Issuer != "atomic-issuer" {
+		t.Fatalf("totp.issuer = %q после валидного PUT, want atomic-issuer", set.Get().TOTP.Issuer)
+	}
+	// И аудит settings_update записан с применённым ключом.
+	saw := false
+	rows, err = st.AuditList(ctx, store.AuditFilter{Event: "admin_action", Limit: 200})
+	if err != nil {
+		t.Fatalf("AuditList: %v", err)
+	}
+	for _, row := range rows {
+		if row.Detail == nil || row.Detail["action"] != "settings_update" {
+			continue
+		}
+		if keys, _ := row.Detail["keys"].([]any); keys != nil {
+			for _, k := range keys {
+				if s, _ := k.(string); s == "totp" {
+					saw = true
+				}
+			}
+		}
+	}
+	if !saw {
+		t.Fatal("валидный PUT не записал settings_update с ключом totp")
+	}
+}

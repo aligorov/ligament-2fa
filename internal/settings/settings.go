@@ -515,6 +515,11 @@ func (m *M) Masked(ctx context.Context) (map[string]any, error) {
 	return t.masked(), nil
 }
 
+// IsKnownKey — экспортированная обёртка isKnownKey: API-слою нужно
+// провалидировать ВСЕ ключи PUT /settings до применения любого из них
+// (атомарность запроса), не выходя за границы пакета.
+func IsKnownKey(key string) bool { return isKnownKey(key) }
+
 // ---- маскировка ----
 
 // sensitiveKeys — имена JSON-полей внутри sms.*: значения маскируются по

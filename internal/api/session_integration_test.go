@@ -383,3 +383,96 @@ func hasStr(v any, want string) bool {
 	}
 	return false
 }
+
+// TestWebLogin2FAPasskeyWindow: одноразовое passkey-окно web-логина.
+// Реальная церемония finish требует аутентификатора (E2E T15), поэтому
+// «успешный finish» моделируется тем же помощником createWebPendingChallenge,
+// который handleWAFinish вызывает после проверки подписи passkey:
+// (a) pending есть → login/2fa с пустым кодом выпускает сессию;
+// (b) повторно → 401 (окно атомарно погашено — replay невозможен);
+// (c) без предшествующего finish → 401; истёкшее окно → 401.
+func TestWebLogin2FAPasskeyWindow(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	h, _ := newWebRouter(t, st, set, box, nil)
+	user := mkUser(t, ctx, st, "webwawin", func(u *store.User) {
+		u.Email = "webwawin@example.com"
+	})
+	// Зарегистрированный passkey: «webauthn» появляется в methods первого шага.
+	if err := st.WACredUpsert(ctx, user.ID, &store.WACred{
+		CredentialID: []byte("webwawin-cred"), RPID: "localhost",
+		PublicKey: []byte("pk"), AttestationType: "none",
+		Present: true, Verified: true,
+	}); err != nil {
+		t.Fatalf("WACredUpsert: %v", err)
+	}
+
+	// Первый шаг требует второй фактор, среди методов — webauthn.
+	c := newWebClient(t, h)
+	rec := c.login(user.Username, testPassword, false)
+	wantStatus(t, rec, http.StatusOK)
+	body := jsonBody(t, rec)
+	if body["two_factor"] != "required" {
+		t.Fatalf("login: body = %v, want two_factor required", body)
+	}
+	if !hasStr(body["methods"], "webauthn") {
+		t.Fatalf("methods = %v, want содержит webauthn", body["methods"])
+	}
+
+	// (c) Пустой код без предшествующей церемонии → 401 bad_code.
+	rec = c.login2FA(user.Username, testPassword, "", false)
+	wantStatus(t, rec, http.StatusUnauthorized)
+	if jsonBody(t, rec)["error"] != "bad_code" {
+		t.Fatalf("без finish: body = %s, want bad_code", rec.Body.String())
+	}
+
+	// Истёкшее окно не доказывает второй фактор.
+	if err := createWebPendingChallenge(ctx, st, user.ID); err != nil {
+		t.Fatalf("createWebPendingChallenge: %v", err)
+	}
+	if _, err := st.Pool().Exec(ctx, `
+		UPDATE challenges SET expires_at = now() - interval '1 second'
+		WHERE user_id = $1 AND purpose = 'webauthn_web_pending' AND used_at IS NULL`,
+		user.ID); err != nil {
+		t.Fatalf("истечение pending-челленджа: %v", err)
+	}
+	rec = c.login2FA(user.Username, testPassword, "", false)
+	wantStatus(t, rec, http.StatusUnauthorized)
+
+	// (a) «Успешный finish»: pending-челлендж создан → пустой код проходит,
+	// выпускается сессия (режим password+code).
+	if err := createWebPendingChallenge(ctx, st, user.ID); err != nil {
+		t.Fatalf("createWebPendingChallenge: %v", err)
+	}
+	rec = c.login2FA(user.Username, testPassword, "", false)
+	wantStatus(t, rec, http.StatusOK)
+	body = jsonBody(t, rec)
+	if body["ok"] != true || body["username"] != user.Username {
+		t.Fatalf("login/2fa passkey: body = %v", body)
+	}
+	if c.session == nil {
+		t.Fatal("cookie twofa_session не установлен")
+	}
+	c.adoptCSRF(rec)
+
+	// (b) Повторный login/2fa с пустым кодом → 401: окно атомарно погашено.
+	fresh := newWebClient(t, h)
+	rec = fresh.login2FA(user.Username, testPassword, "", false)
+	wantStatus(t, rec, http.StatusUnauthorized)
+	if jsonBody(t, rec)["error"] != "bad_code" {
+		t.Fatalf("replay окна: body = %s, want bad_code", rec.Body.String())
+	}
+
+	// В БД не осталось активных (непросроченных и непогашенных) окон.
+	var n int
+	if err := st.Pool().QueryRow(ctx, `
+		SELECT count(*) FROM challenges
+		WHERE user_id = $1 AND purpose = 'webauthn_web_pending'
+		  AND used_at IS NULL AND expires_at > now()`,
+		user.ID).Scan(&n); err != nil {
+		t.Fatalf("подсчёт pending-окон: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("активных pending-окон = %d, want 0", n)
+	}
+}

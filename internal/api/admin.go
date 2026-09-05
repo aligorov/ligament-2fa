@@ -16,6 +16,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -566,15 +567,34 @@ func (a *AdminAPI) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 // Объекты сливаются с текущим значением рекурсивно; маска ("••••" или
 // {"set":...,"value":"••••"}) и пустая строка на любом уровне означают
 // «не менять это поле» (спека §7: «пустое/маскированное значение = не
-// менять»). Неизвестный ключ → 400.
+// менять»). Атомарность: СНАЧАЛА валидируются все ключи — неизвестный
+// отклоняет запрос целиком (400 unknown_key) БЕЗ применения остальных;
+// затем применяются все годные. Маскированные значения пропускаются как
+// раньше.
 func (a *AdminAPI) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 	var body map[string]json.RawMessage
 	if !decodeJSON(w, r, &body) {
 		return
 	}
 	ctx := r.Context()
-	changed := make([]string, 0, len(body))
-	for key, val := range body {
+
+	// Первый проход — валидация всех ключей ДО записи любого значения:
+	// ни один ключ не применяется, пока весь запрос не признан корректным.
+	keys := make([]string, 0, len(body))
+	for key := range body {
+		if !settings.IsKnownKey(key) {
+			writeJSON(w, http.StatusBadRequest,
+				map[string]string{"error": "unknown_key", "key": key})
+			return
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys) // стабильный порядок аудита
+
+	// Второй проход — применение (маска/пустое значение = «не менять»).
+	changed := make([]string, 0, len(keys))
+	for _, key := range keys {
+		val := body[key]
 		if isNoChangeValue(val) {
 			continue
 		}
@@ -584,7 +604,7 @@ func (a *AdminAPI) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := a.m.Put(ctx, key, merged); err != nil {
-			// Неизвестный ключ или невалидный JSON — обе ошибки клиента.
+			// Невалидный JSON значения — ошибка клиента.
 			writeError(w, http.StatusBadRequest, "bad_key")
 			return
 		}

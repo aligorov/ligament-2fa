@@ -664,3 +664,58 @@ func TestAPIRateLimit429OnBurst(t *testing.T) {
 	// Корзина IP тоже исчерпана: другое имя с того же IP → 429.
 	wantStatus(t, start("apiflood-other"), http.StatusTooManyRequests)
 }
+
+// TestAPIWebauthnFinishNoPendingOnFail: неудачный finish НЕ создаёт
+// «webauthn_web_pending»-окно — оно появляется только после успешной
+// проверки подписи passkey (сама подпись — E2E T15; создание окна
+// напрямую проверяет TestWebLogin2FAPasskeyWindow через тот же помощник).
+func TestAPIWebauthnFinishNoPendingOnFail(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	if err := set.Put(ctx, "webauthn", json.RawMessage(`{"rp_id":"localhost","rp_name":"twofa-test"}`)); err != nil {
+		t.Fatalf("settings.Put(webauthn): %v", err)
+	}
+	wa, err := webauthn.New(st, set)
+	if err != nil {
+		t.Fatalf("webauthn.New: %v", err)
+	}
+	h, _ := newTestRouter(t, st, set, box, wa)
+
+	user := mkUser(t, ctx, st, "apiwanopend", func(u *store.User) {
+		u.Email = "apiwanopend@example.com"
+	})
+	if err := st.WACredUpsert(ctx, user.ID, &store.WACred{
+		CredentialID:    []byte("nopend-credential-id"),
+		RPID:            "localhost",
+		PublicKey:       []byte("public-key-blob"),
+		AttestationType: "none",
+		Present:         true,
+		Verified:        true,
+	}); err != nil {
+		t.Fatalf("WACredUpsert: %v", err)
+	}
+
+	// Begin → настоящий handle; finish с мусорным телом → 401.
+	rec := doReq(t, h, http.MethodPost, "/api/v1/auth/webauthn/begin",
+		map[string]string{"username": user.Username, "password": testPassword})
+	wantStatus(t, rec, http.StatusOK)
+	handle, _ := jsonBody(t, rec)["handle"].(string)
+	if handle == "" {
+		t.Fatalf("handle пуст: %s", rec.Body.String())
+	}
+	rec = doReq(t, h, http.MethodPost, "/api/v1/auth/webauthn/finish?handle="+handle,
+		map[string]any{"id": "x", "rawId": "eA", "type": "public-key", "response": map[string]any{}})
+	wantStatus(t, rec, http.StatusUnauthorized)
+
+	// Окно web-логина не создано: пустой код login/2fa не пройдёт.
+	var n int
+	if err := st.Pool().QueryRow(ctx, `
+		SELECT count(*) FROM challenges
+		WHERE user_id = $1 AND purpose = 'webauthn_web_pending'`,
+		user.ID).Scan(&n); err != nil {
+		t.Fatalf("подсчёт pending-окон: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("после неудачного finish pending-окон = %d, want 0", n)
+	}
+}

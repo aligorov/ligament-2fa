@@ -444,7 +444,44 @@ func (p *PublicAPI) handleWAFinish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "bad_credentials")
 		return
 	}
+
+	// Подпись проверена — церемония доказала второй фактор. Создаём
+	// одноразовое «webauthn_web_pending»-окно: web-логин (login/2fa с
+	// пустым кодом) погасит его атомарно ровно один раз. Отказ создания —
+	// fail-closed 500: без окна пустой код не пройдёт, клиент повторит
+	// вход обычным кодом.
+	if err := createWebPendingChallenge(ctx, p.st, user.ID); err != nil {
+		slog.Error("api: webauthn finish — pending-окно web-логина", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+// purposeWAPending — purpose challenges-строки, доказывающей «только что
+// завершилась успешная WebAuthn-церемония входа»: создаётся handleWAFinish
+// ПОСЛЕ проверки подписи passkey, атомарно погашается одним login/2fa
+// (SessionAPI.consumeWebauthnPending). Заменяет прежний скан аудита
+// webauthn_login (replay-окно без расхода).
+const purposeWAPending = "webauthn_web_pending"
+
+// waPendingTTL — срок жизни одноразового passkey-окна web-логина: у
+// пользователя есть столько времени, чтобы обменять успешную церемонию
+// на web-сессию.
+const waPendingTTL = 5 * time.Minute
+
+// createWebPendingChallenge отмечает успешную WebAuthn-церемонию входа:
+// challenges-строка без кода (code_hash=nil, AttemptsLeft=1), живёт
+// waPendingTTL и расходуется атомарным ChallengeMarkUsed — повторный
+// claim и гонка двух параллельных login/2fa исключены.
+func createWebPendingChallenge(ctx context.Context, st *store.Store, userID uuid.UUID) error {
+	return st.ChallengeCreate(ctx, &store.Challenge{
+		UserID:       userID,
+		Channel:      channel.WebAuthn,
+		ExpiresAt:    time.Now().Add(waPendingTTL),
+		AttemptsLeft: 1,
+		Purpose:      purposeWAPending,
+	})
 }
 
 // waSessionUser резолвит владельца по handle сессии церемонии: сессия —
