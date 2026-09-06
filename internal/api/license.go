@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -25,7 +26,12 @@ func (a *AdminAPI) registerLicenseRoutes(r chi.Router) {
 
 // licenseStatus вычисляет статус с подсчётом активных (не disabled)
 // пользователей из UserList (отдельный метод счёта в store не вводится).
+// nil-менеджер (частичные композиции тестов) — минимальный free-статус
+// без обращения к БД: роуты остаются зарегистрированными, паники нет.
 func (a *AdminAPI) licenseStatus(r *http.Request) (license.Status, error) {
+	if a.licEmpty() {
+		return license.Status{Mode: license.ModeFree, UserLimit: license.FreeUserLimit}, nil
+	}
 	st, err := a.lic.Effective(r.Context())
 	if err != nil {
 		return st, err
@@ -117,6 +123,10 @@ func (a *AdminAPI) handleLicensePut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
+	if a.licEmpty() {
+		writeError(w, http.StatusServiceUnavailable, "licensing_disabled")
+		return
+	}
 	lic, err := a.lic.Upload(r.Context(), req.Blob)
 	switch {
 	case err == nil:
@@ -147,8 +157,13 @@ func (a *AdminAPI) handleLicensePut(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toLicenseStatusJSON(st))
 }
 
-// handleLicenseDelete — DELETE /api/v1/admin/license: удаление → free.
+// handleLicenseDelete — DELETE /api/v1/admin/license: удаление → free
+// (демо не воскрешается: trial_used остаётся).
 func (a *AdminAPI) handleLicenseDelete(w http.ResponseWriter, r *http.Request) {
+	if a.licEmpty() {
+		writeError(w, http.StatusServiceUnavailable, "licensing_disabled")
+		return
+	}
 	if err := a.lic.Remove(r.Context()); err != nil {
 		slog.Error("api: admin license удаление", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal")
@@ -173,6 +188,10 @@ func (a *AdminAPI) handleLicenseCRLPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Blob == "" {
 		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if a.licEmpty() {
+		writeError(w, http.StatusServiceUnavailable, "licensing_disabled")
 		return
 	}
 	rev, err := a.lic.UploadCRL(r.Context(), req.Blob)
@@ -204,6 +223,12 @@ func (a *AdminAPI) licEmpty() bool { return a.lic == nil }
 // licenseExceeded сообщает, приведёт ли +1 активный пользователь к
 // превышению лимита (limit<=0 — не ограничено). nil-менеджер лицензий
 // (композиция без лицензирования) ничего не ограничивает.
+//
+// 30-дневный grace на превышение (report §3.3): первое попадание в лимит
+// фиксирует license.over_limit_since, после чего создание/включение сверх
+// лимита разрешается (с аудитом-предупреждением license_over_limit_grace);
+// спустя 30 дней — блокируется. Возврат активных под лимит сбрасывает
+// фиксацию (следующее превышение начнёт grace заново).
 func (a *AdminAPI) licenseExceeded(r *http.Request) (bool, license.Status) {
 	if a.lic == nil {
 		return false, license.Status{}
@@ -218,7 +243,27 @@ func (a *AdminAPI) licenseExceeded(r *http.Request) (bool, license.Status) {
 	if st.UserLimit <= 0 {
 		return false, st
 	}
-	return st.UsersActive+1 > st.UserLimit, st
+	if st.UsersActive+1 <= st.UserLimit {
+		// Активных меньше лимита: фиксация превышения больше не актуальна.
+		if err := a.lic.ClearOverLimit(r.Context()); err != nil {
+			slog.Warn("api: сброс license.over_limit_since", "error", err)
+		}
+		return false, st
+	}
+	dec, err := a.lic.OverLimit(r.Context())
+	if err != nil {
+		// Ошибка БД не должна блокировать создание (fail open, report §3.8).
+		slog.Error("api: license over-limit grace", "error", err)
+		return false, st
+	}
+	if dec.Allowed {
+		a.audit(r.Context(), "license_over_limit_grace", map[string]any{
+			"limit": st.UserLimit, "active_users": st.UsersActive,
+			"over_limit_since": dec.Since.UTC().Format(time.RFC3339),
+		})
+		return false, st
+	}
+	return true, st
 }
 
 // denyLicenseLimit отвечает 403 license_limit и пишет аудит.

@@ -11,11 +11,17 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
@@ -32,9 +38,71 @@ import (
 func licenseCleanup(t *testing.T, st *store.Store) {
 	t.Helper()
 	if _, err := st.Pool().Exec(context.Background(),
-		`DELETE FROM settings WHERE key IN ('license.blob','license.crl','license.trial_started')`); err != nil {
+		`DELETE FROM settings WHERE key LIKE 'license.%'`); err != nil {
 		t.Fatalf("очистка license.*: %v", err)
 	}
+}
+
+// setSetting пишет произвольное строковое значение в settings (имитация
+// «старых» данных без прохождения API).
+func setSetting(t *testing.T, st *store.Store, key, value string) {
+	t.Helper()
+	if _, err := st.Pool().Exec(context.Background(),
+		`INSERT INTO settings (key, value) VALUES ($1, to_jsonb($2::text))
+		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, key, value); err != nil {
+		t.Fatalf("запись %s: %v", key, err)
+	}
+}
+
+// getSetting возвращает наличие и текстовое представление значения ключа
+// (JSON-строка — как есть; bool/число — строкой).
+func getSetting(t *testing.T, st *store.Store, key string) (bool, string) {
+	t.Helper()
+	var raw []byte
+	err := st.Pool().QueryRow(context.Background(),
+		`SELECT value FROM settings WHERE key = $1`, key).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ""
+	}
+	if err != nil {
+		t.Fatalf("чтение %s: %v", key, err)
+	}
+	var v any
+	if json.Unmarshal(raw, &v) == nil {
+		if s, ok := v.(string); ok {
+			return true, s
+		}
+		return true, fmt.Sprintf("%v", v)
+	}
+	return true, string(raw)
+}
+
+// backdateOverLimit сдвигает фиксацию превышения лимита на days назад.
+func backdateOverLimit(t *testing.T, st *store.Store, days int) {
+	t.Helper()
+	if _, err := st.Pool().Exec(context.Background(),
+		`INSERT INTO settings (key, value) VALUES ('license.over_limit_since',
+			 to_jsonb(to_char(now() - ($1 || ' days')::interval, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')))
+		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+		strconv.Itoa(days)); err != nil {
+		t.Fatalf("сдвиг over_limit_since: %v", err)
+	}
+}
+
+// countAudit считает события admin_action с данным action.
+func countAudit(t *testing.T, st *store.Store, action string) int {
+	t.Helper()
+	rows, err := st.AuditList(context.Background(), store.AuditFilter{Event: "admin_action", Limit: 500})
+	if err != nil {
+		t.Fatalf("AuditList: %v", err)
+	}
+	n := 0
+	for _, row := range rows {
+		if row.Detail != nil && row.Detail["action"] == action {
+			n++
+		}
+	}
+	return n
 }
 
 // newPagesRouterLic — полная композиция BuildRouter с менеджером лицензий
@@ -71,6 +139,22 @@ func activeUsers(t *testing.T, st *store.Store) int {
 		}
 	}
 	return n
+}
+
+// mustUserID ищет id пользователя по имени (для PATCH в тестах).
+func mustUserID(t *testing.T, st *store.Store, name string) string {
+	t.Helper()
+	users, err := st.UserList(context.Background())
+	if err != nil {
+		t.Fatalf("UserList: %v", err)
+	}
+	for _, u := range users {
+		if u.Username == name {
+			return u.ID.String()
+		}
+	}
+	t.Fatalf("пользователь %s не найден", name)
+	return ""
 }
 
 // signTestLicense выпускает лицензию свежей тестовой парой ключей kid и
@@ -118,9 +202,10 @@ func signTestPair(t *testing.T, kid string) ed25519.PrivateKey {
 }
 
 // TestLicenseUploadEnforcesLimit: лицензия с лимитом = текущему числу
-// активных → создание 403 license_limit (+аудит), выключение разрешено,
-// включение под лимитом разрешено, вход существующего не блокируется;
-// DELETE → free (лимит 5); страница /admin/license рендерится.
+// активных → создание сверх лимита разрешается в 30-дневном grace (аудит
+// license_over_limit_grace), после 30 дней — 403 license_limit (+аудит);
+// выключение разрешено, вход существующего не блокируется; DELETE → free
+// (лимит 5); страница /admin/license рендерится.
 func TestLicenseUploadEnforcesLimit(t *testing.T) {
 	st, set, box := setup(t)
 	ctx := context.Background()
@@ -148,9 +233,23 @@ func TestLicenseUploadEnforcesLimit(t *testing.T) {
 		t.Fatal("статус раскрывает blob лицензии")
 	}
 
-	// Создание сверх лимита → 403 license_limit.
+	// Создание сверх лимита в первые 30 дней — РАЗРЕШЕНО (grace, report §3.3)
+	// с аудитом-предупреждением и фиксацией license.over_limit_since.
+	graceBefore := countAudit(t, st, "license_over_limit_grace")
 	rec = adminReq(t, rt.Handler, http.MethodPost, "/api/v1/admin/users",
 		map[string]any{"username": "licover", "password": "over-limit-1"}, tok)
+	wantStatus(t, rec, http.StatusCreated)
+	if got := countAudit(t, st, "license_over_limit_grace"); got != graceBefore+1 {
+		t.Fatalf("аудит grace: %d → %d, хочу +1", graceBefore, got)
+	}
+	if ok, since := getSetting(t, st, "license.over_limit_since"); !ok || since == "" {
+		t.Fatalf("license.over_limit_since не зафиксирован: %v %q", ok, since)
+	}
+
+	// Grace истёк (фиксация 40 дней назад) → 403 license_limit + аудит.
+	backdateOverLimit(t, st, 40)
+	rec = adminReq(t, rt.Handler, http.MethodPost, "/api/v1/admin/users",
+		map[string]any{"username": "licover2", "password": "over-limit-2"}, tok)
 	wantStatus(t, rec, http.StatusForbidden)
 	if jsonBody(t, rec)["error"] != "license_limit" {
 		t.Fatalf("тело 403: %s", rec.Body.String())
@@ -177,13 +276,21 @@ func TestLicenseUploadEnforcesLimit(t *testing.T) {
 		t.Fatalf("аудит: upload=%v limit=%v", sawUpload, sawLimit)
 	}
 
-	// Выключение разрешено (счётчик падает), обратное включение — по лимиту.
+	// Выключение разрешено всегда (не проходит enforcement). Гасим licover
+	// и extra: активных становится МЕНЬШЕ лимита — фиксация превышения
+	// сбрасывается, включение extra снова разрешено.
+	rec = adminReq(t, rt.Handler, http.MethodPatch, "/api/v1/admin/users/"+
+		mustUserID(t, st, "licover"), map[string]any{"enabled": false}, tok)
+	wantStatus(t, rec, http.StatusOK)
 	rec = adminReq(t, rt.Handler, http.MethodPatch, "/api/v1/admin/users/"+extra.ID.String(),
 		map[string]any{"enabled": false}, tok)
 	wantStatus(t, rec, http.StatusOK)
 	rec = adminReq(t, rt.Handler, http.MethodPatch, "/api/v1/admin/users/"+extra.ID.String(),
 		map[string]any{"enabled": true}, tok)
 	wantStatus(t, rec, http.StatusOK)
+	if ok, _ := getSetting(t, st, "license.over_limit_since"); ok {
+		t.Fatal("license.over_limit_since не сброшен после возврата под лимит")
+	}
 
 	// Вход существующего пользователя НЕ блокируется лицензией (report §3.3).
 	c := newWebClient(t, rt.Handler)
@@ -208,7 +315,8 @@ func TestLicenseUploadEnforcesLimit(t *testing.T) {
 }
 
 // TestLicenseLimitBlocksEnabling: включение отключённого сверх лимита —
-// 403 (это «создание» активного пользователя), выключение — нет.
+// 403 (это «создание» активного пользователя) ПОСЛЕ истечения 30-дневного
+// grace; в пределах grace — разрешено с аудитом; выключение — всегда.
 func TestLicenseLimitBlocksEnabling(t *testing.T) {
 	st, set, box := setup(t)
 	ctx := context.Background()
@@ -226,7 +334,20 @@ func TestLicenseLimitBlocksEnabling(t *testing.T) {
 		map[string]any{"blob": blob}, tok)
 	wantStatus(t, rec, http.StatusOK)
 
-	// Включение сверх лимита → 403 license_limit.
+	// Включение сверх лимита в grace-окне — разрешено (аудит-предупреждение).
+	graceBefore := countAudit(t, st, "license_over_limit_grace")
+	rec = adminReq(t, rt.Handler, http.MethodPatch, "/api/v1/admin/users/"+disabled.ID.String(),
+		map[string]any{"enabled": true}, tok)
+	wantStatus(t, rec, http.StatusOK)
+	if got := countAudit(t, st, "license_over_limit_grace"); got != graceBefore+1 {
+		t.Fatalf("аудит grace (включение): %d → %d, хочу +1", graceBefore, got)
+	}
+
+	// Grace истёк → включение сверх лимита → 403 license_limit.
+	rec = adminReq(t, rt.Handler, http.MethodPatch, "/api/v1/admin/users/"+disabled.ID.String(),
+		map[string]any{"enabled": false}, tok)
+	wantStatus(t, rec, http.StatusOK)
+	backdateOverLimit(t, st, 40)
 	rec = adminReq(t, rt.Handler, http.MethodPatch, "/api/v1/admin/users/"+disabled.ID.String(),
 		map[string]any{"enabled": true}, tok)
 	wantStatus(t, rec, http.StatusForbidden)
@@ -423,7 +544,8 @@ func TestLicenseBannerOnAdminPages(t *testing.T) {
 }
 
 // TestLicenseFormCreateBlocked: HTML-форма создания пользователя сверх
-// лимита — редирект с флешем (PRG), не 500; аудит license_limit (via html).
+// лимита ПОСЛЕ истечения grace — редирект с флешем (PRG), не 500; аудит
+// license_limit (via html).
 func TestLicenseFormCreateBlocked(t *testing.T) {
 	st, set, box := setup(t)
 	ctx := context.Background()
@@ -438,6 +560,8 @@ func TestLicenseFormCreateBlocked(t *testing.T) {
 	rec := adminReq(t, rt.Handler, http.MethodPut, "/api/v1/admin/license",
 		map[string]any{"blob": blob}, set.Get().AdminToken)
 	wantStatus(t, rec, http.StatusOK)
+	// Grace-окно уже истекло (фиксация 40 дней назад).
+	backdateOverLimit(t, st, 40)
 
 	c := newHTMLClient(t, rt.Handler)
 	rec = c.login(t, admin.Username, testPassword, "")
@@ -465,5 +589,220 @@ func TestLicenseFormCreateBlocked(t *testing.T) {
 	}
 	if !saw {
 		t.Fatal("аудит license_limit (via html) не записан")
+	}
+}
+
+// TestLicenseTrialNotResurrected: демо не воскрешается циклом
+// «загрузка лицензии → удаление → рестарт» — Upload ставит неотзываемый
+// маркер license.trial_used и не удаляет trial_started (review fix 1).
+func TestLicenseTrialNotResurrected(t *testing.T) {
+	st, _, _ := setup(t)
+	ctx := context.Background()
+	licenseCleanup(t, st)
+	defer licenseCleanup(t, st)
+
+	m := license.NewManager(st)
+	if err := m.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	st1, err := m.Effective(ctx)
+	if err != nil {
+		t.Fatalf("Effective: %v", err)
+	}
+	if st1.Mode != license.ModeTrial {
+		t.Fatalf("после первого Init: %+v, хочу trial", st1)
+	}
+
+	// Загрузка лицензии «израсходует» демо.
+	blob := signTestLicense(t, "it-trialused", nil)
+	if _, err := m.Upload(ctx, blob); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if ok, _ := getSetting(t, st, "license.trial_used"); !ok {
+		t.Fatal("license.trial_used не установлен загрузкой лицензии")
+	}
+	if ok, _ := getSetting(t, st, "license.trial_started"); !ok {
+		t.Fatal("license.trial_started удалён загрузкой лицензии")
+	}
+
+	// Удаление лицензии → free (не возврат в демо).
+	if err := m.Remove(ctx); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// «Рестарт» — новый менеджер Init: демо НЕ начинается заново.
+	m2 := license.NewManager(st)
+	if err := m2.Init(ctx); err != nil {
+		t.Fatalf("Init (рестарт): %v", err)
+	}
+	st2, err := m2.Effective(ctx)
+	if err != nil {
+		t.Fatalf("Effective (рестарт): %v", err)
+	}
+	if st2.Mode != license.ModeFree || st2.UserLimit != license.FreeUserLimit {
+		t.Fatalf("после удаления лицензии и рестарта: %+v, хочу free/%d (остаток демо не восстанавливается)",
+			st2, license.FreeUserLimit)
+	}
+}
+
+// TestLicensePerpetualNotRevoked: CRL на perpetual-лицензию не действует —
+// статус остаётся licensed, повторная загрузка не отвергается (review fix 2).
+func TestLicensePerpetualNotRevoked(t *testing.T) {
+	st, set, box := setup(t)
+	licenseCleanup(t, st)
+	defer licenseCleanup(t, st)
+	rt := newPagesRouterLic(t, st, set, box)
+	tok := set.Get().AdminToken
+
+	priv := signTestPair(t, "it-perp-crl")
+	maint := time.Now().Add(365 * 24 * time.Hour)
+	p := license.Payload{
+		LicID: "fedcba98-7654-3210-fedc-ba9876543210", Customer: "ООО Вечная",
+		Plan: license.PlanPerpetual, UserLimit: 10,
+		IssuedAt: time.Now().UTC(), MaintenanceExpires: maint, Kid: "it-perp-crl",
+	}
+	blob, err := license.Sign(priv, p)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	rec := adminReq(t, rt.Handler, http.MethodPut, "/api/v1/admin/license",
+		map[string]any{"blob": blob}, tok)
+	wantStatus(t, rec, http.StatusOK)
+
+	// CRL на тот же lic_id.
+	crl, err := license.SignRevocation(priv, license.Revocation{
+		LicID: p.LicID, RevokedAt: time.Now().UTC(), Kid: "it-perp-crl",
+	})
+	if err != nil {
+		t.Fatalf("SignRevocation: %v", err)
+	}
+	rec = adminReq(t, rt.Handler, http.MethodPut, "/api/v1/admin/license/crl",
+		map[string]any{"blob": crl}, tok)
+	wantStatus(t, rec, http.StatusOK)
+
+	// Perpetual жив: licensed, не revoked.
+	rec = adminReq(t, rt.Handler, http.MethodGet, "/api/v1/admin/license", nil, tok)
+	wantStatus(t, rec, http.StatusOK)
+	body := jsonBody(t, rec)
+	if body["mode"] != "licensed" || body["revoked"] != false {
+		t.Fatalf("perpetual после CRL: %v, хочу licensed/не revoked", body)
+	}
+
+	// Повторная загрузка той же perpetual не отвергается (отзыв не для неё).
+	rec = adminReq(t, rt.Handler, http.MethodPut, "/api/v1/admin/license",
+		map[string]any{"blob": blob}, tok)
+	wantStatus(t, rec, http.StatusOK)
+}
+
+// TestLicenseFreeOverLimitBanner: free-режим с числом активных больше 5 —
+// баннер о превышении бесплатного лимита на админ-страницах (review fix 3).
+func TestLicenseFreeOverLimitBanner(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	licenseCleanup(t, st)
+	defer licenseCleanup(t, st)
+
+	admin := mkUser(t, ctx, st, "frebanadmin", func(u *store.User) { u.Role = "admin" })
+	rt := newPagesRouterLic(t, st, set, box)
+
+	// Никакой лицензии/демо → free; добираем активных сверх лимита 5.
+	for i := activeUsers(t, st); i <= license.FreeUserLimit; i++ {
+		mkUser(t, ctx, st, "freeover"+strconv.Itoa(i), nil)
+	}
+	if n := activeUsers(t, st); n <= license.FreeUserLimit {
+		t.Fatalf("активных %d, нужно > %d", n, license.FreeUserLimit)
+	}
+
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.login(t, admin.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+	rec = c.get("/admin/users")
+	wantStatus(t, rec, http.StatusOK)
+	wantBody(t, rec, "Превышен лимит бесплатного режима (5): создание пользователей заблокировано")
+}
+
+// TestLicenseOverLimitGraceLifecycle: полный цикл 30-дневного grace на
+// превышение лимита создания (review fix 5): первое превышение — разрешено
+// с фиксацией и аудитом; 40 дней спустя — 403; возврат под лимит — фиксация
+// сброшена, новые создания без предупреждений.
+func TestLicenseOverLimitGraceLifecycle(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	licenseCleanup(t, st)
+	defer licenseCleanup(t, st)
+
+	mkUser(t, ctx, st, "graceadmin", func(u *store.User) { u.Role = "admin" })
+	rt := newPagesRouterLic(t, st, set, box)
+	tok := set.Get().AdminToken
+
+	n := activeUsers(t, st)
+	blob := signTestLicense(t, "it-grace", func(p *license.Payload) { p.UserLimit = n })
+	rec := adminReq(t, rt.Handler, http.MethodPut, "/api/v1/admin/license",
+		map[string]any{"blob": blob}, tok)
+	wantStatus(t, rec, http.StatusOK)
+
+	// 1) На лимите: создание разрешено (grace), аудит-предупреждение.
+	graceBefore := countAudit(t, st, "license_over_limit_grace")
+	rec = adminReq(t, rt.Handler, http.MethodPost, "/api/v1/admin/users",
+		map[string]any{"username": "graceu1", "password": "grace-pass-1"}, tok)
+	wantStatus(t, rec, http.StatusCreated)
+	if got := countAudit(t, st, "license_over_limit_grace"); got != graceBefore+1 {
+		t.Fatalf("аудит grace: %d → %d, хочу +1", graceBefore, got)
+	}
+
+	// 2) Фиксация 40 дней назад: создание — 403 license_limit.
+	backdateOverLimit(t, st, 40)
+	rec = adminReq(t, rt.Handler, http.MethodPost, "/api/v1/admin/users",
+		map[string]any{"username": "graceu2", "password": "grace-pass-2"}, tok)
+	wantStatus(t, rec, http.StatusForbidden)
+	if jsonBody(t, rec)["error"] != "license_limit" {
+		t.Fatalf("тело 403: %s", rec.Body.String())
+	}
+
+	// 3) Возврат строго под лимит: фиксация сброшена, создание без
+	// предупреждения.
+	rec = adminReq(t, rt.Handler, http.MethodPatch, "/api/v1/admin/users/"+
+		mustUserID(t, st, "graceu1"), map[string]any{"enabled": false}, tok)
+	wantStatus(t, rec, http.StatusOK)
+	rec = adminReq(t, rt.Handler, http.MethodPatch, "/api/v1/admin/users/"+
+		mustUserID(t, st, "graceadmin"), map[string]any{"enabled": false}, tok)
+	wantStatus(t, rec, http.StatusOK)
+	graceMid := countAudit(t, st, "license_over_limit_grace")
+	rec = adminReq(t, rt.Handler, http.MethodPost, "/api/v1/admin/users",
+		map[string]any{"username": "graceu3", "password": "grace-pass-3"}, tok)
+	wantStatus(t, rec, http.StatusCreated)
+	if got := countAudit(t, st, "license_over_limit_grace"); got != graceMid {
+		t.Fatalf("аудит grace после возврата под лимит: %d → %d, хочу без изменений", graceMid, got)
+	}
+	if ok, _ := getSetting(t, st, "license.over_limit_since"); ok {
+		t.Fatal("license.over_limit_since не сброшен после возврата под лимит")
+	}
+}
+
+// TestLicenseTrialCorruptValue: битое значение license.trial_started не
+// валит старт — Init/Effective деградируют (значение трактуется
+// отсутствующим, ничего не перезаписывается), режим free (review fix 6).
+func TestLicenseTrialCorruptValue(t *testing.T) {
+	st, _, _ := setup(t)
+	ctx := context.Background()
+	licenseCleanup(t, st)
+	defer licenseCleanup(t, st)
+
+	setSetting(t, st, "license.trial_started", "не-время-вообще")
+
+	m := license.NewManager(st)
+	if err := m.Init(ctx); err != nil {
+		t.Fatalf("Init с битым trial_started: %v (не должен валить старт)", err)
+	}
+	st1, err := m.Effective(ctx)
+	if err != nil {
+		t.Fatalf("Effective с битым trial_started: %v", err)
+	}
+	if st1.Mode != license.ModeFree || st1.UserLimit != license.FreeUserLimit {
+		t.Fatalf("битый trial_started: %+v, хочу free/%d", st1, license.FreeUserLimit)
+	}
+	// Битое значение не перезаписано молча.
+	if ok, v := getSetting(t, st, "license.trial_started"); !ok || v != "не-время-вообще" {
+		t.Fatalf("битое trial_started перезаписано: %v %q", ok, v)
 	}
 }

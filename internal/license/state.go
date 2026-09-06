@@ -32,14 +32,19 @@ const (
 	// graceLic — опциональное grace-окно ПОСЛЕ expires_at подписки
 	// (Keygen-style, report §3.5: «+ опциональный grace 5 дней»).
 	graceLic = 5 * 24 * time.Hour
+	// overLimitGrace — окно, в котором создание сверх лимита ещё разрешено
+	// (первое превышение фиксируется, report §3.3).
+	overLimitGrace = 30 * 24 * time.Hour
 )
 
 // Ключи в таблице settings (значения — JSON-строки).
 const (
-	keyBlob   = "license.blob"
-	keyCRL    = "license.crl"
-	keyTrial  = "license.trial_started"
-	buildDate = "2006-01-02" // формат BuildDate (-ldflags -X main.BuildDate)
+	keyBlob      = "license.blob"
+	keyCRL       = "license.crl"
+	keyTrial     = "license.trial_started"
+	keyTrialUsed = "license.trial_used"       // демо израсходовано загрузкой лицензии; не удаляется никогда
+	keyOverLimit = "license.over_limit_since" // фиксация первого превышения лимита создания
+	buildDate    = "2006-01-02"               // формат BuildDate (-ldflags -X main.BuildDate)
 )
 
 // Mode — текущий режим сервера.
@@ -88,10 +93,11 @@ func (m *Manager) Now() time.Time { return m.now() }
 
 // computeStatus вычисляет статус по сырому состоянию (blob/CRL/trial) на
 // момент now. Битый blob — деградация в free (лицензирование — юридический
-// барьер, не причина для аварии сервера; report §3.8).
-func computeStatus(now time.Time, blob, crl string, trialStarted *time.Time) Status {
+// барьер, не причина для аварии сервера; report §3.8). trialUsed — демо
+// «израсходовано» покупкой лицензии: остаток дней не восстанавливается.
+func computeStatus(now time.Time, blob, crl string, trialStarted *time.Time, trialUsed bool) Status {
 	if blob == "" {
-		if trialStarted != nil {
+		if trialStarted != nil && !trialUsed {
 			until := trialStarted.Add(TrialDuration)
 			if now.Before(until) {
 				return Status{
@@ -119,7 +125,9 @@ func computeStatus(now time.Time, blob, crl string, trialStarted *time.Time) Sta
 	}
 
 	// Досрочный отзыв: CRL подписан вендором и адресован этой лицензии.
-	if crl != "" {
+	// Действует ТОЛЬКО на подписки — perpetual технически не отзывается
+	// (report §3.5, README): совпадающий lic_id игнорируем с предупреждением.
+	if lic.Plan == PlanSubscription && crl != "" {
 		if rev, err := ParseRevocation(crl); err == nil && rev.LicID == lic.LicID {
 			return Status{
 				Mode: ModeFree, UserLimit: FreeUserLimit, Revoked: true,
@@ -180,8 +188,12 @@ func CheckBuildAllowed(dateStr string, st Status) error {
 
 // ---- персистентность (settings.license.*) ----
 
-// Init вызывается на старте сервера: без лицензии и без отмеченного старта
-// демо — персистит trial_started (сбрасывается только с БД, report §3.2).
+// Init вызывается на старте сервера: без лицензии, без отмеченного старта
+// демо И без отметки «демо израсходовано» (license.trial_used — её ставит
+// Upload лицензии, не удаляет никто) — персистит trial_started. Поэтому
+// цикл «загрузка лицензии → удаление → рестарт» не воскрешает демо:
+// сервер возвращается в free, оставшиеся дни триала не восстанавливаются
+// (сброс — только с БД, report §3.2).
 func (m *Manager) Init(ctx context.Context) error {
 	blob, err := m.loadString(ctx, keyBlob)
 	if err != nil {
@@ -190,12 +202,26 @@ func (m *Manager) Init(ctx context.Context) error {
 	if blob != "" {
 		return nil // лицензия есть — демо неактуально
 	}
-	started, err := m.loadTime(ctx, keyTrial)
+	started, err := m.loadTimeTolerant(ctx, keyTrial)
 	if err != nil {
 		return err
 	}
 	if started != nil {
 		return nil // уже отмечен
+	}
+	// Битое значение тоже «занимает» ключ: новое демо не стартуем и ничего
+	// не перезаписываем (предупреждение уже записал loadTimeTolerant).
+	if raw, err := m.loadString(ctx, keyTrial); err != nil {
+		return err
+	} else if raw != "" {
+		return nil
+	}
+	used, err := m.loadBool(ctx, keyTrialUsed)
+	if err != nil {
+		return err
+	}
+	if used {
+		return nil // демо уже израсходовано покупкой лицензии
 	}
 	now := m.now()
 	if err := m.saveTime(ctx, keyTrial, now); err != nil {
@@ -205,7 +231,9 @@ func (m *Manager) Init(ctx context.Context) error {
 	return nil
 }
 
-// Effective загружает персистентное состояние и вычисляет статус.
+// Effective загружает персистентное состояние и вычисляет статус. Битые
+// значения trial-ключей — предупреждение и трактовка как отсутствующих
+// (не авария сервера и не молчаливая перезапись; report §3.8).
 func (m *Manager) Effective(ctx context.Context) (Status, error) {
 	blob, err := m.loadString(ctx, keyBlob)
 	if err != nil {
@@ -215,30 +243,47 @@ func (m *Manager) Effective(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	trial, err := m.loadTime(ctx, keyTrial)
+	trial, err := m.loadTimeTolerant(ctx, keyTrial)
 	if err != nil {
 		return Status{}, err
 	}
-	return computeStatus(m.now(), blob, crl, trial), nil
+	used, err := m.loadBool(ctx, keyTrialUsed)
+	if err != nil {
+		return Status{}, err
+	}
+	return computeStatus(m.now(), blob, crl, trial, used), nil
 }
 
 // Upload проверяет и сохраняет лицензию. Отозванная (по текущему CRL)
-// отклоняется; пробный старт сбрасывается — демо «израсходовано» покупкой,
-// удаление лицензии возвращает сервер в free (не в демо).
+// подписка отклоняется — perpetual CRL-отзыву не подлежит (report §3.5).
+// Демо «израсходовано» покупкой: ставится неотзываемый маркер
+// license.trial_used (trial_started НЕ удаляется) — удаление лицензии
+// возвращает сервер в free, а не в демо; оставшиеся дни триала не
+// восстанавливаются.
 func (m *Manager) Upload(ctx context.Context, blob string) (Payload, error) {
 	lic, err := ParseLicense(blob)
 	if err != nil {
 		return lic, err
 	}
-	if crl, err := m.loadString(ctx, keyCRL); err == nil && crl != "" {
-		if rev, rerr := ParseRevocation(crl); rerr == nil && rev.LicID == lic.LicID {
-			return lic, ErrRevoked
+	if lic.Plan == PlanSubscription {
+		if crl, err := m.loadString(ctx, keyCRL); err == nil && crl != "" {
+			if rev, rerr := ParseRevocation(crl); rerr == nil && rev.LicID == lic.LicID {
+				return lic, ErrRevoked
+			}
 		}
 	}
 	if err := m.saveString(ctx, keyBlob, blob); err != nil {
 		return lic, err
 	}
-	_ = m.deleteKey(ctx, keyTrial)
+	started, err := m.loadTimeTolerant(ctx, keyTrial)
+	if err != nil {
+		return lic, err
+	}
+	if started != nil {
+		if err := m.saveBool(ctx, keyTrialUsed, true); err != nil {
+			return lic, err
+		}
+	}
 	return lic, nil
 }
 
@@ -254,8 +299,48 @@ func (m *Manager) UploadCRL(ctx context.Context, blob string) (Revocation, error
 	return rev, m.saveString(ctx, keyCRL, blob)
 }
 
-// Remove удаляет лицензию (free-режим).
+// Remove удаляет лицензию (free-режим). trial_started/trial_used не
+// трогаются: демо не воскрешается, сервер остаётся в free.
 func (m *Manager) Remove(ctx context.Context) error { return m.deleteKey(ctx, keyBlob) }
+
+// ---- 30-дневный grace на превышение лимита создания (report §3.3) ----
+
+// OverLimitDecision — вердикт по созданию/включению сверх лимита.
+type OverLimitDecision struct {
+	Allowed bool
+	Since   time.Time // фиксация начала превышения (для аудита)
+	First   bool      // превышение зафиксировано только что
+}
+
+// OverLimit вызывается ТОЛЬКО когда +1 активного пользователя превышает
+// лимит: первое попадание персистит license.over_limit_since, в пределах
+// 30 дней создание разрешается (вызывающий пишет аудит-предупреждение),
+// после — запрещается (403 license_limit).
+func (m *Manager) OverLimit(ctx context.Context) (OverLimitDecision, error) {
+	since, err := m.loadTimeTolerant(ctx, keyOverLimit)
+	if err != nil {
+		return OverLimitDecision{}, err
+	}
+	now := m.now()
+	if since == nil {
+		if err := m.saveTime(ctx, keyOverLimit, now); err != nil {
+			return OverLimitDecision{}, err
+		}
+		// Конкурентный процесс мог зафиксировать раньше (ON CONFLICT DO
+		// NOTHING) — берём фактическое значение.
+		if actual, err := m.loadTimeTolerant(ctx, keyOverLimit); err == nil && actual != nil {
+			return OverLimitDecision{Allowed: true, Since: *actual, First: true}, nil
+		}
+		return OverLimitDecision{Allowed: true, Since: now, First: true}, nil
+	}
+	return OverLimitDecision{Allowed: now.Sub(*since) <= overLimitGrace, Since: *since}, nil
+}
+
+// ClearOverLimit сбрасывает фиксацию превышения (активных стало меньше
+// лимита) — следующее превышение начнёт grace-окно заново.
+func (m *Manager) ClearOverLimit(ctx context.Context) error {
+	return m.deleteKey(ctx, keyOverLimit)
+}
 
 // loadString читает JSON-строку из settings; отсутствующий ключ — "".
 func (m *Manager) loadString(ctx context.Context, key string) (string, error) {
@@ -275,17 +360,55 @@ func (m *Manager) loadString(ctx context.Context, key string) (string, error) {
 	return s, nil
 }
 
-// loadTime читает RFC3339-время из settings; отсутствующий ключ — nil.
-func (m *Manager) loadTime(ctx context.Context, key string) (*time.Time, error) {
+// loadTimeTolerant читает RFC3339-время из settings с деградацией:
+// отсутствующий ключ — nil; битое значение — предупреждение и nil
+// (трактуется как отсутствующее), а не ошибка старта и не молчаливая
+// перезапись (report §3.8: лицензирование — не повод для аварии сервера).
+func (m *Manager) loadTimeTolerant(ctx context.Context, key string) (*time.Time, error) {
 	s, err := m.loadString(ctx, key)
 	if err != nil || s == "" {
 		return nil, err
 	}
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
-		return nil, fmt.Errorf("license: значение %s не RFC3339: %w", key, err)
+		slog.Warn("license: значение не RFC3339 — трактую как отсутствующее", "key", key, "value", s)
+		return nil, nil
 	}
 	return &t, nil
+}
+
+// loadBool читает JSON-bool из settings; отсутствующий ключ — false, битое
+// значение — предупреждение и false (деградация, не авария).
+func (m *Manager) loadBool(ctx context.Context, key string) (bool, error) {
+	var raw json.RawMessage
+	err := m.st.Pool().QueryRow(ctx,
+		`SELECT value FROM settings WHERE key = $1`, key).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("license: чтение %s: %w", key, err)
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err != nil {
+		slog.Warn("license: значение не bool — трактую как false", "key", key)
+		return false, nil
+	}
+	return b, nil
+}
+
+// saveBool записывает bool как JSON-значение settings.
+func (m *Manager) saveBool(ctx context.Context, key string, v bool) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if _, err := m.st.Pool().Exec(ctx,
+		`INSERT INTO settings (key, value) VALUES ($1, $2)
+		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, key, b); err != nil {
+		return fmt.Errorf("license: запись %s: %w", key, err)
+	}
+	return nil
 }
 
 // saveString записывает строку как JSON-значение settings.

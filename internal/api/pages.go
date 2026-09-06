@@ -216,7 +216,19 @@ func (p *PagesAPI) licenseWarnings(r *http.Request) []string {
 	if st.Expired {
 		msgs = append(msgs, "Подписка истекла — сервер работает в бесплатном режиме (5 пользователей).")
 	}
-	if st.Mode == license.ModeLicensed && st.UserLimit > 0 && st.AtLimit {
+	// Превышение лимита — в ЛЮБОМ режиме (free после удаления лицензии или
+	// истечения демо с >5 активными; licensed с урезанным лимитом).
+	if st.UserLimit > 0 && st.UsersActive > st.UserLimit {
+		if st.Mode == license.ModeFree {
+			msgs = append(msgs, fmt.Sprintf(
+				"Превышен лимит бесплатного режима (%d): создание пользователей заблокировано.",
+				st.UserLimit))
+		} else {
+			msgs = append(msgs, fmt.Sprintf(
+				"Превышен лимит лицензии (%d): создание пользователей заблокировано.",
+				st.UserLimit))
+		}
+	} else if st.Mode == license.ModeLicensed && st.UserLimit > 0 && st.AtLimit {
 		msgs = append(msgs, fmt.Sprintf(
 			"Достигнут лимит лицензии: %d/%d активных пользователей — обновите лицензию или отключите других.",
 			st.UsersActive, st.UserLimit))

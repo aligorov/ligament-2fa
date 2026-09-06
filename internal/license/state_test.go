@@ -31,7 +31,7 @@ func days(n int) time.Time { return fakeNow.Add(time.Duration(n) * 24 * time.Hou
 
 // TestStateFree: без лицензии и без trial — лимит FreeUserLimit.
 func TestStateFree(t *testing.T) {
-	st := computeStatus(fakeNow, "", "", nil)
+	st := computeStatus(fakeNow, "", "", nil, false)
 	if st.Mode != ModeFree {
 		t.Fatalf("режим = %s, хочу free", st.Mode)
 	}
@@ -44,7 +44,7 @@ func TestStateFree(t *testing.T) {
 // ограничен; за 10 дней до конца — TrialDaysLeft=10.
 func TestStateTrial(t *testing.T) {
 	start := days(-20)
-	st := computeStatus(fakeNow, "", "", &start)
+	st := computeStatus(fakeNow, "", "", &start, false)
 	if st.Mode != ModeTrial {
 		t.Fatalf("режим = %s, хочу trial", st.Mode)
 	}
@@ -59,7 +59,7 @@ func TestStateTrial(t *testing.T) {
 // TestStateTrialExpired: демо истекло → Free(5), НЕ хард-блок (report §3.1).
 func TestStateTrialExpired(t *testing.T) {
 	start := days(-31)
-	st := computeStatus(fakeNow, "", "", &start)
+	st := computeStatus(fakeNow, "", "", &start, false)
 	if st.Mode != ModeFree || st.UserLimit != FreeUserLimit {
 		t.Fatalf("после демо: %+v, хочу free/%d", st, FreeUserLimit)
 	}
@@ -68,7 +68,7 @@ func TestStateTrialExpired(t *testing.T) {
 // TestStateLicensed: валидная подписка — лимит из payload, UpdatesUntil.
 func TestStateLicensed(t *testing.T) {
 	blob := mkLicense(t, "k-lic", nil)
-	st := computeStatus(fakeNow, blob, "", nil)
+	st := computeStatus(fakeNow, blob, "", nil, false)
 	if st.Mode != ModeLicensed {
 		t.Fatalf("режим = %s, хочу licensed", st.Mode)
 	}
@@ -95,7 +95,7 @@ func TestStateSubscriptionGrace(t *testing.T) {
 		p.ExpiresAt = &exp
 		p.MaintenanceExpires = exp
 	})
-	st := computeStatus(fakeNow, blob, "", nil)
+	st := computeStatus(fakeNow, blob, "", nil, false)
 	if st.Mode != ModeLicensed || !st.Grace {
 		t.Fatalf("grace: %+v, хочу licensed+grace", st)
 	}
@@ -106,7 +106,7 @@ func TestStateSubscriptionGrace(t *testing.T) {
 		p.ExpiresAt = &exp
 		p.MaintenanceExpires = exp
 	})
-	st = computeStatus(fakeNow, blob, "", nil)
+	st = computeStatus(fakeNow, blob, "", nil, false)
 	if st.Mode != ModeFree || st.UserLimit != FreeUserLimit || !st.Expired {
 		t.Fatalf("после grace: %+v, хочу free/5/expired", st)
 	}
@@ -119,7 +119,7 @@ func TestStatePerpetual(t *testing.T) {
 		p.ExpiresAt = nil
 		p.MaintenanceExpires = days(400)
 	})
-	st := computeStatus(fakeNow, blob, "", nil)
+	st := computeStatus(fakeNow, blob, "", nil, false)
 	if st.Mode != ModeLicensed || st.UserLimit != 25 {
 		t.Fatalf("perpetual: %+v", st)
 	}
@@ -133,8 +133,55 @@ func TestStatePerpetual(t *testing.T) {
 		p.ExpiresAt = nil
 		p.MaintenanceExpires = days(-3650)
 	})
-	if st := computeStatus(fakeNow, old, "", nil); st.Mode != ModeLicensed {
+	if st := computeStatus(fakeNow, old, "", nil, false); st.Mode != ModeLicensed {
 		t.Fatalf("старая perpetual: %+v", st)
+	}
+}
+
+// TestStateCRLSkipsPerpetual: CRL отзывает ТОЛЬКО подписки (report §3.5,
+// README «Perpetual технически не отзывается») — perpetual с совпадающим
+// lic_id остаётся licensed, подписка с тем же lic_id гаснет в free+revoked.
+func TestStateCRLSkipsPerpetual(t *testing.T) {
+	// Одна пара ключей на лицензии и CRL (mkLicense перевыпускает ключи).
+	_, priv := withTestKeys(t, "k-perp-rev")
+	perpPayload := testPayload()
+	perpPayload.Kid = "k-perp-rev"
+	perpPayload.Plan = PlanPerpetual
+	perpPayload.ExpiresAt = nil
+	perpPayload.MaintenanceExpires = days(400)
+	perp, err := Sign(priv, perpPayload)
+	if err != nil {
+		t.Fatalf("Sign perpetual: %v", err)
+	}
+	subPayload := testPayload() // тот же lic_id, но подписка
+	subPayload.Kid = "k-perp-rev"
+	sub, err := Sign(priv, subPayload)
+	if err != nil {
+		t.Fatalf("Sign subscription: %v", err)
+	}
+	rev, err := SignRevocation(priv, Revocation{
+		LicID: "11111111-2222-3333-4444-555555555555", RevokedAt: fakeNow, Kid: "k-perp-rev",
+	})
+	if err != nil {
+		t.Fatalf("SignRevocation: %v", err)
+	}
+
+	if st := computeStatus(fakeNow, perp, rev, nil, false); st.Mode != ModeLicensed || st.Revoked {
+		t.Fatalf("perpetual+CRL: %+v, хочу licensed без отзыва", st)
+	}
+	if st := computeStatus(fakeNow, sub, rev, nil, false); st.Mode != ModeFree || !st.Revoked {
+		t.Fatalf("subscription+CRL: %+v, хочу free+revoked", st)
+	}
+}
+
+// TestStateTrialUsedBlocksResurrection: маркер license.trial_used (его
+// ставит Upload лицензии и никто не удаляет) гасит демо навсегда —
+// удаление лицензии не воскрешает оставшиеся дни триала.
+func TestStateTrialUsedBlocksResurrection(t *testing.T) {
+	start := days(-3) // демо активно ещё 27 дней
+	st := computeStatus(fakeNow, "", "", &start, true)
+	if st.Mode != ModeFree || st.UserLimit != FreeUserLimit {
+		t.Fatalf("trial_used: %+v, хочу free/%d", st, FreeUserLimit)
 	}
 }
 
@@ -153,7 +200,7 @@ func TestStateRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignRevocation: %v", err)
 	}
-	st := computeStatus(fakeNow, blob, rev, nil)
+	st := computeStatus(fakeNow, blob, rev, nil, false)
 	if st.Mode != ModeFree || st.UserLimit != FreeUserLimit || !st.Revoked {
 		t.Fatalf("revoked: %+v, хочу free/5/revoked", st)
 	}
@@ -168,7 +215,7 @@ func TestStateRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignRevocation other: %v", err)
 	}
-	if st := computeStatus(fakeNow, blob, other, nil); st.Mode != ModeLicensed {
+	if st := computeStatus(fakeNow, blob, other, nil, false); st.Mode != ModeLicensed {
 		t.Fatalf("чужой CRL погасил лицензию: %+v", st)
 	}
 }
@@ -176,7 +223,7 @@ func TestStateRevoked(t *testing.T) {
 // TestStateBrokenBlob: битый/непроверяемый blob → деградация в free (не
 // авария сервера).
 func TestStateBrokenBlob(t *testing.T) {
-	st := computeStatus(fakeNow, "мусор", "", nil)
+	st := computeStatus(fakeNow, "мусор", "", nil, false)
 	if st.Mode != ModeFree || st.UserLimit != FreeUserLimit {
 		t.Fatalf("битый blob: %+v, хочу free/5", st)
 	}
