@@ -1,8 +1,10 @@
 {{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
 <header class="page-head">
-  <h1>Профиль</h1>
-  <p class="page-sub">Контакты, каналы доставки кодов и смена пароля.</p>
+  <h1>Профиль{{if .User.DisplayName}} — {{.User.DisplayName}}{{end}}</h1>
+  <p class="page-sub">Контакты, каналы доставки кодов и смена пароля.
+  {{if eq .User.Source "ldap"}}Пароль проверяется каталогом
+  LDAP/Active Directory.{{end}}</p>
 </header>
 
 <section class="card">
@@ -45,6 +47,14 @@
   </div>
   <form action="/me/contacts" method="post" class="form">
     {{csrf .CSRF}}
+    {{if .User.DisplayName}}
+    <label class="field">
+      <span class="field-label">Отображаемое имя{{if eq .User.Source "ldap"}} <span class="badge neutral">ldap</span>{{end}}</span>
+      <input class="input" type="text" value="{{.User.DisplayName}}" readonly
+        {{if eq .User.Source "ldap"}}title="Синхронизируется из каталога LDAP при каждом входе"{{end}}>
+      {{if eq .User.Source "ldap"}}<span class="help">Синхронизируется из каталога при каждом входе.</span>{{end}}
+    </label>
+    {{end}}
     <div class="field-row">
       <label class="field">
         <span class="field-label">Email</span>
@@ -104,6 +114,16 @@
   </form>
 </section>
 
+{{if eq .User.Source "ldap"}}
+<section class="card">
+  <div class="card-head">
+    <h2>Смена пароля</h2>
+    <p>Ваш пароль хранится в каталоге LDAP/Active Directory — меняйте его
+    средствами каталога (портал самообслуживания AD или обращение к
+    администратору домена).</p>
+  </div>
+</section>
+{{else}}
 <section class="card">
   <div class="card-head">
     <h2>Смена пароля</h2>
@@ -131,4 +151,5 @@
     </div>
   </form>
 </section>
+{{end}}
 {{end}}

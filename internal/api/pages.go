@@ -457,8 +457,16 @@ func (p *PagesAPI) handlePrefer(w http.ResponseWriter, r *http.Request) {
 
 // handlePassword — POST /me/password: смена пароля и отзыв всех сессий и
 // устройств (как PATCH /api/v1/me/password); после смены — выход на /login.
+// LDAP-пользователям операция запрещена сервером (форма в шаблоне скрыта,
+// но прямой POST должен упереться в страж — пароль меняется в каталоге).
 func (p *PagesAPI) handlePassword(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
+	if user.Source == store.SourceLDAP {
+		p.auditPage(r.Context(), user.Username, "password_change", clientIP(r), "fail",
+			map[string]any{"reason": "ldap_managed"})
+		redirectFlash(w, r, "/me", "Пароль LDAP-пользователя меняется в Active Directory.", false)
+		return
+	}
 	newPwd := r.PostFormValue("new_password")
 	if newPwd == "" || newPwd != r.PostFormValue("new_password2") {
 		redirectFlash(w, r, "/me", "Новые пароли не совпадают.", false)
@@ -923,16 +931,25 @@ func derefUsers(list []*store.User) []store.User {
 }
 
 // userFormFields — общее чтение формы создания/редактирования
-// пользователя; возвращает пароль (пустой — не менять).
+// пользователя; возвращает пароль (пустой — не менять). display_name
+// читается только для локальных: у LDAP-поле_disabled в шаблоне (не
+// отправляется) и значение синхронизируется каталогом.
 func (p *PagesAPI) userFormFields(r *http.Request, u *store.User) string {
 	u.Username = strings.TrimSpace(r.PostFormValue("username"))
 	u.Role = r.PostFormValue("role")
 	if u.Role != "admin" {
 		u.Role = "user"
 	}
+	u.Source = r.PostFormValue("source")
+	if u.Source != store.SourceLDAP {
+		u.Source = store.SourceLocal
+	}
 	u.Enabled = r.PostFormValue("enabled") != ""
 	u.Email = strings.TrimSpace(r.PostFormValue("email"))
 	u.Phone = strings.TrimSpace(r.PostFormValue("phone"))
+	if u.Source != store.SourceLDAP {
+		u.DisplayName = strings.TrimSpace(r.PostFormValue("display_name"))
+	}
 	if chs, ok := parseChannels(r.PostForm["prefer_channels"]); ok {
 		u.PreferChannels = chs
 	}
@@ -957,7 +974,9 @@ func radiusReplyFromForm(raw string) (map[string]string, bool) {
 func (p *PagesAPI) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
 	u := &store.User{}
 	pwd := p.userFormFields(r, u)
-	if u.Username == "" || pwd == "" {
+	// LDAP-пользователю пароль не нужен: он проверяется каталогом; вместо
+	// опционального пароля — случайный непригодный хеш.
+	if u.Username == "" || (pwd == "" && u.Source != store.SourceLDAP) {
 		redirectFlash(w, r, "/admin/users", "Имя пользователя и пароль обязательны.", false)
 		return
 	}
@@ -967,7 +986,11 @@ func (p *PagesAPI) handleAdminUserCreate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	u.RadiusReply = reply
-	u.PasswordHash = secrets.HashPassword(pwd)
+	if pwd == "" {
+		u.PasswordHash = secrets.HashPassword(secrets.RandomToken(32))
+	} else {
+		u.PasswordHash = secrets.HashPassword(pwd)
+	}
 	if err := p.st.UserCreate(r.Context(), u); err != nil {
 		if isUniqueViolation(err) {
 			redirectFlash(w, r, "/admin/users", "Это имя пользователя уже занято.", false)
@@ -1213,18 +1236,32 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 			replyJSON = string(b)
 		}
 	}
+	allowJSON, roleJSON := "", ""
+	if t.LDAP.AllowGroups != nil {
+		if b, err := json.MarshalIndent(t.LDAP.AllowGroups, "", "  "); err == nil {
+			allowJSON = string(b)
+		}
+	}
+	if t.LDAP.RoleMap != nil {
+		if b, err := json.MarshalIndent(t.LDAP.RoleMap, "", "  "); err == nil {
+			roleJSON = string(b)
+		}
+	}
 	return web.AdminSettingsData{
 		BaseData:        p.baseData(r, "Настройки сервера", "admin-settings"),
 		S:               t,
 		RadiusSecretSet: t.RadiusSecret != "",
 		SMTPPasswordSet: t.SMTP.Password != "",
 		TGBotTokenSet:   t.TG.BotToken != "",
+		LDAPPasswordSet: t.LDAP.BindPassword != "",
 		// SEC-004: сырой JSON шлюза содержит креды — в textarea рендерится
 		// маскированное дерево; POST с масками мерж оставляет без изменений.
 		SMSGatewayJSON:   settings.MaskedJSONTree(t.SMS),
 		SMSPresetsJSON:   settings.MaskedJSONTree(t.SMSPresets),
 		SMSPresetChoices: smsPresetChoices(),
 		ReplyAttrsJSON:   replyJSON,
+		LDAPAllowGroups:  allowJSON,
+		LDAPRoleMap:      roleJSON,
 	}
 }
 
@@ -1254,10 +1291,39 @@ func smsPresetChoices() []web.SMSPresetChoice {
 // что рендерит шаблон admin_settings.gohtml), ключ настроек (объектный или
 // скалярный) и тип значения. JSON-поле объектного ключа выводится из имени
 // отсечением префикса «key.» (поле smtp.host → ключ smtp, поле host).
+// kind 'n' — вложенное поле второго уровня: имя «key.group.field» пишется
+// в JSON-объект {group: {field: …}} (ldap.attrs.email → attrs.email).
 type settingsField struct {
 	name string // имя поля формы (совпадает с шаблоном)
 	key  string // ключ настроек (объектный или скалярный)
-	kind byte   // 's' строка (по умолчанию), 'i' целое, 'b' чекбокс, 'j' сырой JSON
+	kind byte   // 's' строка (по умолчанию), 'i' целое, 'b' чекбокс, 'j' сырой JSON, 'n' вложенное поле
+}
+
+// setPartialField записывает значение поля формы в карту «JSON-поле →
+// значение» объектного ключа; dotted-имена после префикса ключа дают
+// вложенные объекты (ldap.attrs.email → {"attrs":{"email":…}}).
+func setPartialField(partial map[string]map[string]json.RawMessage, key, name string, v json.RawMessage) {
+	if partial[key] == nil {
+		partial[key] = make(map[string]json.RawMessage)
+	}
+	rest := strings.TrimPrefix(name, key+".")
+	if i := strings.IndexByte(rest, '.'); i >= 0 {
+		group := rest[:i]
+		if partial[key][group] == nil {
+			partial[key][group] = json.RawMessage("{}")
+		}
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(partial[key][group], &nested); err != nil || nested == nil {
+			nested = make(map[string]json.RawMessage)
+		}
+		nested[rest[i+1:]] = v
+		b, err := json.Marshal(nested)
+		if err == nil {
+			partial[key][group] = b
+		}
+		return
+	}
+	partial[key][rest] = v
 }
 
 // settingsForm — поля форм по секциям; имена В ТОЧНОСТИ как в шаблоне
@@ -1303,6 +1369,22 @@ var settingsForm = map[string][]settingsField{
 	"webauthn": {
 		{name: "webauthn.rp_id", key: "webauthn"},
 		{name: "webauthn.rp_name", key: "webauthn"},
+	},
+	"ldap": {
+		{name: "ldap.enabled", key: "ldap", kind: 'b'},
+		{name: "ldap.url", key: "ldap"},
+		{name: "ldap.starttls", key: "ldap", kind: 'b'},
+		{name: "ldap.bind_dn", key: "ldap"},
+		{name: "ldap.bind_password", key: "ldap"},
+		{name: "ldap.base_dn", key: "ldap"},
+		{name: "ldap.user_filter", key: "ldap"},
+		{name: "ldap.group_base_dn", key: "ldap"},
+		{name: "ldap.group_filter", key: "ldap"},
+		{name: "ldap.attrs.email", key: "ldap", kind: 'n'},
+		{name: "ldap.attrs.phone", key: "ldap", kind: 'n'},
+		{name: "ldap.attrs.display_name", key: "ldap", kind: 'n'},
+		{name: "ldap.allow_groups", key: "ldap", kind: 'j'},
+		{name: "ldap.role_map", key: "ldap", kind: 'j'},
 	},
 	"policy": {
 		{name: "policy.code_ttl", key: "policy"},
@@ -1374,10 +1456,7 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		if f.kind == 'b' {
 			// Чекбокс: отсутствие в форме — явное «выключено».
 			v, _ := json.Marshal(r.PostFormValue(f.name) != "")
-			if partial[f.key] == nil {
-				partial[f.key] = make(map[string]json.RawMessage)
-			}
-			partial[f.key][strings.TrimPrefix(f.name, f.key+".")] = v
+			setPartialField(partial, f.key, f.name, v)
 			continue
 		}
 		if raw == "" || raw == settingsMask {
@@ -1406,10 +1485,7 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		if f.name == f.key {
 			scalar[f.key] = v
 		} else {
-			if partial[f.key] == nil {
-				partial[f.key] = make(map[string]json.RawMessage)
-			}
-			partial[f.key][strings.TrimPrefix(f.name, f.key+".")] = v
+			setPartialField(partial, f.key, f.name, v)
 		}
 	}
 

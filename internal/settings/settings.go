@@ -67,6 +67,11 @@ type T struct {
 		Skew   uint
 	}
 
+	// LDAP — конфигурация внешнего каталога LDAP/Active Directory
+	// (ключ ldap): первый фактор проверяется bind-ом в каталоге,
+	// атрибуты и группы синхронизируются в локального пользователя.
+	LDAP LDAPSettings
+
 	TG struct {
 		BotToken string
 	}
@@ -90,6 +95,33 @@ type T struct {
 		MaxFail          int
 		DefaultPrefer    []channel.Channel
 	}
+}
+
+// LDAPSettings — конфигурация внешнего каталога LDAP/Active Directory
+// (ключ ldap): первый фактор проверяется bind-ом в каталоге, атрибуты и
+// группы синхронизируются в локального пользователя. Именованный тип
+// нужен пакету auth (LdapVerifier принимает значение снимка без доступа к T).
+type LDAPSettings struct {
+	Enabled      bool
+	URL          string // ldap://host:389 или ldaps://host:636
+	StartTLS     bool   // STARTTLS поверх ldap://
+	BindDN       string // сервисная учётка для поиска (пустая — анонимный поиск)
+	BindPassword string
+	BaseDN       string
+	UserFilter   string // {login} заменяется на экранированный логин
+	GroupBaseDN  string // пусто — base_dn
+	GroupFilter  string // {dn} заменяется на DN пользователя
+	Attrs        LDAPAttrs
+	AllowGroups  []string          // пусто — все найденные в каталоге
+	RoleMap      map[string]string // DN или CN группы → роль (admin/user)
+}
+
+// LDAPAttrs — имена LDAP-атрибутов, из которых берутся контакты
+// пользователя при синхронизации (ключ ldap.attrs).
+type LDAPAttrs struct {
+	Email       string
+	Phone       string
+	DisplayName string
 }
 
 // SMSGatewayConfig — локальное зеркало delivery.GatewayConfig (Task 6):
@@ -143,6 +175,13 @@ func defaultT() *T {
 	t.TOTP.Period = 30
 	t.TOTP.Skew = 1
 	t.WebAuthn.RPName = "twofa"
+	t.LDAP.UserFilter = `(&(objectClass=user)(sAMAccountName={login}))`
+	t.LDAP.GroupFilter = `(&(objectClass=group)(member={dn}))`
+	t.LDAP.Attrs.Email = "mail"
+	t.LDAP.Attrs.Phone = "telephoneNumber"
+	t.LDAP.Attrs.DisplayName = "displayName"
+	t.LDAP.AllowGroups = []string{}
+	t.LDAP.RoleMap = map[string]string{}
 	t.Policy.CodeTTL = 5 * time.Minute
 	t.Policy.ResendCooldown = 60 * time.Second
 	t.Policy.PushCooldown = 30 * time.Second
@@ -243,6 +282,20 @@ func parseInts(raw json.RawMessage, def []int) []int {
 	var v []int
 	if err := json.Unmarshal(raw, &v); err != nil {
 		log.Printf("settings: значение %s не массив целых — использую дефолт %v", raw, def)
+		return def
+	}
+	return v
+}
+
+// parseStrings разбирает JSON-массив строк. Пустой массив значим
+// (в отличие от parseChannels) и возвращается как есть.
+func parseStrings(raw json.RawMessage, def []string) []string {
+	if isNullJSON(raw) {
+		return def
+	}
+	var v []string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		log.Printf("settings: значение %s не массив строк — использую дефолт %v", raw, def)
 		return def
 	}
 	return v
@@ -360,6 +413,23 @@ func buildT(raw map[string]json.RawMessage) *T {
 	wa := fields(raw["webauthn"])
 	t.WebAuthn.RPID = parseString(wa["rp_id"], def.WebAuthn.RPID)
 	t.WebAuthn.RPName = parseString(wa["rp_name"], def.WebAuthn.RPName)
+
+	ld := fields(raw["ldap"])
+	t.LDAP.Enabled = parseBool(ld["enabled"], def.LDAP.Enabled)
+	t.LDAP.URL = parseString(ld["url"], def.LDAP.URL)
+	t.LDAP.StartTLS = parseBool(ld["starttls"], def.LDAP.StartTLS)
+	t.LDAP.BindDN = parseString(ld["bind_dn"], def.LDAP.BindDN)
+	t.LDAP.BindPassword = parseString(ld["bind_password"], def.LDAP.BindPassword)
+	t.LDAP.BaseDN = parseString(ld["base_dn"], def.LDAP.BaseDN)
+	t.LDAP.UserFilter = parseString(ld["user_filter"], def.LDAP.UserFilter)
+	t.LDAP.GroupBaseDN = parseString(ld["group_base_dn"], def.LDAP.GroupBaseDN)
+	t.LDAP.GroupFilter = parseString(ld["group_filter"], def.LDAP.GroupFilter)
+	ldAttrs := fields(ld["attrs"])
+	t.LDAP.Attrs.Email = parseString(ldAttrs["email"], def.LDAP.Attrs.Email)
+	t.LDAP.Attrs.Phone = parseString(ldAttrs["phone"], def.LDAP.Attrs.Phone)
+	t.LDAP.Attrs.DisplayName = parseString(ldAttrs["display_name"], def.LDAP.Attrs.DisplayName)
+	t.LDAP.AllowGroups = parseStrings(ld["allow_groups"], def.LDAP.AllowGroups)
+	t.LDAP.RoleMap = parseStringMap(ld["role_map"], def.LDAP.RoleMap)
 
 	pol := fields(raw["policy"])
 	t.Policy.CodeTTL = parseDur(pol["code_ttl"], def.Policy.CodeTTL)
@@ -674,6 +744,24 @@ func (t *T) masked() map[string]any {
 		"webauthn": map[string]any{
 			"rp_id":   t.WebAuthn.RPID,
 			"rp_name": t.WebAuthn.RPName,
+		},
+		"ldap": map[string]any{
+			"enabled":       t.LDAP.Enabled,
+			"url":           t.LDAP.URL,
+			"starttls":      t.LDAP.StartTLS,
+			"bind_dn":       t.LDAP.BindDN,
+			"bind_password": secretMask(t.LDAP.BindPassword),
+			"base_dn":       t.LDAP.BaseDN,
+			"user_filter":   t.LDAP.UserFilter,
+			"group_base_dn": t.LDAP.GroupBaseDN,
+			"group_filter":  t.LDAP.GroupFilter,
+			"attrs": map[string]any{
+				"email":        t.LDAP.Attrs.Email,
+				"phone":        t.LDAP.Attrs.Phone,
+				"display_name": t.LDAP.Attrs.DisplayName,
+			},
+			"allow_groups": t.LDAP.AllowGroups,
+			"role_map":     t.LDAP.RoleMap,
 		},
 		"policy": map[string]any{
 			"code_ttl":                t.Policy.CodeTTL.String(),

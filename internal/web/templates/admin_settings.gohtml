@@ -263,6 +263,92 @@
 
 <section class="card">
   <div class="card-head">
+    <h2><span class="card-icon">🏢</span>LDAP / Active Directory <span class="badge warn">SIGHUP</span></h2>
+    <p>Внешний каталог первым фактором: пароль проверяется bind-ом в AD,
+    пользователи создаются автоматически при первом входе, атрибуты и роли
+    групп синхронизируются.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="ldap">
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">URL сервера</span>
+        <input class="input mono" type="text" name="ldap.url" value="{{.S.LDAP.URL}}" placeholder="ldaps://dc1.example.com:636">
+        <span class="help">ldaps:// (порт 636) рекомендуется; ldap:// — только с STARTTLS.</span>
+      </label>
+      <div class="field">
+        <span class="field-label">Шифрование</span>
+        <label class="check"><input type="checkbox" name="ldap.starttls" value="1"{{if .S.LDAP.StartTLS}} checked{{end}}> <span>STARTTLS поверх ldap://</span></label>
+      </div>
+    </div>
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Сервисный Bind DN</span>
+        <input class="input mono" type="text" name="ldap.bind_dn" value="{{.S.LDAP.BindDN}}" placeholder="CN=svc-twofa,OU=Service,DC=example,DC=com">
+        <span class="help">Учётка для поиска пользователей; пусто — анонимный поиск.</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Пароль сервисной учётки {{if .LDAPPasswordSet}}<span class="badge neutral">•••• (задано)</span>{{end}}</span>
+        <input class="input" type="password" name="ldap.bind_password" placeholder="введите новое, чтобы изменить">
+      </label>
+    </div>
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Base DN</span>
+        <input class="input mono" type="text" name="ldap.base_dn" value="{{.S.LDAP.BaseDN}}" placeholder="DC=example,DC=com">
+      </label>
+      <label class="field">
+        <span class="field-label">Base DN групп</span>
+        <input class="input mono" type="text" name="ldap.group_base_dn" value="{{.S.LDAP.GroupBaseDN}}" placeholder="пусто — как Base DN">
+      </label>
+    </div>
+    <label class="field">
+      <span class="field-label">Фильтр пользователя</span>
+      <input class="input mono" type="text" name="ldap.user_filter" value="{{.S.LDAP.UserFilter}}">
+      <span class="help">«{login}» заменяется логином (экранируется по RFC 4515).</span>
+    </label>
+    <label class="field">
+      <span class="field-label">Фильтр групп</span>
+      <input class="input mono" type="text" name="ldap.group_filter" value="{{.S.LDAP.GroupFilter}}">
+      <span class="help">«{dn}» заменяется DN найденного пользователя.</span>
+    </label>
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Атрибут: email</span>
+        <input class="input mono" type="text" name="ldap.attrs.email" value="{{.S.LDAP.Attrs.Email}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Атрибут: телефон</span>
+        <input class="input mono" type="text" name="ldap.attrs.phone" value="{{.S.LDAP.Attrs.Phone}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Атрибут: отображаемое имя</span>
+        <input class="input mono" type="text" name="ldap.attrs.display_name" value="{{.S.LDAP.Attrs.DisplayName}}">
+      </label>
+    </div>
+    <label class="field">
+      <span class="field-label">Разрешённые группы (JSON)</span>
+      <textarea class="textarea" name="ldap.allow_groups" rows="3">{{.LDAPAllowGroups}}</textarea>
+      <span class="help">Массив DN: вход только участникам хотя бы одной группы; пустой массив <code>[]</code> — все найденные в каталоге.</span>
+    </label>
+    <label class="field">
+      <span class="field-label">Роли по группам (JSON)</span>
+      <textarea class="textarea" name="ldap.role_map" rows="4">{{.LDAPRoleMap}}</textarea>
+      <span class="help">Объект «DN или CN группы → роль» (admin/user): {"CN=VPN-Admins,OU=Groups,DC=example,DC=com":"admin"}. Роль синхронизируется при каждом входе.</span>
+    </label>
+    <div class="field">
+      <span class="field-label">Бэкенд</span>
+      <label class="check"><input type="checkbox" name="ldap.enabled" value="1"{{if .S.LDAP.Enabled}} checked{{end}}> <span>Включить проверку пароля в LDAP/AD</span></label>
+      <span class="help">Локальные пользователи продолжают входить по локальному паролю; включение применяется по SIGHUP/без — сразу (снимок читается при каждом входе).</span>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
     <h2><span class="card-icon">🛡️</span>Политики</h2>
     <p>Сроки жизни кодов, лимиты попыток и блокировки.</p>
   </div>

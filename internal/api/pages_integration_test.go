@@ -350,6 +350,97 @@ func TestPagesAdminSettingsPost(t *testing.T) {
 	}
 }
 
+// TestPagesAdminSettingsLDAP: секция LDAP сохраняется (включая вложенные
+// ldap.attrs.*), пустой bind_password не сбрасывает секрет, флаг «задано»
+// рендерится. Настройки восстанавливаются.
+func TestPagesAdminSettingsLDAP(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	admin := mkUser(t, ctx, st, "ldapsetadmin", func(u *store.User) { u.Role = "admin" })
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = set.Put(cctx, "ldap", json.RawMessage(`{"enabled":false,"url":"","starttls":false,"bind_dn":"","bind_password":"","base_dn":"","user_filter":"(&(objectClass=user)(sAMAccountName={login}))","group_base_dn":"","group_filter":"(&(objectClass=group)(member={dn}))","attrs":{"email":"mail","phone":"telephoneNumber","display_name":"displayName"},"allow_groups":[],"role_map":{}}`))
+	})
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.login(t, admin.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	// Сохранение секции: поля первого уровня + вложенные attrs.
+	form := url.Values{
+		"section":                 {"ldap"},
+		"ldap.enabled":            {"1"},
+		"ldap.url":                {"ldaps://dc1.corp.example:636"},
+		"ldap.bind_dn":            {"CN=svc-twofa,OU=Service,DC=corp,DC=example"},
+		"ldap.bind_password":      {"dir-secret"},
+		"ldap.base_dn":            {"DC=corp,DC=example"},
+		"ldap.user_filter":        {"(&(objectClass=user)(sAMAccountName={login}))"},
+		"ldap.group_base_dn":      {"OU=Groups,DC=corp,DC=example"},
+		"ldap.group_filter":       {"(&(objectClass=group)(member={dn}))"},
+		"ldap.attrs.email":        {"mail"},
+		"ldap.attrs.phone":        {"mobile"},
+		"ldap.attrs.display_name": {"displayName"},
+		"ldap.allow_groups":       {`["CN=VPN-Users,OU=Groups,DC=corp,DC=example"]`},
+		"ldap.role_map":           {`{"CN=VPN-Admins,OU=Groups,DC=corp,DC=example":"admin"}`},
+	}
+	rec = c.postForm("/admin/settings", form, true)
+	wantStatus(t, rec, http.StatusFound)
+	got := set.Get().LDAP
+	if !got.Enabled || got.URL != "ldaps://dc1.corp.example:636" || got.BindPassword != "dir-secret" ||
+		got.BaseDN != "DC=corp,DC=example" || got.GroupBaseDN != "OU=Groups,DC=corp,DC=example" {
+		t.Fatalf("ldap не сохранён: %+v", got)
+	}
+	if got.Attrs.Phone != "mobile" {
+		t.Fatalf("ldap.attrs.phone (вложенное поле) = %q, want mobile", got.Attrs.Phone)
+	}
+	if len(got.AllowGroups) != 1 || len(got.RoleMap) != 1 || got.RoleMap["CN=VPN-Admins,OU=Groups,DC=corp,DC=example"] != "admin" {
+		t.Fatalf("allow_groups/role_map не сохранены: %v / %v", got.AllowGroups, got.RoleMap)
+	}
+
+	// Страница рендерит секцию: флаг «задано» у bind_password, значения полей.
+	rec = c.get("/admin/settings")
+	wantStatus(t, rec, http.StatusOK)
+	wantBody(t, rec, `name="ldap.bind_password"`, `ldaps://dc1.corp.example:636`, `name="ldap.attrs.phone"`)
+	// Сам пароль не утекает в разметку; флаг задан — рядом с полем.
+	if strings.Count(rec.Body.String(), "dir-secret") != 0 {
+		t.Fatal("ldap.bind_password виден в разметке настроек")
+	}
+
+	// Пустой bind_password = «не менять»: остальные поля мержатся.
+	form.Set("ldap.bind_password", "")
+	form.Set("ldap.base_dn", "DC=corp2,DC=example")
+	rec = c.postForm("/admin/settings", form, true)
+	wantStatus(t, rec, http.StatusFound)
+	got = set.Get().LDAP
+	if got.BindPassword != "dir-secret" {
+		t.Fatal("пустой bind_password не должен сбрасывать секрет")
+	}
+	if got.BaseDN != "DC=corp2,DC=example" {
+		t.Fatalf("base_dn не обновился: %q", got.BaseDN)
+	}
+
+	// Создание LDAP-пользователя без пароля: случайный непригодный хеш.
+	form = url.Values{
+		"username": {"pages-ldapuser"},
+		"source":   {"ldap"},
+		"enabled":  {"1"},
+	}
+	rec = c.postForm("/admin/users", form, true)
+	wantStatus(t, rec, http.StatusFound)
+	u, err := st.UserByUsername(ctx, "pages-ldapuser")
+	if err != nil {
+		t.Fatalf("создание ldap-пользователя через форму: %v", err)
+	}
+	if u.Source != store.SourceLDAP || u.PasswordHash == "" {
+		t.Fatalf("source/hash созданного: %q / %q", u.Source, u.PasswordHash)
+	}
+	// Список пользователей: бейдж источника.
+	rec = c.get("/admin/users")
+	wantStatus(t, rec, http.StatusOK)
+	wantBody(t, rec, `>ldap</span>`, "pages-ldapuser")
+}
+
 // ---- контракт формы настроек: имена полей шаблона = имена settingsForm ----
 
 // formRe — одна форма /admin/settings (с секцией или без).
@@ -437,6 +528,9 @@ func TestPagesAdminSettingsFormContract(t *testing.T) {
 	}
 	if _, ok := sections["smtp"]; !ok {
 		t.Fatal("форма секции smtp не найдена")
+	}
+	if _, ok := sections["ldap"]; !ok {
+		t.Fatal("форма секции ldap не найдена")
 	}
 
 	// Встреча: settingsForm ↔ шаблон, в обе стороны по каждой секции.
@@ -590,6 +684,44 @@ func TestPagesAdminChallengesHidesWebauthnSession(t *testing.T) {
 	}
 	// Состояние telegram_push по-прежнему видно администратору.
 	wantBody(t, rec, "pending")
+}
+
+// TestPagesPasswordChangeLDAPBlocked (FIX-1): HTML-смена пароля LDAP-юзера
+// блокируется сервером (форма в шаблоне скрыта, но прямой POST обязан
+// упереться в страж): флеш «меняется в Active Directory», хеш не меняется,
+// сессия не отзывается.
+func TestPagesPasswordChangeLDAPBlocked(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	user := mkUser(t, ctx, st, "htmldap", func(u *store.User) {
+		u.Source = store.SourceLDAP
+	})
+	hashBefore := user.PasswordHash
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.login(t, user.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	rec = c.postForm("/me/password", url.Values{
+		"old_password":  {testPassword},
+		"new_password":  {"new-ldap-pass-123"},
+		"new_password2": {"new-ldap-pass-123"},
+	}, true)
+	wantStatus(t, rec, http.StatusFound)
+	page := c.get(rec.Header().Get("Location"))
+	wantStatus(t, page, http.StatusOK)
+	wantBody(t, page, "Пароль LDAP-пользователя меняется в Active Directory")
+
+	fresh, err := st.UserByUsername(ctx, user.Username)
+	if err != nil {
+		t.Fatalf("UserByUsername: %v", err)
+	}
+	if fresh.PasswordHash != hashBefore {
+		t.Fatal("password_hash изменён заблокированной сменой пароля")
+	}
+	// Сессия жива: /me отвечает страницей, а не редиректом на /login.
+	rec = c.get("/me")
+	wantStatus(t, rec, http.StatusOK)
 }
 
 // TestPagesLogout: POST /logout с CSRF удаляет сессию (GET /me → /login).
