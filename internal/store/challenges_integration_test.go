@@ -162,13 +162,44 @@ func TestActiveCodeChallengesIntegration(t *testing.T) {
 		t.Fatalf("expires_at = %v, want в прошлом", got.ExpiresAt)
 	}
 
-	list, err := st.ActiveCodeChallenges(ctx, u.ID)
+	list, err := st.ActiveCodeChallenges(ctx, u.ID, "api")
 	if err != nil {
 		t.Fatalf("ActiveCodeChallenges: %v", err)
 	}
 	if len(list) != 1 || list[0].ID != live.ID {
 		t.Fatalf("ActiveCodeChallenges: %d шт. (%v), want только live %s",
 			len(list), list, live.ID)
+	}
+
+	// Purpose-фильтр (SEC-001): код чужого purpose не возвращается.
+	if _, err := st.ActiveCodeChallenges(ctx, u.ID, "ui_confirm"); err != nil {
+		t.Fatalf("ActiveCodeChallenges(ui_confirm): %v", err)
+	} else if got, err := st.ActiveCodeChallenges(ctx, u.ID, "ui_confirm"); err != nil || len(got) != 0 {
+		t.Fatalf("ActiveCodeChallenges(ui_confirm): %d шт. (err %v), want 0", len(got), err)
+	}
+	if got, err := st.ActiveCodeChallenges(ctx, u.ID, "tg_link"); err != nil || len(got) != 0 {
+		t.Fatalf("ActiveCodeChallenges(tg_link): %d шт. (err %v), want 0", len(got), err)
+	}
+	if got, err := st.ActiveCodeChallenges(ctx, u.ID, "ui_confirm", "radius_prefetch"); err != nil || len(got) != 0 {
+		t.Fatalf("ActiveCodeChallenges(набор без api): %d шт. (err %v), want 0", len(got), err)
+	}
+
+	// Пустой набор purposes — программная ошибка (изоляция обязательна).
+	if _, err := st.ActiveCodeChallenges(ctx, u.ID); err == nil {
+		t.Fatal("ActiveCodeChallenges без purposes: err=nil, want ошибка")
+	}
+
+	// Челлендж другого purpose возвращаетcя только своим фильтром.
+	ui := newCodeChallenge(t, u.ID)
+	ui.Purpose = "ui_confirm"
+	if err := st.ChallengeCreate(ctx, ui); err != nil {
+		t.Fatalf("создание ui_confirm: %v", err)
+	}
+	if got, err := st.ActiveCodeChallenges(ctx, u.ID, "ui_confirm"); err != nil || len(got) != 1 || got[0].ID != ui.ID {
+		t.Fatalf("ActiveCodeChallenges(ui_confirm) после вставки: %d шт. (err %v), want ui %s", len(got), err, ui.ID)
+	}
+	if got, err := st.ActiveCodeChallenges(ctx, u.ID, "api", "ui_confirm"); err != nil || len(got) != 2 {
+		t.Fatalf("ActiveCodeChallenges(api+ui_confirm): %d шт. (err %v), want 2", len(got), err)
 	}
 }
 

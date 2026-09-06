@@ -61,20 +61,33 @@ func (s *Store) TOTPGet(ctx context.Context, userID uuid.UUID) (secretEnc []byte
 	return secretEnc, digits, period, confirmedAt != nil, lastTimestep, nil
 }
 
-// TOTPSetTimestep поднимает last_timestep до ts, но никогда не уменьшает
-// (GREATEST — защита от отката счётчика при рассинхронизации часов клиента).
+// TOTPSetTimestep атомарно поднимает last_timestep до ts — только если тот
+// СТРОГО больше текущего (compare-and-set). Возвращает advanced=true, когда
+// строка обновлена; advanced=false — счётчик уже был ≥ ts (replay кода или
+// конкурентный победитель), значение в БД не меняется и не откатывается.
+// CAS закрывает гонку записи: две параллельные проверки одного кода окна C
+// обе читают last_timestep < C, но UPDATE проходит ровно у одной.
 // ErrNotFound, если секрета нет.
-func (s *Store) TOTPSetTimestep(ctx context.Context, userID uuid.UUID, ts int64) error {
+func (s *Store) TOTPSetTimestep(ctx context.Context, userID uuid.UUID, ts int64) (bool, error) {
 	ct, err := s.Pool().Exec(ctx,
-		`UPDATE totp_secrets SET last_timestep = GREATEST(last_timestep, $2) WHERE user_id = $1`,
+		`UPDATE totp_secrets SET last_timestep = $2 WHERE user_id = $1 AND last_timestep < $2`,
 		userID, ts)
 	if err != nil {
-		return fmt.Errorf("store: timestep TOTP %s: %w", userID, err)
+		return false, fmt.Errorf("store: timestep TOTP %s: %w", userID, err)
 	}
-	if ct.RowsAffected() == 0 {
-		return ErrNotFound
+	if ct.RowsAffected() == 1 {
+		return true, nil
 	}
-	return nil
+	// Ноль строк: либо секрета нет, либо replay (last_timestep >= ts).
+	var exists bool
+	if err := s.Pool().QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM totp_secrets WHERE user_id = $1)`, userID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: timestep TOTP %s: %w", userID, err)
+	}
+	if !exists {
+		return false, ErrNotFound
+	}
+	return false, nil
 }
 
 // TOTPDelete удаляет секрет пользователя; идемпотентно (отсутствие — не ошибка).

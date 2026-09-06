@@ -71,7 +71,7 @@ func TestTOTPLifecycleIntegration(t *testing.T) {
 	}
 }
 
-func TestTOTPSetTimestepGreatestIntegration(t *testing.T) {
+func TestTOTPSetTimestepCASIntegration(t *testing.T) {
 	st := sharedTestStore(t)
 	ctx := t.Context()
 	u := newTestUser(t)
@@ -79,17 +79,27 @@ func TestTOTPSetTimestepGreatestIntegration(t *testing.T) {
 		t.Fatalf("TOTPSave: %v", err)
 	}
 
+	// CAS: запись проходит только при строго возрастающем счётчике.
+	// Равный или меньший — replay (advanced=false, без ошибки), значение
+	// в БД не меняется и не откатывается.
 	steps := []struct {
-		set  int64
-		want int64
+		set      int64
+		advanced bool
+		want     int64
 	}{
-		{42, 42},
-		{7, 42}, // не уменьшается
-		{100, 100},
+		{42, true, 42},
+		{7, false, 42},   // меньший — replay
+		{42, false, 42},  // равный — replay
+		{100, true, 100}, // строго больший — принят
+		{99, false, 100},
 	}
 	for _, step := range steps {
-		if err := st.TOTPSetTimestep(ctx, u.ID, step.set); err != nil {
+		advanced, err := st.TOTPSetTimestep(ctx, u.ID, step.set)
+		if err != nil {
 			t.Fatalf("TOTPSetTimestep(%d): %v", step.set, err)
+		}
+		if advanced != step.advanced {
+			t.Fatalf("TOTPSetTimestep(%d).advanced=%v, want %v", step.set, advanced, step.advanced)
 		}
 		_, _, _, _, got, err := st.TOTPGet(ctx, u.ID)
 		if err != nil {
@@ -102,7 +112,7 @@ func TestTOTPSetTimestepGreatestIntegration(t *testing.T) {
 
 	// SetTimestep без секрета — ErrNotFound.
 	u2 := newTestUser(t)
-	if err := st.TOTPSetTimestep(ctx, u2.ID, 5); !errors.Is(err, ErrNotFound) {
+	if _, err := st.TOTPSetTimestep(ctx, u2.ID, 5); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("TOTPSetTimestep без секрета: err=%v, want ErrNotFound", err)
 	}
 }

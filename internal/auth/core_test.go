@@ -435,7 +435,7 @@ func TestVerifyPasswordAndCode(t *testing.T) {
 	if _, err := core.Start(ctx, user, "api"); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	got, ok, err := core.VerifyPasswordAndCode(ctx, user.Username, testPassword, email.lastCode())
+	got, ok, err := core.VerifyPasswordAndCode(ctx, user.Username, testPassword, email.lastCode(), LoginCodePurposes...)
 	if err != nil || !ok || got == nil || got.ID != user.ID {
 		t.Fatalf("пароль+код: user=%v ok=%v err=%v", got, ok, err)
 	}
@@ -461,7 +461,7 @@ func TestVerifyPasswordAndCode(t *testing.T) {
 		t.Fatalf("Start(combined): %v", err)
 	}
 	pap := testPassword + email.lastCode()
-	got, ok, err = core.VerifyPasswordAndCode(ctx, combined.Username, pap, "")
+	got, ok, err = core.VerifyPasswordAndCode(ctx, combined.Username, pap, "", LoginCodePurposes...)
 	if err != nil || !ok || got == nil || got.ID != combined.ID {
 		t.Fatalf("комбинированная строка: user=%v ok=%v err=%v", got, ok, err)
 	}
@@ -914,3 +914,155 @@ func TestStartPushCooldownAndOrphanCleanup(t *testing.T) {
 		t.Fatalf("Start в cooldown: err=%v, хочу ErrCooldown", err)
 	}
 }
+
+// withBurnSpy подменяет пакетовую burn-функцию счётчиком вызовов; возвращает
+// восстановление и число вызовов на момент чтения.
+func withBurnSpy() (restore func(), count func() int) {
+	var mu sync.Mutex
+	n := 0
+	old := burnDummyVerify
+	burnDummyVerify = func(string) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+	}
+	return func() { burnDummyVerify = old },
+		func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return n
+		}
+}
+
+// TestVerifyPasswordAndCodeBurnsOnNoUser (SEC-005/F2): ветка «пользователь
+// не найден» в VerifyPasswordAndCode обязана выполнять полный argon2-цикл
+// по хешу-приманке — иначе время ответа выдаёт существование учётной записи.
+func TestVerifyPasswordAndCodeBurnsOnNoUser(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	core := newCore(st, set, box, nil, nil)
+
+	restore, count := withBurnSpy()
+	defer restore()
+
+	if _, ok, err := core.VerifyPasswordAndCode(ctx, "no-such-user-xyz", "whatever", "123456"); err != nil || ok {
+		t.Fatalf("no_user: ok=%v err=%v, хочу (nil,false,nil)", ok, err)
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("argon2-burn на отсутствующего пользователя: вызовов %d, хочу 1", n)
+	}
+}
+
+// TestRADIUSAuthBurnsOnNoUser (SEC-005/F2): тот же инвариант для RADIUS-ветки.
+func TestRADIUSAuthBurnsOnNoUser(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	core := newCore(st, set, box, nil, nil)
+
+	restore, count := withBurnSpy()
+	defer restore()
+
+	core.RADIUSAuth(ctx, "no-such-radius-user", "whatever", "127.0.0.1")
+	if n := count(); n != 1 {
+		t.Fatalf("argon2-burn на отсутствующего пользователя (RADIUS): вызовов %d, хочу 1", n)
+	}
+}
+
+// TestVerifyAnyCodeTOTPConcurrentSingleSuccess (SEC-006/B1): два конкурентных
+// предъявления ОДНОГО TOTP-кода окна C — ровно один успех: CAS в
+// TOTPSetTimestep оставляет второй попытке advanced=false → ErrBadCode.
+func TestVerifyAnyCodeTOTPConcurrentSingleSuccess(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	// Skew 3: код окна C+2 остаётся валидным ~90 с — тест не гоняется с
+	// тиком реального времени. Восстановление — дефолтный skew 1.
+	mustPut(t, ctx, set, "totp", `{"issuer":"twofa","digits":6,"period":30,"skew":3}`)
+	t.Cleanup(func() { mustPut(t, ctx, set, "totp", `{"issuer":"twofa","digits":6,"period":30,"skew":1}`) })
+	core := newCore(st, set, box, nil, nil)
+
+	user := mkUser(t, ctx, st, "totpcas", func(u *store.User) {
+		u.PreferChannels = []channel.Channel{channel.TOTP}
+	})
+	secret := enrollTOTP(t, ctx, st, box, user, true)
+
+	cur := time.Now().Unix()/30 + 2 // будущее окно в пределах skew
+	code := codeAt(t, secret, cur)
+
+	const n = 4
+	res := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() { _, err := core.VerifyAnyCode(ctx, user, code); res <- err }()
+	}
+	okCnt := 0
+	for i := 0; i < n; i++ {
+		if err := <-res; err == nil {
+			okCnt++
+		} else if !errors.Is(err, ErrBadCode) {
+			t.Fatalf("неожиданная ошибка конкурентной проверки: %v", err)
+		}
+	}
+	if okCnt != 1 {
+		t.Fatalf("успешных предъявлений одного кода: %d, хочу ровно 1", okCnt)
+	}
+	_, _, _, _, last, err := st.TOTPGet(ctx, user.ID)
+	if err != nil || last != cur {
+		t.Fatalf("last_timestep=%d (err %v), хочу %d", last, err, cur)
+	}
+}
+
+// TestVerifyAnyCodePurposeScoping (SEC-001): доставленные коди расходуются
+// только своим назначением — код входа (api) не подтверждает операцию
+// кабинета (ui_confirm), экранный код привязки (tg_link) не работает как
+// второй фактор входа.
+func TestVerifyAnyCodePurposeScoping(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	core := newCore(st, set, box, nil, nil)
+
+	user := mkUser(t, ctx, st, "purposeuser", nil)
+	mkCode := func(purpose, code string) {
+		t.Helper()
+		if err := st.ChallengeCreate(ctx, &store.Challenge{
+			UserID: user.ID, Channel: channel.Email,
+			CodeHash: secrets.SHA256(code), ExpiresAt: time.Now().Add(5 * time.Minute),
+			AttemptsLeft: 3, Purpose: purpose,
+		}); err != nil {
+			t.Fatalf("создание челленджа %s: %v", purpose, err)
+		}
+	}
+	mkCode("api", "111111")
+	mkCode("ui_confirm", "222222")
+	mkCode("tg_link", "333333")
+
+	// Код входа (api) принимается на вход, но не для ui_confirm.
+	if _, err := core.VerifyAnyCode(ctx, user, "111111", LoginCodePurposes...); err != nil {
+		t.Fatalf("api-код на входе: %v", err)
+	}
+	if _, err := core.VerifyAnyCode(ctx, user, "222222", purposeUIConfirmForTest); err != nil {
+		t.Fatalf("ui_confirm-код для кабинета: %v", err)
+	}
+	// Экранный код привязки не работает ни входом, ни подтверждением кабинета.
+	if _, err := core.VerifyAnyCode(ctx, user, "333333", LoginCodePurposes...); !errors.Is(err, ErrBadCode) {
+		t.Fatalf("tg_link-код на входе: err=%v, хочу ErrBadCode", err)
+	}
+	if _, err := core.VerifyAnyCode(ctx, user, "333333", "ui_confirm"); !errors.Is(err, ErrBadCode) {
+		t.Fatalf("tg_link-код в кабинете: err=%v, хочу ErrBadCode", err)
+	}
+	// Код входа не подтверждает операцию кабинета.
+	if _, err := core.VerifyAnyCode(ctx, user, "111111", "ui_confirm"); err == nil {
+		t.Fatal("api-код подтверждает ui_confirm — purpose-изоляция нарушена")
+	} else if !errors.Is(err, ErrBadCode) {
+		t.Fatalf("api-код для ui_confirm: err=%v, хочу ErrBadCode", err)
+	}
+
+	// VerifyPasswordAndCode: tg_link-код не даёт вход (пароль верен, код не
+	// опознан → (user,false)).
+	got, ok, err := core.VerifyPasswordAndCode(ctx, user.Username, testPassword, "333333", LoginCodePurposes...)
+	if err != nil || ok || got == nil || got.ID != user.ID {
+		t.Fatalf("tg_link в VerifyPasswordAndCode: user=%v ok=%v err=%v, хочу (user,false)", got, ok, err)
+	}
+}
+
+// purposeUIConfirmForTest — purpose подтверждения операций кабинета в тестах
+// ядра (в api-пакете это константа purposeUIConfirm).
+const purposeUIConfirmForTest = "ui_confirm"

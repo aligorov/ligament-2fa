@@ -79,10 +79,18 @@ func dummyArgon2Hash() string {
 
 // burnDummyVerify выполняет полный argon2-цикл по хешу-приманке — та же
 // цена, что у secrets.VerifyPassword для реального хеша. Результат
-// заведомо ложен и отбрасывается.
-func burnDummyVerify(password string) {
+// заведомо ложен и отбрасывается. Пакетная переменная (а не функция) —
+// тест подменяет её счётчиком, проверяя вызов в ветке «нет пользователя».
+var burnDummyVerify = func(password string) {
 	_ = secrets.VerifyPassword(dummyArgon2Hash(), password)
 }
+
+// BurnDummyVerify — экспортированная обёртка burnDummyVerify: единый argon2-
+// burn для веток «пользователь не найден» за пределами LocalVerifier
+// (Core.VerifyPasswordAndCode / Core.RADIUSAuth), чтобы все пути входа
+// отвечали одинаковой ценой и тайминг не раскрывал существование учётной
+// записи.
+func BurnDummyVerify(password string) { burnDummyVerify(password) }
 
 // Verify возвращает пользователя при верном пароле. Отсутствующий
 // пользователь → store.ErrNotFound (после полного argon2 по хешу-приманке —

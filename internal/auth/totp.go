@@ -23,7 +23,9 @@ import (
 //     НАИВЫСШИЙ счётчик, порождающий этот код; он обязан быть строго больше
 //     last_timestep — уже потраченного счётчика, иначе код считается
 //     переиспользованным (одно окно — одна попытка);
-//  4. успех поднимает last_timestep (TOTPSetTimestep, GREATEST — без отката).
+//  4. успех поднимает last_timestep (TOTPSetTimestep, CAS «строго больше» —
+//     без отката и без двойной траты одного окна двумя конкурентными
+//     проверками).
 //
 // Ошибки: store.ErrNotFound — TOTP не настроен; ErrBadCode — неверный или
 // переиспользованный код (включая неподтверждённый секрет).
@@ -75,8 +77,14 @@ func (c *Core) verifyTOTP(ctx context.Context, user *store.User, code string) er
 	if matched < 0 || matched <= lastTimestep {
 		return ErrBadCode
 	}
-	if err := c.st.TOTPSetTimestep(ctx, user.ID, matched); err != nil {
+	advanced, err := c.st.TOTPSetTimestep(ctx, user.ID, matched)
+	if err != nil {
 		return fmt.Errorf("auth: обновление last_timestep %s: %w", user.Username, err)
+	}
+	if !advanced {
+		// CAS проигран: конкурентный запрос уже потратил это окно — тот же
+		// код второй раз успехом не считается (replay).
+		return ErrBadCode
 	}
 	return nil
 }

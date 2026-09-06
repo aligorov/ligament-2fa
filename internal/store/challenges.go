@@ -126,12 +126,18 @@ func (s *Store) ChallengeSetPush(ctx context.Context, id uuid.UUID, state string
 
 // ActiveCodeChallenges возвращает неиспользованные непросроченные кодовые
 // челленджи пользователя (expires_at > now, used_at IS NULL, code_hash IS NOT
-// NULL), свежие первыми.
-func (s *Store) ActiveCodeChallenges(ctx context.Context, userID uuid.UUID) ([]*Challenge, error) {
+// NULL) с purpose из списка purposes, свежие первыми. Purpose-фильтр
+// обязателен (SEC-001): код привязки Telegram (tg_link) или подтверждения
+// операции в кабинете (ui_confirm) не должен работать как второй фактор
+// входа — пустой список purposes означает ошибку программирования.
+func (s *Store) ActiveCodeChallenges(ctx context.Context, userID uuid.UUID, purposes ...string) ([]*Challenge, error) {
+	if len(purposes) == 0 {
+		return nil, errors.New("store: ActiveCodeChallenges: список purposes пуст (изоляция кодов по назначению обязательна)")
+	}
 	rows, err := s.Pool().Query(ctx, `SELECT `+challengeCols+` FROM challenges
 		WHERE user_id = $1 AND expires_at > now() AND used_at IS NULL
-		  AND code_hash IS NOT NULL
-		ORDER BY created_at DESC`, userID)
+		  AND code_hash IS NOT NULL AND purpose = ANY($2)
+		ORDER BY created_at DESC`, userID, purposes)
 	if err != nil {
 		return nil, fmt.Errorf("store: активные челленджи %s: %w", userID, err)
 	}
