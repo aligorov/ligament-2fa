@@ -13,7 +13,18 @@ import (
 
 // BaseData — общие данные макета base.gohtml. Username пуст на /login —
 // тогда приложение не показывает боковое меню и кнопку выхода.
+// AdsData — параметры рекламы РСЯ: Show ненулевой только когда лицензия
+// не платная и админ включил блоки; каждое поле — ID блока из
+// partner.yandex.ru (пусто → место не рендерится).
+type AdsData struct {
+	Show       bool
+	LoginLeft  string
+	LoginRight string
+	Sidebar    string
+}
+
 type BaseData struct {
+	Ads      AdsData
 	Title    string
 	Username string // текущий пользователь (пусто до входа)
 	IsAdmin  bool

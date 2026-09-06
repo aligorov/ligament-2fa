@@ -107,6 +107,41 @@
 
 <section class="card">
   <div class="card-head">
+    <h2><span class="card-icon">📢</span>Реклама (РСЯ) <span class="badge ok">на лету</span></h2>
+    <p>Блоки Рекламной сети Яндекса: слева/справа на странице входа и в
+    сайдбаре после входа. Показываются ТОЛЬКО на бесплатной лицензии —
+    платная отключает рекламу полностью.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="ads">
+    <div class="field">
+      <span class="field-label">Реклама включена</span>
+      <label class="check"><input type="checkbox" name="ads.enabled" value="1"{{if .S.Ads.Enabled}} checked{{end}}> <span>показывать блоки РСЯ на free/trial</span></label>
+    </div>
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Блок слева от входа (ID)</span>
+        <input class="input mono" type="text" name="ads.blocks.login_left" placeholder="R-123456-1" value="{{.S.Ads.Blocks.LoginLeft}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Блок справа от входа (ID)</span>
+        <input class="input mono" type="text" name="ads.blocks.login_right" placeholder="R-123456-2" value="{{.S.Ads.Blocks.LoginRight}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Блок в сайдбаре (ID)</span>
+        <input class="input mono" type="text" name="ads.blocks.sidebar" placeholder="R-123456-3" value="{{.S.Ads.Blocks.Sidebar}}">
+      </label>
+    </div>
+    <p class="help">ID блоков — в <a href="https://partner.yandex.ru" rel="noopener" target="_blank">кабинете РСЯ</a>
+    (Веб-сайты → блоки RTB). Пустой ID — место не рендерится.</p>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
     <h2><span class="card-icon">🛡️</span>Файрвол / fail2ban <span class="badge ok">на лету</span></h2>
     <p>Автоблокировка IP по неудачам входа/кода/RADIUS; списки — на странице «Файрвол».</p>
   </div>

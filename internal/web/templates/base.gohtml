@@ -39,6 +39,9 @@
       <a class="nav-link{{if eq .Nav "admin-api"}} active{{end}}" href="/api/docs">API</a>
       {{end}}
     </nav>
+    {{if and .Ads.Show .Ads.Sidebar}}
+    <div class="ad-slot ad-side" id="adv-sidebar" data-rtb-block="{{.Ads.Sidebar}}"></div>
+    {{end}}
     <div class="sidebar-foot">
       <div class="sidebar-user" title="{{.Username}}">{{.Username}}</div>
       <form action="/logout" method="post" class="logout-form">
@@ -55,6 +58,7 @@
       {{template "content" .}}
     </main>
     <footer class="app-footer">Ligament</footer>
+    {{template "ads_scripts" .}}
   </div>
 </div>
 {{end}}
@@ -62,11 +66,24 @@
 {{/* layout_center — центрированная карточка (login, ошибки). */}}
 {{define "layout_center"}}
 <div class="center-wrap">
+  {{if and .Ads.Show .Ads.LoginLeft}}<aside class="ad-slot ad-side" id="adv-login-left" data-rtb-block="{{.Ads.LoginLeft}}"></aside>{{end}}
   <main class="center-main">
     {{with .Flash}}<div class="flash ok"><span class="flash-icon">✅</span>{{.}}</div>{{end}}
     {{with .FlashErr}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
     {{template "content" .}}
   </main>
+  {{if and .Ads.Show .Ads.LoginRight}}<aside class="ad-slot ad-side" id="adv-login-right" data-rtb-block="{{.Ads.LoginRight}}"></aside>{{end}}
   <footer class="center-footer">Ligament</footer>
 </div>
+{{template "ads_scripts" .}}
+{{end}}
+
+{{/* ads_scripts — загрузчик РСЯ: только на бесплатной лицензии и при
+     настроенных блоках (CSP для yandex доменов расширяется тем же
+     условием в securityHeaders). */}}
+{{define "ads_scripts"}}
+{{if and .Ads.Show (or .Ads.LoginLeft (or .Ads.LoginRight .Ads.Sidebar))}}
+<script src="https://yandex.st/ads/system/context.js" async></script>
+<script src="/static/ads.js" defer></script>
+{{end}}
 {{end}}

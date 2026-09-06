@@ -14,6 +14,7 @@ var defaults = map[string]json.RawMessage{
 	"listen.radius_auth": json.RawMessage(`":1812"`),
 	"listen.radius_acct": json.RawMessage(`":1813"`),
 	"server.domain":      json.RawMessage(`""`),
+	"ads":                      json.RawMessage(`{"enabled":false,"blocks":{"login_left":"","login_right":"","sidebar":""}}`),
 	"fail2ban":           json.RawMessage(`{"enabled":true,"max_fail":10,"window":"5m","ban_time":"30m"}`),
 	"messages": mustJSON(map[string]string{
 		"email_body":         DefaultEmailBody,

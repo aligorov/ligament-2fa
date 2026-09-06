@@ -51,6 +51,17 @@ type T struct {
 		Domain string
 	}
 
+	// Ads — блоки рекламы РСЯ (ключ ads): показываются ТОЛЬКО когда
+	// лицензия не платная (free/trial); ID блоков выдаёт partner.yandex.ru.
+	Ads struct {
+		Enabled bool
+		Blocks  struct {
+			LoginLeft  string `json:"login_left"`
+			LoginRight string `json:"login_right"`
+			Sidebar    string `json:"sidebar"`
+		} `json:"blocks"`
+	}
+
 	// Fail2ban — автоблокировка IP по неудачам (ключ fail2ban);
 	// чёрный список отклоняет всегда, белый не банится.
 	Fail2ban struct {
@@ -208,6 +219,7 @@ func defaultT() *T {
 	t.Listen.HTTP = ":8080"
 	t.Listen.RadiusAuth = ":1812"
 	t.Listen.RadiusAcct = ":1813"
+	t.Ads.Enabled = false
 	t.Fail2ban.Enabled = true
 	t.Fail2ban.MaxFail = 10
 	t.Fail2ban.Window = 5 * time.Minute
@@ -451,6 +463,12 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Listen.RadiusAcct = parseString(raw["listen.radius_acct"], def.Listen.RadiusAcct)
 
 	t.Server.Domain = strings.TrimRight(parseString(raw["server.domain"], def.Server.Domain), "/")
+	ads := fields(raw["ads"])
+	t.Ads.Enabled = parseBool(ads["enabled"], def.Ads.Enabled)
+	adsb := fields(ads["blocks"])
+	t.Ads.Blocks.LoginLeft = parseString(adsb["login_left"], def.Ads.Blocks.LoginLeft)
+	t.Ads.Blocks.LoginRight = parseString(adsb["login_right"], def.Ads.Blocks.LoginRight)
+	t.Ads.Blocks.Sidebar = parseString(adsb["sidebar"], def.Ads.Blocks.Sidebar)
 	f2b := fields(raw["fail2ban"])
 	t.Fail2ban.Enabled = parseBool(f2b["enabled"], def.Fail2ban.Enabled)
 	t.Fail2ban.MaxFail = parseInt(f2b["max_fail"], def.Fail2ban.MaxFail)
@@ -837,6 +855,14 @@ func (t *T) masked() map[string]any {
 		},
 		"server": map[string]any{
 			"domain": t.Server.Domain,
+		},
+		"ads": map[string]any{
+			"enabled": t.Ads.Enabled,
+			"blocks": map[string]any{
+				"login_left":  t.Ads.Blocks.LoginLeft,
+				"login_right": t.Ads.Blocks.LoginRight,
+				"sidebar":     t.Ads.Blocks.Sidebar,
+			},
 		},
 		"fail2ban": map[string]any{
 			"enabled":  t.Fail2ban.Enabled,

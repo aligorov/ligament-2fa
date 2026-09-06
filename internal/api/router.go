@@ -23,18 +23,55 @@ import (
 // QR-коды — data:-URI (img-src data:).
 const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
 
+// contentSecurityPolicyAds — CSP при активной рекламе РСЯ: домены Яндекса
+// для загрузчика context.js, рендера блоков и их картинок/фреймов.
+const contentSecurityPolicyAds = "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' https://yandex.st https://an.yandex.ru; frame-src https://an.yandex.ru https://yandex.st; connect-src 'self' https://an.yandex.ru"
+
 // securityHeaders — базовые заголовки безопасности каждого ответа (SEC-011):
 // nosniff против MIME-сниффинга, DENY против кликджекинга, no-referrer
 // против утечки URL (в них — коды/токены query), CSP против XSS/инъекций.
-func securityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", contentSecurityPolicy)
-		next.ServeHTTP(w, r)
-	})
+// securityHeaders — базовые заголовки безопасности каждого ответа (SEC-011).
+// adsActive: на запросе активна реклама РСЯ → CSP расширяется доменами
+// Яндекса (остальные ответы остаются под строгой политикой).
+func securityHeaders(adsActive func(*http.Request) bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			csp := contentSecurityPolicy
+			if adsActive != nil && adsActive(r) {
+				csp = contentSecurityPolicyAds
+			}
+			h := w.Header()
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Referrer-Policy", "no-referrer")
+			h.Set("Content-Security-Policy", csp)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// adsFor — решатель показа рекламы: блоки РСЯ видны только на НЕ платной
+// лицензии (free/trial) при ads.enabled и заполненных ID блоков.
+// Лицензия читается на каждый запрос — загрузка платного файла через
+// админку отключает рекламу без рестарта.
+func adsFor(lic *license.Manager, m *settings.M) func(*http.Request) web.AdsData {
+	return func(r *http.Request) web.AdsData {
+		if lic == nil || m == nil {
+			return web.AdsData{}
+		}
+		snap := m.Get()
+		if snap == nil || !snap.Ads.Enabled {
+			return web.AdsData{}
+		}
+		st, err := lic.Effective(r.Context())
+		if err != nil || st.Mode == license.ModeLicensed {
+			return web.AdsData{}
+		}
+		return web.AdsData{Show: true,
+			LoginLeft:  snap.Ads.Blocks.LoginLeft,
+			LoginRight: snap.Ads.Blocks.LoginRight,
+			Sidebar:    snap.Ads.Blocks.Sidebar}
+	}
 }
 
 // NewRouter собирает минимальный роутер (healthz без БД) — для smoke-тестов;
@@ -101,7 +138,11 @@ func (rt *Router) Stop() {
 // HTML-404. Вызывается из main и интеграционных тестов.
 func BuildRouter(d Deps) *Router {
 	r := chi.NewRouter()
-	r.Use(securityHeaders)
+	ads := adsFor(d.Lic, d.M)
+	r.Use(securityHeaders(func(r *http.Request) bool {
+		a := ads(r)
+		return a.Show && (a.LoginLeft != "" || a.LoginRight != "" || a.Sidebar != "")
+	}))
 	if d.FW != nil {
 		r.Use(firewallMiddleware(d.FW))
 	}
@@ -118,6 +159,7 @@ func BuildRouter(d Deps) *Router {
 	if d.FW != nil {
 		pages.SetFirewall(d.FW)
 	}
+	pages.SetAds(ads)
 
 	pub.Register(r)
 	sess.Register(r)

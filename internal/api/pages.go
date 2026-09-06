@@ -59,7 +59,8 @@ type PagesAPI struct {
 	box   *secrets.Box
 	pv    auth.PasswordVerifier
 	m     *settings.M
-	fw    firewallInvalidator // nil — кэш списков не сбрасывается
+	fw    firewallInvalidator             // nil — кэш списков не сбрасывается
+	ads   func(*http.Request) web.AdsData // nil — реклама не показывается
 }
 
 // firewallInvalidator — узкий интерфейс firewall.Guard (без цикла импортов).
@@ -67,6 +68,10 @@ type firewallInvalidator interface{ Invalidate() }
 
 // SetFirewall подключает guard (сброс кэша списков при мутациях из UI).
 func (p *PagesAPI) SetFirewall(f firewallInvalidator) { p.fw = f }
+
+// SetAds подключает решатель показа рекламы РСЯ (free/trial-лицензия +
+// включённые блоки; nil — реклама выключена).
+func (p *PagesAPI) SetAds(f func(*http.Request) web.AdsData) { p.ads = f }
 
 // NewPagesAPI собирает HTML-обвязку; rend — рендерер internal/web,
 // sess/admin — переиспользуемые API-компоненты.
@@ -204,6 +209,9 @@ func (p *PagesAPI) requireAdmin(next http.Handler) http.Handler {
 // query (?flash=...&kind=ok|err — после редиректа).
 func (p *PagesAPI) baseData(r *http.Request, title, nav string) web.BaseData {
 	b := web.BaseData{Title: title, Nav: nav}
+	if p.ads != nil {
+		b.Ads = p.ads(r)
+	}
 	if q := r.URL.Query(); q.Get("flash") != "" {
 		if q.Get("kind") == "err" {
 			b.FlashErr = q.Get("flash")
@@ -1486,6 +1494,12 @@ var settingsForm = map[string][]settingsField{
 		{name: "radius.fail_window", key: "radius.fail_window"},
 		{name: "radius.push_wait", key: "radius.push_wait"},
 		{name: "radius.reply_attributes", key: "radius.reply_attributes", kind: 'j'},
+	},
+	"ads": {
+		{name: "ads.enabled", key: "ads", kind: 'b'},
+		{name: "ads.blocks.login_left", key: "ads"},
+		{name: "ads.blocks.login_right", key: "ads"},
+		{name: "ads.blocks.sidebar", key: "ads"},
 	},
 	"fail2ban": {
 		{name: "fail2ban.enabled", key: "fail2ban", kind: 'b'},

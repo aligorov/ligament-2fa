@@ -573,3 +573,14 @@ ul.codes li code {
   flex-direction: column;
   gap: var(--sp-5);
 }
+
+/* Рекламные слоты РСЯ (только бесплатная лицензия). Боковые — от
+   1200px, сайдбар-слот — всегда под навигацией. */
+.ad-slot { min-height: 250px; }
+.center-wrap { display: flex; align-items: center; gap: 24px; justify-content: center; }
+.ad-side {
+  flex: 0 0 300px; width: 300px; max-width: 300px;
+  display: none;
+}
+@media (min-width: 1200px) { .ad-side { display: block; } }
+.sidebar .ad-slot { margin: 8px 10px; min-height: 200px; }

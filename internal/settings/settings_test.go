@@ -658,7 +658,7 @@ func TestDefaultsCoverKnownKeys(t *testing.T) {
 	}
 	want := []string{
 		"listen.http", "listen.radius_auth", "listen.radius_acct",
-		"server.domain", "messages", "fail2ban",
+		"server.domain", "messages", "fail2ban", "ads",
 		"master_key", "admin_token",
 		"radius.secret", "radius.code_lengths", "radius.max_fail_per_user",
 		"radius.fail_window", "radius.push_wait", "radius.reply_attributes",
