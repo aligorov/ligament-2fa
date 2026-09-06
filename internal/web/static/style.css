@@ -584,3 +584,8 @@ ul.codes li code {
 }
 @media (min-width: 1200px) { .ad-side { display: block; } }
 .sidebar .ad-slot { margin: 8px 10px; min-height: 200px; }
+
+.ad-direct a { display: block; text-decoration: none; color: inherit; }
+.ad-direct img { max-width: 100%; height: auto; border-radius: 10px; }
+.ad-direct-label { display: block; padding: 12px; border: 1px dashed var(--muted, #bbb);
+  border-radius: 10px; text-align: center; color: #888; font-size: 13px; }

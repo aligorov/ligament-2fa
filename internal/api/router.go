@@ -33,12 +33,14 @@ const contentSecurityPolicyAds = "default-src 'self'; img-src 'self' data: https
 // securityHeaders — базовые заголовки безопасности каждого ответа (SEC-011).
 // adsActive: на запросе активна реклама РСЯ → CSP расширяется доменами
 // Яндекса (остальные ответы остаются под строгой политикой).
-func securityHeaders(adsActive func(*http.Request) bool) func(http.Handler) http.Handler {
+func securityHeaders(adsActive func(*http.Request) (bool, bool)) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			csp := contentSecurityPolicy
-			if adsActive != nil && adsActive(r) {
-				csp = contentSecurityPolicyAds
+			if adsActive != nil {
+				if _, need := adsActive(r); need {
+					csp = contentSecurityPolicyAds
+				}
 			}
 			h := w.Header()
 			h.Set("X-Content-Type-Options", "nosniff")
@@ -48,6 +50,22 @@ func securityHeaders(adsActive func(*http.Request) bool) func(http.Handler) http
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// adsActive — на запросе рендерится хотя бы один рекламный слот (для
+// выбора CSP): РСЯ требует домены Яндекса, direct-баннер — https-картинки,
+// чистая direct-ссылка обходится строгой политикой.
+func adsActive(a web.AdsData) (active, needAdsCSP bool) {
+	if !a.Show {
+		return false, false
+	}
+	if a.Provider == "rsya" {
+		any := a.LoginLeft != "" || a.LoginRight != "" || a.Sidebar != ""
+		return any, any // домены Яндекса для context.js
+	}
+	// direct: картинка-баннер требует img-src https:; чистая ссылка
+	// обходится строгой политикой.
+	return a.DirectURL != "", a.DirectURL != "" && a.DirectImage != ""
 }
 
 // adsFor — решатель показа рекламы: блоки РСЯ видны только на НЕ платной
@@ -67,10 +85,13 @@ func adsFor(lic *license.Manager, m *settings.M) func(*http.Request) web.AdsData
 		if err != nil || st.Mode == license.ModeLicensed {
 			return web.AdsData{}
 		}
-		return web.AdsData{Show: true,
-			LoginLeft:  snap.Ads.Blocks.LoginLeft,
-			LoginRight: snap.Ads.Blocks.LoginRight,
-			Sidebar:    snap.Ads.Blocks.Sidebar}
+		return web.AdsData{Show: true, Provider: snap.Ads.Provider,
+			LoginLeft:   snap.Ads.Blocks.LoginLeft,
+			LoginRight:  snap.Ads.Blocks.LoginRight,
+			Sidebar:     snap.Ads.Blocks.Sidebar,
+			DirectURL:   snap.Ads.Direct.URL,
+			DirectLabel: snap.Ads.Direct.Label,
+			DirectImage: snap.Ads.Direct.Image}
 	}
 }
 
@@ -139,10 +160,7 @@ func (rt *Router) Stop() {
 func BuildRouter(d Deps) *Router {
 	r := chi.NewRouter()
 	ads := adsFor(d.Lic, d.M)
-	r.Use(securityHeaders(func(r *http.Request) bool {
-		a := ads(r)
-		return a.Show && (a.LoginLeft != "" || a.LoginRight != "" || a.Sidebar != "")
-	}))
+	r.Use(securityHeaders(func(r *http.Request) (bool, bool) { return adsActive(ads(r)) }))
 	if d.FW != nil {
 		r.Use(firewallMiddleware(d.FW))
 	}

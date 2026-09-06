@@ -18,9 +18,15 @@ import (
 // partner.yandex.ru (пусто → место не рендерится).
 type AdsData struct {
 	Show       bool
-	LoginLeft  string
+	Provider   string // rsya | direct
+	LoginLeft  string // rsya: ID блоков
 	LoginRight string
 	Sidebar    string
+	// direct: одна ссылка на все слоты (Monetag/Adsterra/PropellerAds —
+	// работает на любом домене клиента без модерации площадки).
+	DirectURL   string
+	DirectLabel string
+	DirectImage string
 }
 
 type BaseData struct {

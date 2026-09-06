@@ -149,6 +149,18 @@ func hasChan(chs []channel.Channel, name string) bool {
 }
 
 // dt форматирует время в "02.01.2006 15:04"; nil — прочерк.
+// templateDict — map[string]any из пар ключ-значение (для передачи
+// нескольких аргументов во вложенный шаблон).
+func templateDict(kv ...any) map[string]any {
+	out := make(map[string]any, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		if k, ok := kv[i].(string); ok {
+			out[k] = kv[i+1]
+		}
+	}
+	return out
+}
+
 func dt(v any) string {
 	switch t := v.(type) {
 	case time.Time:
@@ -182,5 +194,6 @@ var funcs = template.FuncMap{
 	"qrPNG":      qrPNG,
 	"hasChan":    hasChan,
 	"dt":         dt,
+	"dict":       templateDict,
 	"deref":      deref,
 }

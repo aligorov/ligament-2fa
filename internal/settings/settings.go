@@ -55,11 +55,20 @@ type T struct {
 	// лицензия не платная (free/trial); ID блоков выдаёт partner.yandex.ru.
 	Ads struct {
 		Enabled bool
-		Blocks  struct {
+		// Provider: "rsya" — RTB-блоки РСЯ (площадка/домен модеруется),
+		// "direct" — direct-link сеть (Monetag/Adsterra/PropellerAds):
+		// одна ссылка работает на ЛЮБОМ домене без модерации площадки.
+		Provider string
+		Blocks   struct {
 			LoginLeft  string `json:"login_left"`
 			LoginRight string `json:"login_right"`
 			Sidebar    string `json:"sidebar"`
 		} `json:"blocks"`
+		Direct struct {
+			URL   string `json:"url"`   // сама direct-ссылка
+			Label string `json:"label"` // текст слота (пусто = «Реклама»)
+			Image string `json:"image"` // опц. картинка баннера (https URL)
+		} `json:"direct"`
 	}
 
 	// Fail2ban — автоблокировка IP по неудачам (ключ fail2ban);
@@ -465,6 +474,14 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Server.Domain = strings.TrimRight(parseString(raw["server.domain"], def.Server.Domain), "/")
 	ads := fields(raw["ads"])
 	t.Ads.Enabled = parseBool(ads["enabled"], def.Ads.Enabled)
+	t.Ads.Provider = parseString(ads["provider"], def.Ads.Provider)
+	if t.Ads.Provider != "direct" {
+		t.Ads.Provider = "rsya"
+	}
+	adsd := fields(ads["direct"])
+	t.Ads.Direct.URL = parseString(adsd["url"], def.Ads.Direct.URL)
+	t.Ads.Direct.Label = parseString(adsd["label"], def.Ads.Direct.Label)
+	t.Ads.Direct.Image = parseString(adsd["image"], def.Ads.Direct.Image)
 	adsb := fields(ads["blocks"])
 	t.Ads.Blocks.LoginLeft = parseString(adsb["login_left"], def.Ads.Blocks.LoginLeft)
 	t.Ads.Blocks.LoginRight = parseString(adsb["login_right"], def.Ads.Blocks.LoginRight)
@@ -857,7 +874,11 @@ func (t *T) masked() map[string]any {
 			"domain": t.Server.Domain,
 		},
 		"ads": map[string]any{
-			"enabled": t.Ads.Enabled,
+			"enabled":  t.Ads.Enabled,
+			"provider": t.Ads.Provider,
+			"direct": map[string]any{
+				"url": t.Ads.Direct.URL, "label": t.Ads.Direct.Label, "image": t.Ads.Direct.Image,
+			},
 			"blocks": map[string]any{
 				"login_left":  t.Ads.Blocks.LoginLeft,
 				"login_right": t.Ads.Blocks.LoginRight,

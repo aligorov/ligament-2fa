@@ -120,6 +120,27 @@
     </div>
     <div class="grid">
       <label class="field">
+        <span class="field-label">Провайдер</span>
+        <select class="input" name="ads.provider">
+          <option value="rsya"{{if ne .S.Ads.Provider "direct"}} selected{{end}}>РСЯ (RTB-блоки, нужен домен-площадка)</option>
+          <option value="direct"{{if eq .S.Ads.Provider "direct"}} selected{{end}}>Direct-link (любые домены, без модерации)</option>
+        </select>
+        <span class="help">Direct-link — Monetag / Adsterra / PropellerAds:
+        одна ссылка работает на любом домене клиента.</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Direct-link: URL</span>
+        <input class="input mono" type="text" name="ads.direct.url" placeholder="https://…" value="{{.S.Ads.Direct.URL}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Direct-link: надпись слота</span>
+        <input class="input" type="text" name="ads.direct.label" placeholder="Реклама" value="{{.S.Ads.Direct.Label}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Direct-link: картинка (URL, опц.)</span>
+        <input class="input mono" type="text" name="ads.direct.image" placeholder="https://…/banner.png" value="{{.S.Ads.Direct.Image}}">
+      </label>
+      <label class="field">
         <span class="field-label">Блок слева от входа (ID)</span>
         <input class="input mono" type="text" name="ads.blocks.login_left" placeholder="R-123456-1" value="{{.S.Ads.Blocks.LoginLeft}}">
       </label>
