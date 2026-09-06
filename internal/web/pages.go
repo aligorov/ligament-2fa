@@ -146,7 +146,7 @@ type AdminSettingsData struct {
 	RadiusSecretSet  bool
 	SMTPPasswordSet  bool
 	TGBotTokenSet    bool
-	LDAPPasswordSet  bool // задан ли ldap.bind_password
+	LDAPPasswordSet  bool              // задан ли ldap.bind_password
 	SMSGatewayJSON   string            // сырой JSON sms.gateway для textarea
 	SMSPresetsJSON   string            // сырой JSON sms.presets для textarea
 	SMSPresetChoices []SMSPresetChoice // пресеты шлюзов для select (заполняют textarea через JS)
