@@ -10,6 +10,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"strings"
 	"sync"
@@ -190,4 +191,72 @@ func hostOnly(s string) string {
 		return strings.Trim(h, "[]")
 	}
 	return strings.Trim(s, "[]")
+}
+
+// RealIP вычисляет клиентский IP запроса с учётом доверенного прокси:
+// если RemoteAddr входит в доверенные сети (настройка proxy.
+// trusted_networks), берётся крайний справа X-Forwarded-For, НЕ
+// принадлежащий доверенным сетям (цепочка "клиент, npm"), — реальный
+// внешний адрес. Иначе (запрос напрямую или прокси недоверенный)
+// заголовок игнорируется: только RemoteAddr — спуфингом бан не обойти.
+func (g *Guard) RealIP(r *http.Request) string {
+	var snap *settings.T
+	if g != nil && g.m != nil {
+		snap = g.m.Get()
+	}
+	return realIPFrom(r, snap)
+}
+
+// realIPFrom — RealIP без guard (для тестов с рукотворным снимком).
+func realIPFrom(r *http.Request, snap *settings.T) string {
+	remote := hostOnly(r.RemoteAddr)
+	a, err := netip.ParseAddr(remote)
+	if err != nil || snap == nil {
+		return remote
+	}
+	trusted := parsePrefixes(snap.Proxy.TrustedNetworks)
+	if !contains(trusted, a.Unmap()) {
+		return remote // не доверенный источник — заголовку не верим
+	}
+	xff := r.Header.Get("X-Forwarded-For")
+	if strings.TrimSpace(xff) == "" {
+		return remote
+	}
+	parts := strings.Split(xff, ",")
+	// Крайний справа ВНЕ доверенных сетей — реальный клиент (слева
+	// направо: клиент, посредники; правее — прокси, которым верим).
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip := strings.TrimSpace(parts[i])
+		if ip == "" {
+			continue
+		}
+		p, err := netip.ParseAddr(hostOnly(ip))
+		if err != nil {
+			continue
+		}
+		if !contains(trusted, p.Unmap()) {
+			return p.Unmap().String()
+		}
+	}
+	return remote // вся цепочка — доверенные прокси
+}
+
+// parsePrefixes — CIDR/IP строки → префиксы (битые пропускаются молча:
+// ошибка конфигурации не должна ронять разбор IP).
+func parsePrefixes(list []string) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(list))
+	for _, s := range list {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(s); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		if a, err := netip.ParseAddr(s); err == nil {
+			out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
+		}
+	}
+	return out
 }

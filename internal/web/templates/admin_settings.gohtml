@@ -107,6 +107,26 @@
 
 <section class="card">
   <div class="card-head">
+    <h2><span class="card-icon">🔀</span>Обратный прокси <span class="badge ok">на лету</span></h2>
+    <p>Доверенные сети прокси (NPM/nginx): с них принимается
+    X-Forwarded-For — в аудите и fail2ban попадают реальные внешние IP.
+    Пусто = всегда адрес сокета (заголовок игнорируется).</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="proxy">
+    <label class="field">
+      <span class="field-label">Доверенные сети (CIDR/IP, по одному в строке)</span>
+      <textarea class="textarea" name="proxy.trusted_networks" rows="3" placeholder="172.16.0.0/12">{{range .S.Proxy.TrustedNetworks}}{{.}}
+{{end}}</textarea>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
     <h2><span class="card-icon">🎨</span>Брендинг <span class="badge">платная лицензия</span></h2>
     <p>Корпоративный бренд вместо Ligament. Действует ТОЛЬКО при активной
     платной лицензии — на free/trial интерфейс остаётся стандартным.</p>

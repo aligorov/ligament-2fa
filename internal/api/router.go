@@ -154,7 +154,7 @@ type Deps struct {
 func firewallMiddleware(g *firewall.Guard) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := clientIP(r)
+			ip := g.RealIP(r) // реальный IP: RemoteAddr или XFF за доверенным прокси
 			switch g.Check(r.Context(), ip) {
 			case firewall.Denied:
 				writeError(w, http.StatusForbidden, "ip_denied")

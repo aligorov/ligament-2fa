@@ -1502,6 +1502,9 @@ var settingsForm = map[string][]settingsField{
 		{name: "radius.push_wait", key: "radius.push_wait"},
 		{name: "radius.reply_attributes", key: "radius.reply_attributes", kind: 'j'},
 	},
+	"proxy": {
+		{name: "proxy.trusted_networks", key: "proxy"},
+	},
 	"branding": {
 		{name: "branding.name", key: "branding"},
 		{name: "branding.mark", key: "branding"},

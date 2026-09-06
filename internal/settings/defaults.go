@@ -16,6 +16,7 @@ var defaults = map[string]json.RawMessage{
 	"server.domain":      json.RawMessage(`""`),
 	"branding":           json.RawMessage(`{"name":"","mark":"","logo":"","description":""}`),
 	"ads":                json.RawMessage(`{"enabled":false,"provider":"rsya","blocks":{"login_left":"","login_right":"","sidebar":""},"message_footer":"","direct":{"url":"","urls":[],"label":"","image":""}}`),
+	"proxy":              json.RawMessage(`{"trusted_networks":[]}`),
 	"fail2ban":           json.RawMessage(`{"enabled":true,"max_fail":10,"window":"5m","ban_time":"30m"}`),
 	"messages": mustJSON(map[string]string{
 		"email_body":         DefaultEmailBody,

@@ -84,6 +84,13 @@ type T struct {
 		} `json:"direct"`
 	}
 
+	// Proxy — доверенные сети обратного прокси (ключ proxy): только с
+	// этих адресов принимается X-Forwarded-For (реальные IP клиентов в
+	// аудите/fail2ban); пусто = всегда RemoteAddr (заголовок игнорируется).
+	Proxy struct {
+		TrustedNetworks []string `json:"trusted_networks"`
+	}
+
 	// Fail2ban — автоблокировка IP по неудачам (ключ fail2ban);
 	// чёрный список отклоняет всегда, белый не банится.
 	Fail2ban struct {
@@ -243,6 +250,7 @@ func defaultT() *T {
 	t.Listen.RadiusAcct = ":1813"
 	t.Ads.Enabled = false
 	t.Ads.Direct.URLs = []string{}
+	t.Proxy.TrustedNetworks = []string{}
 	t.Fail2ban.Enabled = true
 	t.Fail2ban.MaxFail = 10
 	t.Fail2ban.Window = 5 * time.Minute
@@ -529,6 +537,8 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Ads.Blocks.LoginLeft = parseString(adsb["login_left"], def.Ads.Blocks.LoginLeft)
 	t.Ads.Blocks.LoginRight = parseString(adsb["login_right"], def.Ads.Blocks.LoginRight)
 	t.Ads.Blocks.Sidebar = parseString(adsb["sidebar"], def.Ads.Blocks.Sidebar)
+	px := fields(raw["proxy"])
+	t.Proxy.TrustedNetworks = parseStringsFlex(px["trusted_networks"], def.Proxy.TrustedNetworks)
 	f2b := fields(raw["fail2ban"])
 	t.Fail2ban.Enabled = parseBool(f2b["enabled"], def.Fail2ban.Enabled)
 	t.Fail2ban.MaxFail = parseInt(f2b["max_fail"], def.Fail2ban.MaxFail)
@@ -935,6 +945,9 @@ func (t *T) masked() map[string]any {
 				"login_right": t.Ads.Blocks.LoginRight,
 				"sidebar":     t.Ads.Blocks.Sidebar,
 			},
+		},
+		"proxy": map[string]any{
+			"trusted_networks": t.Proxy.TrustedNetworks,
 		},
 		"fail2ban": map[string]any{
 			"enabled":  t.Fail2ban.Enabled,

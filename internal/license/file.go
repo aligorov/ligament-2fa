@@ -53,7 +53,7 @@ func mustPubKey(hexKey string) ed25519.PublicKey {
 // и хранить приватный офлайн (см. README «Лицензирование» → «Ключи
 // выпуска»). Подмена в рантайме — только через SetTrustedKeys (тесты).
 var trustedKeys = map[string]ed25519.PublicKey{
-	"dev-1": mustPubKey("335571483eb7a56d0ea0eb4afab5b74b7df3d9239d8862cc1066a987d63919ca"),
+	"dev-1":            mustPubKey("335571483eb7a56d0ea0eb4afab5b74b7df3d9239d8862cc1066a987d63919ca"),
 	"aligorov-2026-09": mustPubKey("5b3832181a5881426544a4e7eca6a75cdc8f59ecfb143d063b40b7671cdbcb10"),
 }
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -84,6 +85,11 @@ func writeError(w http.ResponseWriter, status int, code string) {
 // сознательно не учитываются: подделка заголовка обходила бы ip-корзину
 // rate-limiter; доверенный прокси появится вместе с его конфигурацией.
 func clientIP(r *http.Request) string {
+	// Middleware файрвола кладёт сюда реальный IP (RemoteAddr или
+	// X-Forwarded-For за доверенным прокси) — он приоритетнее сокета.
+	if ip := firewall.IPFrom(r.Context()); ip != "" {
+		return ip
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
