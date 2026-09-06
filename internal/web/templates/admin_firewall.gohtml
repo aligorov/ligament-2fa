@@ -1,0 +1,113 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
+{{define "content"}}
+<header class="page-head">
+  <h1>Файрвол / fail2ban</h1>
+  <p class="page-sub">Чёрные и белые списки IP и автоблокировка по неудачам
+  входа (web, API и RADIUS фильтруются одинаково).</p>
+</header>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">🚫</span>Чёрный список</h2>
+    <p>Запросы этих IP/CIDR отклоняются всегда (веб 403, RADIUS — Reject).</p>
+  </div>
+  {{if .Deny}}
+  <div class="table-wrap">
+    <table class="table">
+      <tr><th>CIDR</th><th>Заметка</th><th>Добавлено</th><th></th></tr>
+      {{range .Deny}}
+      <tr>
+        <td class="mono">{{.CIDR}}</td>
+        <td>{{.Note}}</td>
+        <td>{{dt .CreatedAt}}</td>
+        <td>
+          <form action="/admin/firewall/ip/{{.ID}}/delete" method="post" class="form-inline">
+            {{csrf $.CSRF}}
+            <button type="submit" class="btn danger sm">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+  {{else}}
+  <div class="empty"><p>Чёрный список пуст.</p></div>
+  {{end}}
+  <form action="/admin/firewall/ip" method="post" class="form-inline">
+    {{csrf .CSRF}}<input type="hidden" name="kind" value="deny">
+    <input class="input mono" type="text" name="cidr" placeholder="203.0.113.0/24" required>
+    <input class="input" type="text" name="note" placeholder="заметка">
+    <button type="submit" class="btn danger sm">Добавить в чёрный</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">✅</span>Белый список</h2>
+    <p>Эти IP не банятся автоматикой и не попадают под fail2ban.</p>
+  </div>
+  {{if .Allow}}
+  <div class="table-wrap">
+    <table class="table">
+      <tr><th>CIDR</th><th>Заметка</th><th>Добавлено</th><th></th></tr>
+      {{range .Allow}}
+      <tr>
+        <td class="mono">{{.CIDR}}</td>
+        <td>{{.Note}}</td>
+        <td>{{dt .CreatedAt}}</td>
+        <td>
+          <form action="/admin/firewall/ip/{{.ID}}/delete" method="post" class="form-inline">
+            {{csrf $.CSRF}}
+            <button type="submit" class="btn danger sm">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+  {{else}}
+  <div class="empty"><p>Белый список пуст.</p></div>
+  {{end}}
+  <form action="/admin/firewall/ip" method="post" class="form-inline">
+    {{csrf .CSRF}}<input type="hidden" name="kind" value="allow">
+    <input class="input mono" type="text" name="cidr" placeholder="198.51.100.7" required>
+    <input class="input" type="text" name="note" placeholder="заметка">
+    <button type="submit" class="btn sm">Добавить в белый</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">⛔</span>Активные блокировки (fail2ban)</h2>
+    <p>Автобаны по счётчику неудач (порог/окно/срок — Настройки →
+    Файрвол). Истёкшие показываются до суток.</p>
+  </div>
+  {{if .Bans}}
+  <div class="table-wrap">
+    <table class="table">
+      <tr><th>IP</th><th>Причина</th><th>Неудач</th><th>До</th><th></th></tr>
+      {{range .Bans}}
+      <tr>
+        <td class="mono">{{.IP}}</td>
+        <td><span class="badge neutral">{{.Reason}}</span></td>
+        <td>{{.Fails}}</td>
+        <td>{{dt .BannedUntil}}</td>
+        <td>
+          <form action="/admin/firewall/bans/{{.IP}}/delete" method="post" class="form-inline">
+            {{csrf $.CSRF}}
+            <button type="submit" class="btn sm">Разбанить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+  {{else}}
+  <div class="empty"><p>Активных блокировок нет.</p></div>
+  {{end}}
+</section>
+
+<p class="help">Приоритет: чёрный список → бан → белый список. Если IP
+попадает и в чёрный, и в белый — отклоняется (fail-closed). 127.0.0.1
+автоматикой не банится.</p>
+{{end}}

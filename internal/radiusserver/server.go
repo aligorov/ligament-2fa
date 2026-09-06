@@ -19,6 +19,7 @@ import (
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2866"
 
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -42,6 +43,7 @@ type Server struct {
 	core *auth.Core
 	st   *store.Store
 	m    *settings.M
+	fw   *firewall.Guard // nil — фильтрации по IP нет
 }
 
 // New собирает RADIUS-сервер. Секрет и адреса читаются из настроек при
@@ -49,6 +51,11 @@ type Server struct {
 func New(core *auth.Core, st *store.Store, m *settings.M) *Server {
 	return &Server{core: core, st: st, m: m}
 }
+
+// SetFirewall подключает fail2ban-guard: Access-Request с чёрного/
+// забаненного IP получает Access-Reject без обращения к паролям;
+// accounting с такого IP отбрасывается. nil — фильтрации нет.
+func (s *Server) SetFirewall(g *firewall.Guard) { s.fw = g }
 
 // slogBridge — маршрутизация внутренних ошибок layeh/radius в slog
 // (PacketServer.ErrorLog принимает *log.Logger).
@@ -195,6 +202,19 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 		slog.Warn("radius: неверный Message-Authenticator — пакет отброшен",
 			"remote", r.RemoteAddr.String())
 		return
+	}
+
+	// Файрвол: чёрный список/автобан фильтруют и RADIUS-запросы.
+	if s.fw != nil {
+		switch s.fw.Check(r.Context(), hostOnly(r.RemoteAddr)) {
+		case firewall.Denied, firewall.Banned:
+			slog.Warn("radius: Access-Request отброшен файрволом",
+				"remote", hostOnly(r.RemoteAddr))
+			resp := r.Response(radius.CodeAccessReject)
+			rfc2865.ReplyMessage_SetString(resp, "rejected")
+			_ = w.Write(resp)
+			return
+		}
 	}
 
 	username, _ := rfc2865.UserName_LookupString(r.Packet)

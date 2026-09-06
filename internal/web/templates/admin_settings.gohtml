@@ -107,6 +107,37 @@
 
 <section class="card">
   <div class="card-head">
+    <h2><span class="card-icon">🛡️</span>Файрвол / fail2ban <span class="badge ok">на лету</span></h2>
+    <p>Автоблокировка IP по неудачам входа/кода/RADIUS; списки — на странице «Файрвол».</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="fail2ban">
+    <div class="grid">
+      <div class="field">
+        <span class="field-label">Автобан включён</span>
+        <label class="check"><input type="checkbox" name="fail2ban.enabled" value="1"{{if .S.Fail2ban.Enabled}} checked{{end}}> <span>считать неудачи и банить IP</span></label>
+      </div>
+      <label class="field">
+        <span class="field-label">Неудач до бана</span>
+        <input class="input" type="number" name="fail2ban.max_fail" value="{{.S.Fail2ban.MaxFail}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Окно (duration)</span>
+        <input class="input mono" type="text" name="fail2ban.window" value="{{.S.Fail2ban.Window}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Срок бана (duration)</span>
+        <input class="input mono" type="text" name="fail2ban.ban_time" value="{{.S.Fail2ban.BanTime}}">
+      </label>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
     <h2><span class="card-icon">🌐</span>Домен и шаблоны сообщений <span class="badge warn">SIGHUP</span></h2>
     <p>Публичный адрес сервера и тексты сообщений с кодами; применяются после SIGHUP или перезапуска.</p>
   </div>

@@ -51,6 +51,15 @@ type T struct {
 		Domain string
 	}
 
+	// Fail2ban — автоблокировка IP по неудачам (ключ fail2ban);
+	// чёрный список отклоняет всегда, белый не банится.
+	Fail2ban struct {
+		Enabled bool
+		MaxFail int
+		Window  time.Duration
+		BanTime time.Duration
+	}
+
 	// Messages — шаблоны текстов сообщений (ключ messages):
 	// плейсхолдеры {code} {ttl} {domain} {username} {ip} {ua} {time};
 	// пустой шаблон = встроенный дефолт. Тема письма — smtp.subject.
@@ -194,6 +203,10 @@ func defaultT() *T {
 	t.Listen.HTTP = ":8080"
 	t.Listen.RadiusAuth = ":1812"
 	t.Listen.RadiusAcct = ":1813"
+	t.Fail2ban.Enabled = true
+	t.Fail2ban.MaxFail = 10
+	t.Fail2ban.Window = 5 * time.Minute
+	t.Fail2ban.BanTime = 30 * time.Minute
 	t.Messages.EmailBody = DefaultEmailBody
 	t.Messages.SMSText = DefaultSMSText
 	t.Messages.TelegramCode = DefaultTelegramCode
@@ -433,6 +446,11 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Listen.RadiusAcct = parseString(raw["listen.radius_acct"], def.Listen.RadiusAcct)
 
 	t.Server.Domain = strings.TrimRight(parseString(raw["server.domain"], def.Server.Domain), "/")
+	f2b := fields(raw["fail2ban"])
+	t.Fail2ban.Enabled = parseBool(f2b["enabled"], def.Fail2ban.Enabled)
+	t.Fail2ban.MaxFail = parseInt(f2b["max_fail"], def.Fail2ban.MaxFail)
+	t.Fail2ban.Window = parseDur(f2b["window"], def.Fail2ban.Window)
+	t.Fail2ban.BanTime = parseDur(f2b["ban_time"], def.Fail2ban.BanTime)
 	msg := fields(raw["messages"])
 	t.Messages.EmailBody = parseString(msg["email_body"], def.Messages.EmailBody)
 	t.Messages.SMSText = parseString(msg["sms_text"], def.Messages.SMSText)
@@ -807,6 +825,12 @@ func (t *T) masked() map[string]any {
 		},
 		"server": map[string]any{
 			"domain": t.Server.Domain,
+		},
+		"fail2ban": map[string]any{
+			"enabled":   t.Fail2ban.Enabled,
+			"max_fail":  t.Fail2ban.MaxFail,
+			"window":    t.Fail2ban.Window.String(),
+			"ban_time":  t.Fail2ban.BanTime.String(),
 		},
 		"messages": map[string]any{
 			"email_body":         t.Messages.EmailBody,

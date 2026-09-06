@@ -2262,6 +2262,105 @@ paths:
                 $ref: '#/components/schemas/Error'
               example: {error: internal}
 
+  /api/v1/admin/firewall:
+    get:
+      tags: [Admin]
+      summary: "Файрвол: списки IP и активные блокировки"
+      description: "Чёрные/белые списки CIDR (allow/deny) и автобаны fail2ban по IP (web/API/RADIUS фильтруются одинаково: чёрный список → веб 403 / RADIUS Reject; бан → 429 / Reject; белый список не баним). Приоритет: чёрный список → бан → белый список; IP в обоих списках отклоняется (fail-closed). 127.0.0.1 автоматикой не банится. Аудит firewall_view."
+      operationId: adminFirewallGet
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Списки и банки.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [allow, deny, bans, settings]
+                properties:
+                  allow: {type: array, items: {$ref: '#/components/schemas/IPListRow'}}
+                  deny: {type: array, items: {$ref: '#/components/schemas/IPListRow'}}
+                  bans: {type: array, items: {$ref: '#/components/schemas/IPBanRow'}}
+                  settings:
+                    type: object
+                    properties:
+                      enabled: {type: boolean}
+                      max_fail: {type: integer}
+                      window: {type: string}
+                      ban_time: {type: string}
+              example: {allow: [], deny: [{id: 019a…, kind: deny, cidr: "203.0.113.0/24", note: сканер}], bans: [{ip: 203.0.113.7, reason: login_fail, fails: 10, banned_until: "2026-09-06T15:00:00Z"}], settings: {enabled: true, max_fail: 10, window: 5m0s, ban_time: 30m0s}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/admin/firewall/ip:
+    post:
+      tags: [Admin]
+      summary: "Добавить CIDR в чёрный/белый список"
+      description: "CIDR или одиночный IP (нормализуется: 10.0.0.5 → 10.0.0.5/32). kind=deny — отклонять всегда; kind=allow — не банить автоматикой. Дубликат по (kind,cidr) обновляет заметку. Кэш guard сбрасывается сразу. Аудит firewall_ip_add. Мутация: X-CSRF-Token не нужен (admin_token)."
+      operationId: adminFirewallIPAdd
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, cidr]
+              properties:
+                kind: {type: string, enum: [allow, deny]}
+                cidr: {type: string, example: "203.0.113.0/24"}
+                note: {type: string}
+      responses:
+        '201':
+          description: Запись создана.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IPListRow'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/admin/firewall/ip/{id}:
+    delete:
+      tags: [Admin]
+      summary: "Удалить запись списка"
+      description: "Удаляет CIDR из чёрного/белого списка по id; кэш guard сбрасывается сразу. Аудит firewall_ip_delete."
+      operationId: adminFirewallIPDelete
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Удалено.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ok'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/admin/firewall/bans/{ip}:
+    delete:
+      tags: [Admin]
+      summary: "Ручной разбан IP"
+      description: "Снимает активную автоблокировку fail2ban (счётчик обнуляется удалением записи). Аудит firewall_unban."
+      operationId: adminFirewallUnban
+      security:
+        - adminBearer: []
+      parameters:
+        - name: ip
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Бан снят.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ok'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
   /api/v1/admin/backup:
     get:
       tags: [Admin]
@@ -2479,6 +2578,24 @@ components:
       name: twofa_session
       description: "Web-сессия (cookie twofa_session, HttpOnly+Secure+SameSite=Lax; выдаётся POST /api/v1/login и /api/v1/login/2fa). Для МУТИРУЮЩИХ методов (POST/PUT/PATCH/DELETE) обязателен заголовок X-CSRF-Token со значением csrf из ответа входа — иначе 403 csrf. Доверенные устройства — отдельная cookie twofa_device (remember_device)."
   schemas:
+    IPListRow:
+      type: object
+      required: [id, kind, cidr]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [allow, deny]}
+        cidr: {type: string, example: "203.0.113.0/24"}
+        note: {type: string}
+        created_at: {type: string, format: date-time}
+    IPBanRow:
+      type: object
+      required: [ip, reason, fails, banned_until]
+      properties:
+        ip: {type: string}
+        reason: {type: string, enum: [login_fail, code_fail, radius_fail]}
+        fails: {type: integer}
+        banned_until: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
     Error:
       type: object
       required: [error]

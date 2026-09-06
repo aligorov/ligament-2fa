@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -57,7 +58,14 @@ type PagesAPI struct {
 	box   *secrets.Box
 	pv    auth.PasswordVerifier
 	m     *settings.M
+	fw    firewallInvalidator // nil — кэш списков не сбрасывается
 }
+
+// firewallInvalidator — узкий интерфейс firewall.Guard (без цикла импортов).
+type firewallInvalidator interface{ Invalidate() }
+
+// SetFirewall подключает guard (сброс кэша списков при мутациях из UI).
+func (p *PagesAPI) SetFirewall(f firewallInvalidator) { p.fw = f }
 
 // NewPagesAPI собирает HTML-обвязку; rend — рендерер internal/web,
 // sess/admin — переиспользуемые API-компоненты.
@@ -101,6 +109,10 @@ func (p *PagesAPI) Register(r chi.Router) {
 	admin.Get("/admin/users/{id}", p.handleAdminUserEdit)
 	admin.Post("/admin/users/{id}", p.handleAdminUserAction)
 	admin.Get("/admin/audit", p.handleAdminAudit)
+	admin.Get("/admin/firewall", p.handleAdminFirewall)
+	admin.Post("/admin/firewall/ip", p.handleAdminFirewallIPAdd)
+	admin.Post("/admin/firewall/ip/{id}/delete", p.handleAdminFirewallIPDelete)
+	admin.Post("/admin/firewall/bans/{ip}/delete", p.handleAdminFirewallUnban)
 	admin.Get("/admin/challenges", p.handleAdminChallenges)
 	admin.Get("/admin/settings", p.handleAdminSettings)
 	admin.Post("/admin/settings", p.handleAdminSettingsPost)
@@ -1441,6 +1453,12 @@ var settingsForm = map[string][]settingsField{
 		{name: "radius.push_wait", key: "radius.push_wait"},
 		{name: "radius.reply_attributes", key: "radius.reply_attributes", kind: 'j'},
 	},
+	"fail2ban": {
+		{name: "fail2ban.enabled", key: "fail2ban", kind: 'b'},
+		{name: "fail2ban.max_fail", key: "fail2ban", kind: 'i'},
+		{name: "fail2ban.window", key: "fail2ban"},
+		{name: "fail2ban.ban_time", key: "fail2ban"},
+	},
 	"messages": {
 		{name: "server.domain", key: "server.domain"},
 		{name: "messages.email_body", key: "messages"},
@@ -1739,4 +1757,88 @@ func licenseErrText(err error) string {
 		slog.Error("pages: загрузка лицензии", "error", err)
 		return "Внутренняя ошибка, попробуйте позже."
 	}
+}
+
+
+// ---- админка: файрвол/fail2ban ----
+
+// handleAdminFirewall — GET /admin/firewall.
+func (p *PagesAPI) handleAdminFirewall(w http.ResponseWriter, r *http.Request) {
+	lists, err := p.st.IPLists(r.Context())
+	if err != nil {
+		flash500(w, r, "/admin/firewall", err)
+		return
+	}
+	bans, err := p.st.BansActive(r.Context())
+	if err != nil {
+		flash500(w, r, "/admin/firewall", err)
+		return
+	}
+	var allow, deny []store.IPList
+	for _, l := range lists {
+		if l.Kind == "allow" {
+			allow = append(allow, l)
+		} else {
+			deny = append(deny, l)
+		}
+	}
+	p.render(w, http.StatusOK, "admin_firewall", web.AdminFirewallData{
+		BaseData: p.baseData(r, "Файрвол", "admin-firewall"),
+		Allow:    allow, Deny: deny, Bans: bans,
+	})
+}
+
+// handleAdminFirewallIPAdd — POST /admin/firewall/ip (form: kind, cidr, note).
+func (p *PagesAPI) handleAdminFirewallIPAdd(w http.ResponseWriter, r *http.Request) {
+	kind := r.PostFormValue("kind")
+	cidr := strings.TrimSpace(r.PostFormValue("cidr"))
+	note := strings.TrimSpace(r.PostFormValue("note"))
+	if kind != "allow" && kind != "deny" {
+		redirectFlash(w, r, "/admin/firewall", "Список может быть allow или deny.", false)
+		return
+	}
+	row, err := p.st.IPListAdd(r.Context(), kind, cidr, note)
+	if err != nil {
+		redirectFlash(w, r, "/admin/firewall", "Некорректный IP или CIDR: "+cidr, false)
+		return
+	}
+	if p.fw != nil {
+		p.fw.Invalidate()
+	}
+	p.auditPage(r.Context(), "admin", "firewall_ip_add", clientIP(r), "ok",
+		map[string]any{"kind": kind, "cidr": row.CIDR})
+	redirectFlash(w, r, "/admin/firewall", "Добавлено в список "+kind+": "+row.CIDR, true)
+}
+
+// handleAdminFirewallIPDelete — POST /admin/firewall/ip/{id}/delete.
+func (p *PagesAPI) handleAdminFirewallIPDelete(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		redirectFlash(w, r, "/admin/firewall", "Некорректный id.", false)
+		return
+	}
+	if err := p.st.IPListDelete(r.Context(), id); err != nil {
+		redirectFlash(w, r, "/admin/firewall", "Запись не найдена.", false)
+		return
+	}
+	if p.fw != nil {
+		p.fw.Invalidate()
+	}
+	redirectFlash(w, r, "/admin/firewall", "Запись удалена.", true)
+}
+
+// handleAdminFirewallUnban — POST /admin/firewall/bans/{ip}/delete.
+func (p *PagesAPI) handleAdminFirewallUnban(w http.ResponseWriter, r *http.Request) {
+	ip := chi.URLParam(r, "ip")
+	if net.ParseIP(ip) == nil {
+		redirectFlash(w, r, "/admin/firewall", "Некорректный IP.", false)
+		return
+	}
+	if err := p.st.BanDelete(r.Context(), ip); err != nil {
+		flash500(w, r, "/admin/firewall", err)
+		return
+	}
+	p.auditPage(r.Context(), "admin", "firewall_unban", clientIP(r), "ok",
+		map[string]any{"ip": ip})
+	redirectFlash(w, r, "/admin/firewall", "Бан снят: "+ip, true)
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/secrets"
@@ -54,6 +55,29 @@ type Deps struct {
 	M    *settings.M
 	Rend *web.Renderer
 	Lic  *license.Manager // nil — лицензирование не смонтировано
+	FW   *firewall.Guard  // nil — файрвол/fail2ban выключен
+}
+
+// firewallMiddleware фильтрует запросы по IP ДО маршрутов и обработчиков:
+// чёрный список → 403, активный автобан → 429 (Retry-After); легитимный
+// IP кладётся в контекст — auth.Core считает по нему неудачи (fail2ban).
+// Белый список проходит без подсчёта (см. guard.Fail).
+func firewallMiddleware(g *firewall.Guard) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := clientIP(r)
+			switch g.Check(r.Context(), ip) {
+			case firewall.Denied:
+				writeError(w, http.StatusForbidden, "ip_denied")
+				return
+			case firewall.Banned:
+				w.Header().Set("Retry-After", "300")
+				writeError(w, http.StatusTooManyRequests, "ip_banned")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(firewall.WithIP(r.Context(), ip)))
+		})
+	}
 }
 
 // Router — собранный обработчик со стоп-функциями компонентов.
@@ -76,13 +100,22 @@ func (rt *Router) Stop() {
 func BuildRouter(d Deps) *Router {
 	r := chi.NewRouter()
 	r.Use(securityHeaders)
+	if d.FW != nil {
+		r.Use(firewallMiddleware(d.FW))
+	}
 	r.Get("/healthz", healthzHandler(d.St))
 
 	pub := NewPublicAPI(d.Core, d.WA, d.St, d.PV, d.M)
 	sess := NewSessionAPI(d.Core, d.St, d.PV, d.M)
 	me := NewMeAPI(d.Core, d.WA, d.St, d.Box, d.PV, d.M)
 	admin := NewAdminAPI(d.St, d.M, d.Lic)
+	if d.FW != nil {
+		admin.SetFirewall(d.FW)
+	}
 	pages := NewPagesAPI(d.Rend, sess, admin, d.Core, d.WA, d.St, d.Box, d.PV, d.M)
+	if d.FW != nil {
+		pages.SetFirewall(d.FW)
+	}
 
 	pub.Register(r)
 	sess.Register(r)

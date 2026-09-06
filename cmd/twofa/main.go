@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/api"
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/backup"
@@ -138,6 +139,8 @@ func main() {
 	pvLocal := auth.NewLocalVerifier(st)
 	pv := auth.NewCompositeVerifier(st, pvLocal, auth.NewLdapVerifier(st, m))
 	core := auth.NewCore(st, m, box, senders, pv, push)
+	guard := firewall.New(st, m)
+	core.SetFirewall(guard)
 
 	// WebAuthn необязателен: без webauthn.rp_id сервер работает, роуты
 	// отвечают 503 (смена RPID требует рестарта — как listen.*).
@@ -156,10 +159,12 @@ func main() {
 	}
 	rt := api.BuildRouter(api.Deps{
 		Core: core, WA: wa, St: st, Box: box, PV: pv, M: m, Rend: rend, Lic: lic,
+		FW: guard,
 	})
 	defer rt.Stop()
 
 	radius := radiusserver.New(core, st, m)
+	radius.SetFirewall(guard)
 
 	addr := *addrFlag
 	if addr == "" {

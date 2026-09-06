@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
 	"github.com/aligorov/twofa/internal/secrets"
@@ -29,6 +30,7 @@ type Core struct {
 	st  *store.Store
 	set *settings.M
 	box *secrets.Box
+	fw  Firewall // nil — fail2ban выключен
 
 	// senders/push меняются на лету (SetSenders после SIGHUP-перезагрузки
 	// настроек доставки) под RWMutex — HTTP-хендлеры и RADIUS-цикл читают
@@ -90,7 +92,28 @@ func (c *Core) audit(ctx context.Context, username, event string, detail map[str
 	if err := c.st.Audit(ctx, username, event, detail, ip, result); err != nil {
 		slog.Warn("auth: аудит не записан", "event", event, "error", err)
 	}
+	// fail2ban: каждая неудача входа/кода/RADIUS считаетcя по IP
+	// (HTTP-вызовы несут IP в контексте middleware, RADIUS — параметром).
+	if result == "fail" && c.fw != nil {
+		if ip == "" {
+			ip = firewall.IPFrom(ctx)
+		}
+		switch event {
+		case "login_fail", "code_fail", "radius_fail":
+			if ip != "" {
+				c.fw.Fail(ctx, ip, event)
+			}
+		}
+	}
 }
+
+// Firewall — узкое окно в firewall.Guard (интерфейс — без цикла импортов).
+type Firewall interface {
+	Fail(ctx context.Context, ip, reason string)
+}
+
+// SetFirewall подключает fail2ban-guard (вызов из main; nil — выключено).
+func (c *Core) SetFirewall(f Firewall) { c.fw = f }
 
 func ptrString(s string) *string { return &s }
 

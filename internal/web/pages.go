@@ -119,6 +119,15 @@ type AdminAuditData struct {
 	Rows []store.AuditRow
 }
 
+// AdminFirewallData — /admin/firewall: списки allow/deny, активные банки
+// и настройки fail2ban.
+type AdminFirewallData struct {
+	BaseData
+	Allow []store.IPList
+	Deny  []store.IPList
+	Bans  []store.IPBan
+}
+
 // AdminChallengesData — /admin/challenges: активные challenge;
 // Usernames превращает UserID в имя для отображения.
 type AdminChallengesData struct {

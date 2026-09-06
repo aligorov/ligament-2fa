@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -45,6 +46,7 @@ var regenerableKeys = map[string]struct{}{
 
 // AdminAPI — зависимости и маршруты /api/v1/admin/*.
 type AdminAPI struct {
+	fw firewallInvalidate // nil — мутации списков не сбрасывают кэш guard
 	st  *store.Store
 	m   *settings.M
 	lic *license.Manager // nil — лицензирование не смонтировано (тесты)
@@ -88,6 +90,10 @@ func (a *AdminAPI) Register(r chi.Router) {
 		r.Get("/settings/export", a.handleSettingsExport)
 		r.Put("/settings/import", a.handleSettingsImport)
 		r.Get("/backup", a.handleBackup)
+		r.Get("/firewall", a.handleFirewallGet)
+		r.Post("/firewall/ip", a.handleFirewallIPAdd)
+		r.Delete("/firewall/ip/{id}", a.handleFirewallIPDelete)
+		r.Delete("/firewall/bans/{ip}", a.handleFirewallUnban)
 		a.registerLicenseRoutes(r)
 	})
 }
@@ -755,3 +761,108 @@ func (a *AdminAPI) handleSettingsRegenerate(w http.ResponseWriter, r *http.Reque
 	a.audit(r.Context(), "settings_regenerate", map[string]any{"key": req.Key})
 	writeJSON(w, http.StatusOK, map[string]any{"key": req.Key, "value": val})
 }
+
+// ---- файрвол/fail2ban: чёрные/белые списки и автобаны ----
+
+// firewallIPReq — добавление CIDR в список (kind: allow|deny).
+type firewallIPReq struct {
+	Kind string `json:"kind"`
+	CIDR string `json:"cidr"`
+	Note string `json:"note"`
+}
+
+// handleFirewallGet — GET /api/v1/admin/firewall: оба списка + активные
+// банки + текущие настройки fail2ban.
+func (a *AdminAPI) handleFirewallGet(w http.ResponseWriter, r *http.Request) {
+	lists, err := a.st.IPLists(r.Context())
+	if err != nil {
+		slog.Error("api: firewall lists", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	bans, err := a.st.BansActive(r.Context())
+	if err != nil {
+		slog.Error("api: firewall bans", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	allow := make([]store.IPList, 0)
+	deny := make([]store.IPList, 0)
+	for _, l := range lists {
+		if l.Kind == "allow" {
+			allow = append(allow, l)
+		} else {
+			deny = append(deny, l)
+		}
+	}
+	f := a.m.Get().Fail2ban
+	a.audit(r.Context(), "firewall_view", nil)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"allow": allow, "deny": deny, "bans": bans,
+		"settings": map[string]any{
+			"enabled": f.Enabled, "max_fail": f.MaxFail,
+			"window": f.Window.String(), "ban_time": f.BanTime.String(),
+		},
+	})
+}
+
+// handleFirewallIPAdd — POST /api/v1/admin/firewall/ip {kind, cidr, note}.
+func (a *AdminAPI) handleFirewallIPAdd(w http.ResponseWriter, r *http.Request) {
+	var req firewallIPReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Kind != "allow" && req.Kind != "deny" {
+		writeError(w, http.StatusBadRequest, "bad_kind")
+		return
+	}
+	row, err := a.st.IPListAdd(r.Context(), req.Kind, req.CIDR, req.Note)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_cidr")
+		return
+	}
+	if a.fw != nil {
+		a.fw.Invalidate()
+	}
+	a.audit(r.Context(), "firewall_ip_add", map[string]any{"kind": req.Kind, "cidr": row.CIDR})
+	writeJSON(w, http.StatusCreated, row)
+}
+
+// handleFirewallIPDelete — DELETE /api/v1/admin/firewall/ip/{id}.
+func (a *AdminAPI) handleFirewallIPDelete(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if err := a.st.IPListDelete(r.Context(), id); err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if a.fw != nil {
+		a.fw.Invalidate()
+	}
+	a.audit(r.Context(), "firewall_ip_delete", map[string]any{"id": id.String()})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleFirewallUnban — DELETE /api/v1/admin/firewall/bans/{ip}.
+func (a *AdminAPI) handleFirewallUnban(w http.ResponseWriter, r *http.Request) {
+	ip := chi.URLParam(r, "ip")
+	if net.ParseIP(ip) == nil {
+		writeError(w, http.StatusBadRequest, "bad_ip")
+		return
+	}
+	if err := a.st.BanDelete(r.Context(), ip); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	a.audit(r.Context(), "firewall_unban", map[string]any{"ip": ip})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// firewallInvalidate — узкий интерфейс guard (без цикла импортов).
+type firewallInvalidate interface{ Invalidate() }
+
+// SetFirewall подключает guard для сброса кэша списков при мутациях.
+func (a *AdminAPI) SetFirewall(f firewallInvalidate) { a.fw = f }

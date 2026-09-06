@@ -20,7 +20,7 @@ import (
 // wantPages — все страницы пакета; тесты ниже опираются на этот набор.
 var wantPages = []string{
 	"login", "me_profile", "me_totp", "me_backup", "me_telegram",
-	"me_passkeys", "me_devices", "admin_users", "admin_audit",
+	"me_passkeys", "me_devices", "admin_users", "admin_audit", "admin_firewall",
 	"admin_challenges", "admin_settings", "admin_license", "error",
 }
 
