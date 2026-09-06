@@ -523,7 +523,12 @@ func IsKnownKey(key string) bool { return isKnownKey(key) }
 // ---- маскировка ----
 
 // sensitiveKeys — имена JSON-полей внутри sms.*: значения маскируются по
-// key path (последний сегмент, без учёта регистра).
+// key path (последний сегмент, без учёта регистра). Соответствуют кредам
+// пресетов шлюзов (smsc login/psw, smsaero auth_base64, bytehand id/key,
+// mainsms project/api_key, twilio sid/token, smsgateway24 device_id) и
+// типовым именам ключей custom-шлюзов. Сопоставление ТОЧНОЕ по имени поля —
+// «id» маскирует только поле с этим именем внутри sms.*, значения других
+// секций настроек не задевает (maskValueTree применяется только к sms.*).
 var sensitiveKeys = map[string]struct{}{
 	"authorization":       {},
 	"proxy-authorization": {},
@@ -537,6 +542,14 @@ var sensitiveKeys = map[string]struct{}{
 	"password":            {},
 	"psw":                 {},
 	"bearer":              {},
+	"key":                 {},
+	"api_id":              {},
+	"auth_base64":         {},
+	"sid":                 {},
+	"login":               {},
+	"id":                  {},
+	"project":             {},
+	"device_id":           {},
 }
 
 func isSensitiveKey(k string) bool {
@@ -592,6 +605,20 @@ func maskValueTree(v any) any {
 	default:
 		return v
 	}
+}
+
+// MaskedJSONTree возвращает pretty-JSON дерева raw с маскированными
+// чувствительными полями (те же правила, что в Masked). Для HTML-форм
+// настроек: маски-объекты {"set":…,"value":"••••"} распознаются мержем
+// (isNoChangeValue/mergeSettingMap) как «не менять поле» — отправка формы
+// с замаскированным JSON сохраняет текущие креды, новые значения их
+// заменяют.
+func MaskedJSONTree(raw json.RawMessage) string {
+	b, err := json.MarshalIndent(maskedJSON(raw), "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 // channelsToAny — []Channel -> []any для map-вывода.
