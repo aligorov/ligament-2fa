@@ -563,3 +563,13 @@ ul.codes li code {
   .form-actions .btn { flex: 1; }
   .form-actions.center { justify-content: center; }
 }
+
+/* ---- страница API-документации (/api/docs, без каркаса приложения) ---- */
+.openapi-docs {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}

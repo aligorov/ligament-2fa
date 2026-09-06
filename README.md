@@ -187,6 +187,32 @@ enroll/confirm, `POST /api/v1/me/backup-codes/regenerate` — новая пар�
 Ошибки: 401 `bad_credentials`/`bad_code` (с `attempts_left`), 410 `expired`,
 423 `locked` (fail-лок), 429 `rate_limited`/`cooldown`, 409 `no_channel`.
 
+## API-документация (OpenAPI)
+
+Полный контракт REST API (все 41 операция `/api/v1/*` + `/healthz`, схемы
+запросов/ответов, коды ошибок, примеры) — OpenAPI 3.0.3:
+
+- **`/openapi.yaml`** — сама спецификация (встроена в бинарник,
+  `Content-Type: text/yaml`);
+- **`/api/docs`** — компактная встроенная страница: эндпоинты по группам
+  (Public Auth / Web Session / Me / Admin) с методами, путями и кодами
+  ответов (ссылка «API» в админ-разделе бокового меню).
+
+Импорт в Postman: **Import → File** (или ссылку `http://localhost:8080/openapi.yaml`),
+в Insomnia: **Create → Import From URL**. Swagger UI/editor — «openapi 3.0»
+из URL `/openapi.yaml`.
+
+Замечания по авторизации при импорте:
+
+- админ-эндпоинты `/api/v1/admin/*` — заголовок `Authorization: Bearer
+  <admin_token>` (в Postman — тип Auth **Bearer Token**);
+- кабинет `/api/v1/me/*` и `POST /api/v1/logout` — cookie `twofa_session`
+  (Auth **API Key** → тип Cookie, значение из ответа `/api/v1/login`);
+  мутации (POST/PUT/PATCH/DELETE) дополнительно требуют заголовок
+  `X-CSRF-Token` со значением `csrf` из ответа входа — иначе 403 `csrf`;
+- cookie выпускается с флагом Secure — при импорте через plain HTTP
+  используйте `localhost` или TLS-прокси.
+
 ## Безопасность
 
 - Пароли — **argon2id**; TOTP-секреты — AES-256-**GCM** с AAD-привязкой к
@@ -251,6 +277,7 @@ make e2e     # E2E-сценарий (Docker): testcontainer PG + HTTP + RADIUS
 
 ```
 cmd/twofa/       композиция и запуск (main)
+api/             OpenAPI-спецификация (openapi.yaml + go:embed)
 internal/api/    REST API + web-страницы (chi)
 internal/auth/   ядро аутентификации (челленджи, сплиты, TOTP)
 internal/radiusserver/  RADIUS auth/acct (layeh.com/radius)
