@@ -27,8 +27,6 @@ const (
 
 	// FreeUserLimit — лимит активных пользователей без лицензии (навсегда).
 	FreeUserLimit = 5
-	// TrialDuration — длительность демо с первого старта.
-	TrialDuration = 30 * 24 * time.Hour
 	// graceLic — опциональное grace-окно ПОСЛЕ expires_at подписки
 	// (Keygen-style, report §3.5: «+ опциональный grace 5 дней»).
 	graceLic = 5 * 24 * time.Hour
@@ -39,8 +37,8 @@ const (
 
 // Ключи в таблице settings (значения — JSON-строки).
 const (
-	keyBlob = "license.blob"
-	keyCRL  = "license.crl"
+	keyBlob      = "license.blob"
+	keyCRL       = "license.crl"
 	keyOverLimit = "license.over_limit_since" // фиксация первого превышения лимита создания
 	buildDate    = "2006-01-02"               // формат BuildDate (-ldflags -X main.BuildDate)
 )
@@ -117,12 +115,20 @@ func computeStatus(now time.Time, blob, crl string) Status {
 	}
 
 	// Досрочный отзыв: CRL подписан вендором и адресован этой лицензии.
-	// Действует ТОЛЬКО на подписки — perpetual технически не отзывается
+	// Действует на подписки и ДЕМО — perpetual технически не отзывается
 	// (report §3.5, README): совпадающий lic_id игнорируем с предупреждением.
+	if (lic.Plan == PlanSubscription || lic.Plan == PlanDemo) && crl != "" {
+		if rev, err := ParseRevocation(crl); err == nil && rev.LicID == lic.LicID {
+			return Status{
+				Mode: ModeFree, UserLimit: FreeUserLimit, Revoked: true,
+				LicID: lic.LicID, Customer: lic.Customer, Plan: lic.Plan,
+			}
+		}
+	}
+
 	// Демо: полный функционал до expires_at (grace нет — демо истекает
-	// жёстко); отзывается CRL наравне с подпиской.
+	// жёстко, без него снос базы «продлевал» бы демо бесконечно).
 	if lic.Plan == PlanDemo {
-		meta.Plan = PlanDemo
 		if lic.ExpiresAt != nil && now.Before(*lic.ExpiresAt) {
 			meta.Mode = ModeTrial
 			meta.TrialDaysLeft = daysLeft(now, *lic.ExpiresAt)
@@ -132,15 +138,6 @@ func computeStatus(now time.Time, blob, crl string) Status {
 		meta.UserLimit = FreeUserLimit
 		meta.Expired = true
 		return meta
-	}
-
-	if (lic.Plan == PlanSubscription || lic.Plan == PlanDemo) && crl != "" {
-		if rev, err := ParseRevocation(crl); err == nil && rev.LicID == lic.LicID {
-			return Status{
-				Mode: ModeFree, UserLimit: FreeUserLimit, Revoked: true,
-				LicID: lic.LicID, Customer: lic.Customer, Plan: lic.Plan,
-			}
-		}
 	}
 
 	if lic.Plan == PlanSubscription && lic.ExpiresAt != nil {
@@ -194,7 +191,6 @@ func CheckBuildAllowed(dateStr string, st Status) error {
 }
 
 // ---- персистентность (settings.license.*) ----
-
 
 // Effective загружает персистентное состояние и вычисляет статус. Битые
 // значения — предупреждение и деградация (не авария сервера; §3.8).

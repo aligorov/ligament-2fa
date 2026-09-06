@@ -53,8 +53,8 @@ func securityHeaders(adsActive func(*http.Request) (bool, bool)) func(http.Handl
 	}
 }
 
-// brandFor — белый лейбл: кастомный бренд действует ТОЛЬКО при активной
-// платной лицензии; free/trial всегда видят Ligament.
+// brandFor — белый лейбл: кастомный бренд доступен в ЛЮБОМ платном
+// статусе — демо (trial), подписка, бессрочная; только НЕ free.
 func brandFor(lic *license.Manager, m *settings.M) func(*http.Request) web.BrandData {
 	return func(r *http.Request) web.BrandData {
 		if lic == nil || m == nil {
@@ -65,7 +65,7 @@ func brandFor(lic *license.Manager, m *settings.M) func(*http.Request) web.Brand
 			return web.BrandData{}
 		}
 		st, err := lic.Effective(r.Context())
-		if err != nil || st.Mode != license.ModeLicensed {
+		if err != nil || st.Mode == license.ModeFree {
 			return web.BrandData{}
 		}
 		return web.BrandData{

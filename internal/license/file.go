@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
 
 // Обёртки license-файла и CRL.
@@ -108,7 +109,8 @@ func ParseLicense(blob string) (Payload, error) {
 	if err := strictUnmarshal(payload, &p); err != nil {
 		return Payload{}, ErrMalformed
 	}
-	if p.LicID == "" || p.Kid == "" || (p.Plan != PlanSubscription && p.Plan != PlanPerpetual) {
+	if p.LicID == "" || p.Kid == "" ||
+		(p.Plan != PlanSubscription && p.Plan != PlanPerpetual && p.Plan != PlanDemo) {
 		return Payload{}, ErrMalformed
 	}
 	if p.Plan == PlanPerpetual && p.ExpiresAt != nil {
@@ -116,6 +118,14 @@ func ParseLicense(blob string) (Payload, error) {
 	}
 	if p.Plan == PlanSubscription && p.ExpiresAt == nil {
 		return Payload{}, ErrMalformed // подписка обязана иметь expires_at
+	}
+	if p.Plan == PlanDemo {
+		if p.ExpiresAt == nil {
+			return Payload{}, ErrMalformed // демо обязана иметь срок
+		}
+		if p.ExpiresAt.Sub(p.IssuedAt) > 31*24*time.Hour {
+			return Payload{}, ErrMalformed // демо — не дольше 30 дней (+сутки запаса)
+		}
 	}
 	canonical, err := p.Canonical()
 	if err != nil {

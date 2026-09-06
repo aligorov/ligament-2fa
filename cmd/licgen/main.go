@@ -10,6 +10,7 @@
 //	        и hex публичного ключа для вшивания в internal/license/file.go.
 //	licgen -key private.pem -kid 2026-09 -customer "ООО Ромашка" \
 //	        -plan subscription -users 50 -months 12 [-features a,b] \
+//	        -plan demo -days 30 (демо-файл: включает 30 дней полного функционала) \
 //	        [-notes "..."] [-out license.pem]
 //	        выпустить лицензию (subscription: expires_at через -months,
 //	        максимум 13; perpetual: -maintenance-months, expires_at нет).
@@ -45,6 +46,7 @@ func main() {
 			"тариф: subscription | perpetual")
 		users       = flag.Int("users", 0, "лимит активных пользователей (0 — не ограничено)")
 		months      = flag.Int("months", 12, "subscription: месяцев подписки (≤ 13)")
+		demoDays    = flag.Int("days", 30, "demo: дней демо-лицензии (1..30)")
 		maintMonths = flag.Int("maintenance-months", 12, "perpetual: месяцев окна обновлений")
 		features    = flag.String("features", "", "edition-флаги через запятую")
 		notes       = flag.String("notes", "", "заметка (не влияет на проверку)")
@@ -80,7 +82,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "нужно -customer (или -crl для отзыва)")
 			os.Exit(2)
 		}
-		blob = issue(priv, *kid, *customer, *plan, *users, *months, *maintMonths, *features, *notes)
+		blob = issue(priv, *kid, *customer, *plan, *users, *months, *maintMonths, *demoDays, *features, *notes)
 	}
 
 	if *out != "" {
@@ -92,7 +94,7 @@ func main() {
 }
 
 // issue собирает payload лицензии и подписывает его.
-func issue(priv ed25519.PrivateKey, kid, customer, plan string, users, months, maintMonths int, features, notes string) string {
+func issue(priv ed25519.PrivateKey, kid, customer, plan string, users, months, maintMonths, days int, features, notes string) string {
 	now := time.Now().UTC()
 	p := license.Payload{
 		LicID:     uuid.NewString(),
@@ -123,8 +125,15 @@ func issue(priv ed25519.PrivateKey, kid, customer, plan string, users, months, m
 		exp := now.AddDate(0, months, 0)
 		p.ExpiresAt = &exp
 		p.MaintenanceExpires = exp
+	case license.PlanDemo:
+		if days < 1 || days > 30 {
+			fmt.Fprintf(os.Stderr, "-days: демо выпускается на 1..30 дней (получено %d)\n", days)
+			os.Exit(2)
+		}
+		exp := now.AddDate(0, 0, days)
+		p.ExpiresAt = &exp
 	default:
-		fmt.Fprintf(os.Stderr, "-plan: только subscription|perpetual (получено %q)\n", plan)
+		fmt.Fprintf(os.Stderr, "-plan: только subscription|perpetual|demo (получено %q)\n", plan)
 		os.Exit(2)
 	}
 	blob, err := license.Sign(priv, p)
