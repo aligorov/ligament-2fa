@@ -2177,6 +2177,137 @@ paths:
                 $ref: '#/components/schemas/Error'
               example: {error: internal}
 
+  /api/v1/admin/settings/export:
+    get:
+      tags: [Admin]
+      summary: "Экспорт настроек (файл с секретами)"
+      description: "Вложение ligament-settings-YYYYMMDD.json: ВСЕ настройки {ключ: значение}, кроме master_key и admin_token (не экспортируются никогда). Файл содержит секреты (radius.secret, smtp.password, токен Telegram, креды SMS/LDAP) и помечен полем _warning — храните его как секрет. Действие пишется в аудит (settings_export)."
+      operationId: adminSettingsExport
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: "JSON-файл экспорта (Content-Disposition: attachment)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsExport'
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/settings/import:
+    put:
+      tags: [Admin]
+      summary: "Импорт настроек (файл экспорта)"
+      description: "Применяет {settings:{ключ: значение}} заменой значения ключа. Атомарно: СНАЧАЛА валидируются все ключи — неизвестный отклоняет запрос целиком (400 unknown_key со списком keys), ничего не применяется. Затем ключи применяются по одному через settings-менеджер и следует один Reload. Пропускаются (skipped): null и маски («••••» / {\"value\":\"••••\"}), master_key/admin_token, ключи license.* (runtime-состояние инсталляции). Отсутствующие в файле ключи не затрагиваются. Ответ {applied, skipped}; аудит settings_import."
+      operationId: adminSettingsImport
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingsImportRequest'
+            example: {settings: {totp: {issuer: corp-2fa, digits: 6, period: 30, skew: 1}, "listen.http": ":8080"}}
+      responses:
+        '200':
+          description: Настройки применены.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsImportResult'
+        '400':
+          description: "Неизвестный ключ (unknown_key со списком keys) либо невалидное значение (bad_key)."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    required: [error, keys]
+                    properties:
+                      error:
+                        type: string
+                        enum: [unknown_key]
+                      keys:
+                        type: array
+                        items:
+                          type: string
+              example: {error: unknown_key, keys: [smtp.hostname]}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/backup:
+    get:
+      tags: [Admin]
+      summary: "Логический бэкап БД (SQL-дамп)"
+      description: "Вложение ligament-backup-YYYYMMDD.sql — тот же дамп, что даёт `twofa -backup` (BEGIN; DELETE FROM + multi-row INSERT; COMMIT;): пользователи, TOTP-шифротексты, сессии, настройки (без master_key), audit_log. master_key в дамп НЕ входит: восстановление на другую инсталляцию требует того же master_key. Восстановление — psql (см. README «Бэкап и перенос»). При audit_log > 500000 строк — 413 backup_too_large с подсказкой снять дамп CLI. Аудит backup_download пишется после генерации (событие не попадает в дамп)."
+      operationId: adminBackupGet
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: "SQL-дамп вложением (Content-Disposition: attachment)."
+          content:
+            application/sql:
+              schema:
+                type: string
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '413':
+          description: audit_log слишком велик для HTTP-бэкапа — используйте CLI.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, audit_rows, hint]
+                properties:
+                  error:
+                    type: string
+                    enum: [backup_too_large]
+                  audit_rows:
+                    type: integer
+                  hint:
+                    type: string
+              example: {error: backup_too_large, audit_rows: 600000, hint: "снимите дамп CLI: twofa -dsn ... -backup out.sql (-backup-audit=false — без журнала событий)"}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
   /api/v1/admin/license:
     get:
       tags: [Admin]
@@ -2840,3 +2971,39 @@ components:
       description: "Дерево настроек по секциям; секретные значения маскируются форматом {\"set\":bool,\"value\":\"••••\"}. PUT принимает плоские известные ключи, маска/пустая строка = «не менять»."
       additionalProperties: true
       example: {listen: {http: "0.0.0.0:8080", radius_auth: "0.0.0.0:1812", radius_acct: "0.0.0.0:1813"}, admin_token: {set: true, value: "••••"}, radius: {secret: {set: true, value: "••••"}, max_fail_per_user: 5, push_wait: 20s}, smtp: {host: smtp.example.com, port: 587, password: {set: true, value: "••••"}, starttls: true}, telegram: {bot_token: {set: true, value: "••••"}}, totp: {issuer: twofa, digits: 6, period: 30, skew: 1}, webauthn: {rp_id: 2fa.example.com}, policy: {code_ttl: 5m, code_length: 6, max_attempts: 3, resend_cooldown: 30s, session_ttl: 12h}}
+    SettingsExport:
+      type: object
+      description: "Файл экспорта настроек: все ключи с СЫРЫМИ значениями (секреты включены — файл хранить как секрет), master_key/admin_token исключены всегда."
+      required: [_warning, exported_at, settings]
+      properties:
+        _warning:
+          type: string
+          example: "файл содержит секреты — храните безопасно"
+        exported_at:
+          type: string
+          format: date-time
+        settings:
+          type: object
+          additionalProperties: true
+          description: "Карта «известный ключ → значение» (сырой JSON значений)."
+      example: {_warning: "файл содержит секреты — храните безопасно", exported_at: "2026-09-05T12:00:00Z", settings: {totp: {issuer: corp-2fa, digits: 6, period: 30, skew: 1}, radius: {secret: "raw-radius-secret", code_lengths: [6, 8]}, smtp: {host: smtp.example.com, port: 587, password: raw-smtp-password}}}
+    SettingsImportRequest:
+      type: object
+      required: [settings]
+      properties:
+        settings:
+          type: object
+          additionalProperties: true
+          description: "Карта «известный ключ → значение»; null/маски/master_key/admin_token/license.* пропускаются."
+      example: {settings: {totp: {issuer: corp-2fa}, "listen.http": ":8080"}}
+    SettingsImportResult:
+      type: object
+      required: [applied, skipped]
+      properties:
+        applied:
+          type: integer
+          description: Число применённых ключей.
+        skipped:
+          type: integer
+          description: "Число пропущенных ключей (null, маски, master_key/admin_token, license.*)."
+      example: {applied: 12, skipped: 3}

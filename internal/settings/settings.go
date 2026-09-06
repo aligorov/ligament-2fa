@@ -590,6 +590,38 @@ func (m *M) Masked(ctx context.Context) (map[string]any, error) {
 // (атомарность запроса), не выходя за границы пакета.
 func IsKnownKey(key string) bool { return isKnownKey(key) }
 
+// exportExcluded — ключи, НИКОГДА не покидающие сервер в экспорте
+// настроек: master_key расшифровывает TOTP-секреты (перенос равен
+// компрометации всех факторов), admin_token — полный доступ к админ-API.
+var exportExcluded = map[string]struct{}{
+	"master_key":  {},
+	"admin_token": {},
+}
+
+// IsImportExcluded — ключ, который нельзя применить импортом настроек
+// (симметрия экспорта): master_key/admin_token задаются только генерацией
+// сервера или regenerate-эндпоинтом.
+func IsImportExcluded(key string) bool {
+	_, ok := exportExcluded[key]
+	return ok
+}
+
+// Export возвращает СЫРЫЕ значения всех ключей настроек из БД, кроме
+// master_key и admin_token (никогда не экспортируются). Файл экспорта
+// содержит секреты (radius.secret, smtp.password, telegram-токен, креды
+// SMS/LDAP) — он предназначен для переноса между инсталляциями и должен
+// храниться как секрет.
+func (m *M) Export(ctx context.Context) (map[string]json.RawMessage, error) {
+	raw, err := readAll(ctx, m.st)
+	if err != nil {
+		return nil, err
+	}
+	for key := range exportExcluded {
+		delete(raw, key)
+	}
+	return raw, nil
+}
+
 // ---- маскировка ----
 
 // sensitiveKeys — имена JSON-полей внутри sms.*: значения маскируются по
