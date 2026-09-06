@@ -30,3 +30,9 @@ e2e:
 # клиентская сборка его не содержит — см. README «Сборка»).
 licgen:
 	cd cmd/licgen && go build -o licgen .
+
+# Полный интеграционный прогон: пакеты СЕРИАЛЬНО (-p 1) — миграции разных
+# пакетов не гоняются в одну БД параллельно (гонка CREATE TABLE IF NOT EXISTS).
+TWOFA_TEST_DSN ?= postgres://twofa:twofa@localhost:55437/twofa?sslmode=disable
+test-integration:
+	TWOFA_TEST_DSN='$(TWOFA_TEST_DSN)' go test -tags integration -count=1 -p 1 ./...
