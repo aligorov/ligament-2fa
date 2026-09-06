@@ -28,6 +28,7 @@ import (
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
+	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -103,6 +104,11 @@ func (p *PagesAPI) Register(r chi.Router) {
 	admin.Get("/admin/challenges", p.handleAdminChallenges)
 	admin.Get("/admin/settings", p.handleAdminSettings)
 	admin.Post("/admin/settings", p.handleAdminSettingsPost)
+	admin.Get("/admin/settings/export", p.handlePageSettingsExport)
+	admin.Post("/admin/settings/import", p.handlePageSettingsImport)
+	admin.Get("/admin/backup", p.handlePageBackup)
+	admin.Get("/admin/license", p.handleAdminLicense)
+	admin.Post("/admin/license", p.handleAdminLicensePost)
 }
 
 // NotFound — HTML-404 (монтируется в корневой роутер BuildRouter).
@@ -142,7 +148,14 @@ func (p *PagesAPI) requirePage(next http.Handler) http.Handler {
 		if mutatingMethod(r.Method) {
 			token := r.Header.Get(csrfHeader)
 			if token == "" {
-				_ = r.ParseForm()
+				// Формы бывают urlencoded и multipart (загрузка файла
+				// импорта): ParseForm тело multipart не разбирает — CSRF-поле
+				// ищется в разобранной multipart-форме.
+				if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+					_ = r.ParseMultipartForm(32 << 20)
+				} else {
+					_ = r.ParseForm()
+				}
 				token = r.PostFormValue("csrf_token")
 			}
 			if subtle.ConstantTimeCompare([]byte(token), []byte(csrf)) != 1 {
@@ -189,7 +202,65 @@ func (p *PagesAPI) baseData(r *http.Request, title, nav string) web.BaseData {
 	if csrf, ok := r.Context().Value(ctxKeyCSRF).(string); ok {
 		b.CSRF = csrf
 	}
+	b.LicenseWarnings = p.licenseWarnings(r)
 	return b
+}
+
+// licenseWarnings — баннер лицензии для АДМИНА на каждой странице
+// (report §3.3): достижение/превышение лимита, демо ≤7 дн., подписка
+// ≤14 дн. (включая grace), окно обновлений ≤30 дн., отзыв/истечение.
+func (p *PagesAPI) licenseWarnings(r *http.Request) []string {
+	u, ok := userFrom(r.Context())
+	if !ok || u.Role != "admin" || p.admin == nil || p.admin.licEmpty() {
+		return nil
+	}
+	st, err := p.admin.licenseStatus(r)
+	if err != nil {
+		slog.Warn("pages: статус лицензии для баннера", "error", err)
+		return nil
+	}
+	var msgs []string
+	if st.Revoked {
+		msgs = append(msgs, "Лицензия отозвана — сервер работает в бесплатном режиме (5 пользователей).")
+	}
+	if st.Expired {
+		msgs = append(msgs, "Подписка истекла — сервер работает в бесплатном режиме (5 пользователей).")
+	}
+	// Превышение лимита — в ЛЮБОМ режиме (free после удаления лицензии или
+	// истечения демо с >5 активными; licensed с урезанным лимитом).
+	if st.UserLimit > 0 && st.UsersActive > st.UserLimit {
+		if st.Mode == license.ModeFree {
+			msgs = append(msgs, fmt.Sprintf(
+				"Превышен лимит бесплатного режима (%d): создание пользователей заблокировано.",
+				st.UserLimit))
+		} else {
+			msgs = append(msgs, fmt.Sprintf(
+				"Превышен лимит лицензии (%d): создание пользователей заблокировано.",
+				st.UserLimit))
+		}
+	} else if st.Mode == license.ModeLicensed && st.UserLimit > 0 && st.AtLimit {
+		msgs = append(msgs, fmt.Sprintf(
+			"Достигнут лимит лицензии: %d/%d активных пользователей — обновите лицензию или отключите других.",
+			st.UsersActive, st.UserLimit))
+	}
+	if st.Mode == license.ModeTrial && st.TrialDaysLeft <= 7 {
+		msgs = append(msgs, fmt.Sprintf("Демо-режим: осталось %d дн. — загрузите лицензию.", st.TrialDaysLeft))
+	}
+	if st.Mode == license.ModeLicensed && st.Plan == license.PlanSubscription {
+		switch {
+		case st.Grace:
+			msgs = append(msgs, "Подписка истекла, действует grace-окно (5 дн.) — продлите лицензию.")
+		case st.DaysLeft <= 14:
+			msgs = append(msgs, fmt.Sprintf("Срок подписки истекает через %d дн. — продлите лицензию.", st.DaysLeft))
+		}
+	}
+	if st.Mode == license.ModeLicensed && !st.UpdatesUntil.IsZero() &&
+		time.Until(st.UpdatesUntil) <= 30*24*time.Hour {
+		msgs = append(msgs, fmt.Sprintf(
+			"Обновления доступны до %s — продлите maintenance, чтобы ставить новые версии.",
+			st.UpdatesUntil.Format("02.01.2006")))
+	}
+	return msgs
 }
 
 // render исполняет страницу шаблонизатором; ошибка рендера логируется
@@ -457,8 +528,16 @@ func (p *PagesAPI) handlePrefer(w http.ResponseWriter, r *http.Request) {
 
 // handlePassword — POST /me/password: смена пароля и отзыв всех сессий и
 // устройств (как PATCH /api/v1/me/password); после смены — выход на /login.
+// LDAP-пользователям операция запрещена сервером (форма в шаблоне скрыта,
+// но прямой POST должен упереться в страж — пароль меняется в каталоге).
 func (p *PagesAPI) handlePassword(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
+	if user.Source == store.SourceLDAP {
+		p.auditPage(r.Context(), user.Username, "password_change", clientIP(r), "fail",
+			map[string]any{"reason": "ldap_managed"})
+		redirectFlash(w, r, "/me", "Пароль LDAP-пользователя меняется в Active Directory.", false)
+		return
+	}
 	newPwd := r.PostFormValue("new_password")
 	if newPwd == "" || newPwd != r.PostFormValue("new_password2") {
 		redirectFlash(w, r, "/me", "Новые пароли не совпадают.", false)
@@ -923,16 +1002,25 @@ func derefUsers(list []*store.User) []store.User {
 }
 
 // userFormFields — общее чтение формы создания/редактирования
-// пользователя; возвращает пароль (пустой — не менять).
+// пользователя; возвращает пароль (пустой — не менять). display_name
+// читается только для локальных: у LDAP-поле_disabled в шаблоне (не
+// отправляется) и значение синхронизируется каталогом.
 func (p *PagesAPI) userFormFields(r *http.Request, u *store.User) string {
 	u.Username = strings.TrimSpace(r.PostFormValue("username"))
 	u.Role = r.PostFormValue("role")
 	if u.Role != "admin" {
 		u.Role = "user"
 	}
+	u.Source = r.PostFormValue("source")
+	if u.Source != store.SourceLDAP {
+		u.Source = store.SourceLocal
+	}
 	u.Enabled = r.PostFormValue("enabled") != ""
 	u.Email = strings.TrimSpace(r.PostFormValue("email"))
 	u.Phone = strings.TrimSpace(r.PostFormValue("phone"))
+	if u.Source != store.SourceLDAP {
+		u.DisplayName = strings.TrimSpace(r.PostFormValue("display_name"))
+	}
 	if chs, ok := parseChannels(r.PostForm["prefer_channels"]); ok {
 		u.PreferChannels = chs
 	}
@@ -954,12 +1042,27 @@ func radiusReplyFromForm(raw string) (map[string]string, bool) {
 }
 
 // handleAdminUserCreate — POST /admin/users (форма «Новый пользователь»).
+// Создание активного пользователя сверх лимита лицензии — флеш-ошибка
+// (параллель 403 JSON API; report §3.3).
 func (p *PagesAPI) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
 	u := &store.User{}
 	pwd := p.userFormFields(r, u)
-	if u.Username == "" || pwd == "" {
+	// LDAP-пользователю пароль не нужен: он проверяется каталогом; вместо
+	// опционального пароля — случайный непригодный хеш.
+	if u.Username == "" || (pwd == "" && u.Source != store.SourceLDAP) {
 		redirectFlash(w, r, "/admin/users", "Имя пользователя и пароль обязательны.", false)
 		return
+	}
+	if u.Enabled {
+		if exceeded, st := p.admin.licenseExceeded(r); exceeded {
+			p.admin.audit(r.Context(), "license_limit", map[string]any{
+				"via": "html", "limit": st.UserLimit, "active_users": st.UsersActive,
+			})
+			redirectFlash(w, r, "/admin/users", fmt.Sprintf(
+				"Превышен лимит лицензии %d — обновите лицензию или отключите других пользователей.",
+				st.UserLimit), false)
+			return
+		}
 	}
 	reply, ok := radiusReplyFromForm(r.PostFormValue("radius_reply"))
 	if !ok {
@@ -967,7 +1070,11 @@ func (p *PagesAPI) handleAdminUserCreate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	u.RadiusReply = reply
-	u.PasswordHash = secrets.HashPassword(pwd)
+	if pwd == "" {
+		u.PasswordHash = secrets.HashPassword(secrets.RandomToken(32))
+	} else {
+		u.PasswordHash = secrets.HashPassword(pwd)
+	}
 	if err := p.st.UserCreate(r.Context(), u); err != nil {
 		if isUniqueViolation(err) {
 			redirectFlash(w, r, "/admin/users", "Это имя пользователя уже занято.", false)
@@ -1039,10 +1146,24 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 
 	switch r.PostFormValue("do") {
 	case "save":
+		wasEnabled := u.Enabled // до перезаписи формой (userFormFields)
 		pwd := p.userFormFields(r, u)
 		if u.Username == "" {
 			redirectFlash(w, r, back, "Имя пользователя не может быть пустым.", false)
 			return
+		}
+		// Включение ранее отключённого пользователя = +1 активный: лимит
+		// лицензии действует и здесь (выключение не ограничивается).
+		if !wasEnabled {
+			if exceeded, st := p.admin.licenseExceeded(r); exceeded {
+				p.admin.audit(ctx, "license_limit", map[string]any{
+					"via": "html", "limit": st.UserLimit, "active_users": st.UsersActive,
+				})
+				redirectFlash(w, r, back, fmt.Sprintf(
+					"Превышен лимит лицензии %d — обновите лицензию или отключите других пользователей.",
+					st.UserLimit), false)
+				return
+			}
 		}
 		if pwd != "" {
 			u.PasswordHash = secrets.HashPassword(pwd)
@@ -1213,18 +1334,32 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 			replyJSON = string(b)
 		}
 	}
+	allowJSON, roleJSON := "", ""
+	if t.LDAP.AllowGroups != nil {
+		if b, err := json.MarshalIndent(t.LDAP.AllowGroups, "", "  "); err == nil {
+			allowJSON = string(b)
+		}
+	}
+	if t.LDAP.RoleMap != nil {
+		if b, err := json.MarshalIndent(t.LDAP.RoleMap, "", "  "); err == nil {
+			roleJSON = string(b)
+		}
+	}
 	return web.AdminSettingsData{
 		BaseData:        p.baseData(r, "Настройки сервера", "admin-settings"),
 		S:               t,
 		RadiusSecretSet: t.RadiusSecret != "",
 		SMTPPasswordSet: t.SMTP.Password != "",
 		TGBotTokenSet:   t.TG.BotToken != "",
+		LDAPPasswordSet: t.LDAP.BindPassword != "",
 		// SEC-004: сырой JSON шлюза содержит креды — в textarea рендерится
 		// маскированное дерево; POST с масками мерж оставляет без изменений.
 		SMSGatewayJSON:   settings.MaskedJSONTree(t.SMS),
 		SMSPresetsJSON:   settings.MaskedJSONTree(t.SMSPresets),
 		SMSPresetChoices: smsPresetChoices(),
 		ReplyAttrsJSON:   replyJSON,
+		LDAPAllowGroups:  allowJSON,
+		LDAPRoleMap:      roleJSON,
 	}
 }
 
@@ -1254,10 +1389,39 @@ func smsPresetChoices() []web.SMSPresetChoice {
 // что рендерит шаблон admin_settings.gohtml), ключ настроек (объектный или
 // скалярный) и тип значения. JSON-поле объектного ключа выводится из имени
 // отсечением префикса «key.» (поле smtp.host → ключ smtp, поле host).
+// kind 'n' — вложенное поле второго уровня: имя «key.group.field» пишется
+// в JSON-объект {group: {field: …}} (ldap.attrs.email → attrs.email).
 type settingsField struct {
 	name string // имя поля формы (совпадает с шаблоном)
 	key  string // ключ настроек (объектный или скалярный)
-	kind byte   // 's' строка (по умолчанию), 'i' целое, 'b' чекбокс, 'j' сырой JSON
+	kind byte   // 's' строка (по умолчанию), 'i' целое, 'b' чекбокс, 'j' сырой JSON, 'n' вложенное поле
+}
+
+// setPartialField записывает значение поля формы в карту «JSON-поле →
+// значение» объектного ключа; dotted-имена после префикса ключа дают
+// вложенные объекты (ldap.attrs.email → {"attrs":{"email":…}}).
+func setPartialField(partial map[string]map[string]json.RawMessage, key, name string, v json.RawMessage) {
+	if partial[key] == nil {
+		partial[key] = make(map[string]json.RawMessage)
+	}
+	rest := strings.TrimPrefix(name, key+".")
+	if i := strings.IndexByte(rest, '.'); i >= 0 {
+		group := rest[:i]
+		if partial[key][group] == nil {
+			partial[key][group] = json.RawMessage("{}")
+		}
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(partial[key][group], &nested); err != nil || nested == nil {
+			nested = make(map[string]json.RawMessage)
+		}
+		nested[rest[i+1:]] = v
+		b, err := json.Marshal(nested)
+		if err == nil {
+			partial[key][group] = b
+		}
+		return
+	}
+	partial[key][rest] = v
 }
 
 // settingsForm — поля форм по секциям; имена В ТОЧНОСТИ как в шаблоне
@@ -1303,6 +1467,22 @@ var settingsForm = map[string][]settingsField{
 	"webauthn": {
 		{name: "webauthn.rp_id", key: "webauthn"},
 		{name: "webauthn.rp_name", key: "webauthn"},
+	},
+	"ldap": {
+		{name: "ldap.enabled", key: "ldap", kind: 'b'},
+		{name: "ldap.url", key: "ldap"},
+		{name: "ldap.starttls", key: "ldap", kind: 'b'},
+		{name: "ldap.bind_dn", key: "ldap"},
+		{name: "ldap.bind_password", key: "ldap"},
+		{name: "ldap.base_dn", key: "ldap"},
+		{name: "ldap.user_filter", key: "ldap"},
+		{name: "ldap.group_base_dn", key: "ldap"},
+		{name: "ldap.group_filter", key: "ldap"},
+		{name: "ldap.attrs.email", key: "ldap", kind: 'n'},
+		{name: "ldap.attrs.phone", key: "ldap", kind: 'n'},
+		{name: "ldap.attrs.display_name", key: "ldap", kind: 'n'},
+		{name: "ldap.allow_groups", key: "ldap", kind: 'j'},
+		{name: "ldap.role_map", key: "ldap", kind: 'j'},
 	},
 	"policy": {
 		{name: "policy.code_ttl", key: "policy"},
@@ -1374,10 +1554,7 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		if f.kind == 'b' {
 			// Чекбокс: отсутствие в форме — явное «выключено».
 			v, _ := json.Marshal(r.PostFormValue(f.name) != "")
-			if partial[f.key] == nil {
-				partial[f.key] = make(map[string]json.RawMessage)
-			}
-			partial[f.key][strings.TrimPrefix(f.name, f.key+".")] = v
+			setPartialField(partial, f.key, f.name, v)
 			continue
 		}
 		if raw == "" || raw == settingsMask {
@@ -1406,10 +1583,7 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		if f.name == f.key {
 			scalar[f.key] = v
 		} else {
-			if partial[f.key] == nil {
-				partial[f.key] = make(map[string]json.RawMessage)
-			}
-			partial[f.key][strings.TrimPrefix(f.name, f.key+".")] = v
+			setPartialField(partial, f.key, f.name, v)
 		}
 	}
 
@@ -1461,4 +1635,101 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 	}
 	p.admin.audit(ctx, "settings_update", map[string]any{"keys": changed, "via": "html"})
 	redirectFlash(w, r, "/admin/settings", "Настройки сохранены.", true)
+}
+
+// ---- админ: лицензия ----
+
+// handleAdminLicense — GET /admin/license: статус-карточка (режим, клиент,
+// lic_id, X/Y пользователей, демо/подписка/обновления до) + формы загрузки
+// лицензии и CRL-отзыва (report §3.7).
+func (p *PagesAPI) handleAdminLicense(w http.ResponseWriter, r *http.Request) {
+	d := web.AdminLicenseData{BaseData: p.baseData(r, "Лицензия", "admin-license")}
+	st, err := p.admin.licenseStatus(r)
+	if err != nil {
+		flash500(w, r, "/admin/license", err)
+		return
+	}
+	d.Status = st
+	if st.UserLimit <= 0 {
+		d.LimitText = "не ограничено"
+	} else {
+		d.LimitText = fmt.Sprintf("%d/%d", st.UsersActive, st.UserLimit)
+	}
+	if !st.UpdatesUntil.IsZero() {
+		d.UpdatesUntil = st.UpdatesUntil.Format("02.01.2006")
+	}
+	d.ModeText = map[license.Mode]string{
+		license.ModeFree:     "Free — без лицензии",
+		license.ModeTrial:    "Демо (30 дней, полный функционал)",
+		license.ModeLicensed: "Лицензия",
+	}[st.Mode]
+	p.render(w, http.StatusOK, "admin_license", d)
+}
+
+// handleAdminLicensePost — POST /admin/license: do=upload|crl|remove.
+// Ошибки проверки блоба — флешем на ту же страницу.
+func (p *PagesAPI) handleAdminLicensePost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		redirectFlash(w, r, "/admin/license", "Некорректная форма.", false)
+		return
+	}
+	ctx := r.Context()
+	switch r.PostFormValue("do") {
+	case "upload":
+		blob := strings.TrimSpace(r.PostFormValue("blob"))
+		if blob == "" {
+			redirectFlash(w, r, "/admin/license", "Вставьте license-файл (содержимое -----BEGIN LIGAMENT LICENSE-----).", false)
+			return
+		}
+		lic, err := p.admin.lic.Upload(ctx, blob)
+		if err != nil {
+			redirectFlash(w, r, "/admin/license", licenseErrText(err), false)
+			return
+		}
+		p.admin.audit(ctx, "license_upload", map[string]any{
+			"via": "html", "lic_id": lic.LicID, "plan": lic.Plan, "customer": lic.Customer,
+		})
+		redirectFlash(w, r, "/admin/license",
+			"Лицензия загружена: "+lic.Customer+" ("+lic.Plan+").", true)
+
+	case "crl":
+		blob := strings.TrimSpace(r.PostFormValue("crl"))
+		if blob == "" {
+			redirectFlash(w, r, "/admin/license", "Вставьте CRL-файл (-----BEGIN LIGAMENT REVOCATION-----).", false)
+			return
+		}
+		rev, err := p.admin.lic.UploadCRL(ctx, blob)
+		if err != nil {
+			redirectFlash(w, r, "/admin/license", licenseErrText(err), false)
+			return
+		}
+		p.admin.audit(ctx, "license_crl_upload", map[string]any{"via": "html", "lic_id": rev.LicID})
+		redirectFlash(w, r, "/admin/license", "CRL-отзыв принят: "+rev.LicID+".", true)
+
+	case "remove":
+		if err := p.admin.lic.Remove(ctx); err != nil {
+			flash500(w, r, "/admin/license", err)
+			return
+		}
+		p.admin.audit(ctx, "license_remove", map[string]any{"via": "html"})
+		redirectFlash(w, r, "/admin/license", "Лицензия удалена — сервер работает в бесплатном режиме (5 пользователей).", true)
+
+	default:
+		redirectFlash(w, r, "/admin/license", "Неизвестное действие.", false)
+	}
+}
+
+// licenseErrText — русские тексты ошибок загрузки блоба.
+func licenseErrText(err error) string {
+	switch {
+	case errors.Is(err, license.ErrMalformed):
+		return "Некорректный формат license-файла."
+	case errors.Is(err, license.ErrBadSignature), errors.Is(err, license.ErrUnknownKid):
+		return "Подпись лицензии не прошла проверку (неверный файл или ключ)."
+	case errors.Is(err, license.ErrRevoked):
+		return "Лицензия отозвана (CRL) — загрузите новую."
+	default:
+		slog.Error("pages: загрузка лицензии", "error", err)
+		return "Внутренняя ошибка, попробуйте позже."
+	}
 }

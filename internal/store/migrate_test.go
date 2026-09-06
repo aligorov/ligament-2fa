@@ -8,6 +8,7 @@ import (
 	"context"
 	"io/fs"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,6 +140,44 @@ func TestMigrateIntegration(t *testing.T) {
 		if !exists {
 			t.Errorf("webauthn_credentials: нет колонки %s", col)
 		}
+	}
+
+	// Миграция 0002: users.source ('local' по умолчанию) и display_name.
+	for _, col := range []string{"source", "display_name"} {
+		err := st.Pool().QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+			 WHERE table_schema = 'public'
+			   AND table_name = 'users' AND column_name = $1)`, col,
+		).Scan(&exists)
+		if err != nil {
+			t.Fatalf("information_schema.columns(users.%s): %v", col, err)
+		}
+		if !exists {
+			t.Errorf("users: нет колонки %s (миграция 0002)", col)
+		}
+	}
+	var srcDefault string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT column_default FROM information_schema.columns
+		 WHERE table_schema = 'public' AND table_name = 'users'
+		   AND column_name = 'source'`).Scan(&srcDefault); err != nil {
+		t.Fatalf("information_schema.columns(users.source default): %v", err)
+	}
+	if !strings.Contains(srcDefault, "local") {
+		t.Errorf("users.source default = %q, ожидался 'local' (существующие строки не меняются)", srcDefault)
+	}
+	// Строка, созданная без явного source, получает 'local' от БД.
+	if _, err := st.Pool().Exec(ctx,
+		`INSERT INTO users (id, username, password_hash) VALUES (gen_random_uuid(), 'mig-0002', 'x')`); err != nil {
+		t.Fatalf("вставка пользователя без source: %v", err)
+	}
+	var src string
+	if err := st.Pool().QueryRow(ctx,
+		`SELECT source FROM users WHERE username = 'mig-0002'`).Scan(&src); err != nil {
+		t.Fatalf("чтение source: %v", err)
+	}
+	if src != "local" {
+		t.Errorf("source без явного значения = %q, ожидался local", src)
 	}
 
 	// Число применённых версий совпадает с числом встроенных миграций.

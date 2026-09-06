@@ -26,6 +26,7 @@ var defaults = map[string]json.RawMessage{
 	"webauthn":                 json.RawMessage(`{"rp_id":"","rp_name":"twofa"}`),
 	"policy":                   json.RawMessage(`{"code_ttl":"5m","code_length":6,"max_attempts":5,"resend_cooldown":"60s","default_prefer_channels":["totp","telegram","email","sms"],"push_cooldown":"30s","push_per_hour":10,"trusted_device_ttl":"720h","max_fail":5,"fail_window":"5m","ban_time":"15m"}`),
 	"web.session_ttl":          json.RawMessage(`"12h"`),
+	"ldap":                     json.RawMessage(`{"enabled":false,"url":"","starttls":false,"bind_dn":"","bind_password":"","base_dn":"","user_filter":"(&(objectClass=user)(sAMAccountName={login}))","group_base_dn":"","group_filter":"(&(objectClass=group)(member={dn}))","attrs":{"email":"mail","phone":"telephoneNumber","display_name":"displayName"},"allow_groups":[],"role_map":{}}`),
 }
 
 // generatedKeys — секретные ключи без статического дефолта: при отсутствии

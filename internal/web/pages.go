@@ -6,6 +6,7 @@ package web
 import (
 	"github.com/google/uuid"
 
+	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
 )
@@ -18,12 +19,15 @@ type BaseData struct {
 	IsAdmin  bool
 	// Nav — идентификатор активного пункта бокового меню: "me", "totp",
 	// "backup", "telegram", "passkeys", "devices", "admin-users",
-	// "admin-audit", "admin-challenges", "admin-settings"; пусто для
-	// страниц без меню (login, error).
+	// "admin-audit", "admin-challenges", "admin-settings",
+	// "admin-license"; пусто для страниц без меню (login, error).
 	Nav      string
 	CSRF     string // CSRF-токен сессии; пусто для анонимных форм
 	Flash    string // флеш-успех (после редиректа)
 	FlashErr string // флеш-ошибка (после редиректа)
+	// LicenseWarnings — баннер лицензии для админа (лимит, истечение
+	// подписки/демо, окно обновлений); пуст для не-админа.
+	LicenseWarnings []string
 }
 
 // LoginData — страница /login: одна форма имя+пароль+код (решение о шаге
@@ -146,10 +150,13 @@ type AdminSettingsData struct {
 	RadiusSecretSet  bool
 	SMTPPasswordSet  bool
 	TGBotTokenSet    bool
+	LDAPPasswordSet  bool              // задан ли ldap.bind_password
 	SMSGatewayJSON   string            // сырой JSON sms.gateway для textarea
 	SMSPresetsJSON   string            // сырой JSON sms.presets для textarea
 	SMSPresetChoices []SMSPresetChoice // пресеты шлюзов для select (заполняют textarea через JS)
 	ReplyAttrsJSON   string            // radius.reply_attributes для textarea
+	LDAPAllowGroups  string            // ldap.allow_groups (JSON) для textarea
+	LDAPRoleMap      string            // ldap.role_map (JSON) для textarea
 	OneTimeValue     string            // новое значение секрета (показ один раз)
 	OneTimeLabel     string            // ключ секрета (admin_token / radius.secret)
 }
@@ -159,4 +166,15 @@ type ErrorData struct {
 	BaseData
 	Code    int
 	Message string
+}
+
+// AdminLicenseData — /admin/license: статус-карточка лицензии и формы
+// загрузки лицензии/CRL (report §3.7). Status — готовый к отображению
+// перевод (LimitText/UpdatesUntil/ModeText), чтобы шаблон не считал дни.
+type AdminLicenseData struct {
+	BaseData
+	Status       license.Status
+	ModeText     string // человекочитаемый режим
+	LimitText    string // "3/25" или "не ограничено"
+	UpdatesUntil string // "01.09.2027" (пусто — не применимо)
 }

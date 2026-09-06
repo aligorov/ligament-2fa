@@ -1,0 +1,90 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
+{{define "content"}}
+<header class="page-head">
+  <h1>Лицензия</h1>
+  <p class="page-sub">Оффлайн license-файл: статус, загрузка и CRL-отзыв.
+  Вход существующим пользователям не блокируется никогда — лимит действует
+  только на создание/включение.</p>
+</header>
+
+<section class="card">
+  <h2>Статус</h2>
+  <div class="table-wrap">
+    <table class="table compact">
+      <tr><th>Режим</th><td>
+        {{if eq .Status.Mode "licensed"}}<span class="badge ok">licensed</span>
+        {{else if eq .Status.Mode "trial"}}<span class="badge neutral">trial</span>
+        {{else}}<span class="badge neutral">free</span>{{end}}
+        {{.ModeText}}
+      </td></tr>
+      <tr><th>Клиент</th><td>{{if .Status.Customer}}{{.Status.Customer}}{{else}}<span class="muted">—</span>{{end}}</td></tr>
+      <tr><th>lic_id</th><td>{{if .Status.LicID}}<code>{{.Status.LicID}}</code>{{else}}<span class="muted">—</span>{{end}}</td></tr>
+      <tr><th>Тариф</th><td>{{if .Status.Plan}}{{.Status.Plan}}{{else}}<span class="muted">—</span>{{end}}</td></tr>
+      <tr><th>Активные пользователи</th><td>{{.LimitText}}{{if .Status.AtLimit}} <span class="badge err">лимит достигнут</span>{{end}}</td></tr>
+      {{if eq .Status.Mode "trial"}}
+      <tr><th>Демо осталось</th><td>{{.Status.TrialDaysLeft}} дн.</td></tr>
+      {{end}}
+      {{if and (eq .Status.Mode "licensed") (eq .Status.Plan "subscription")}}
+      <tr><th>Подписка</th><td>
+        {{if .Status.Grace}}истекла — grace-окно (5 дн.)
+        {{else}}осталось {{.Status.DaysLeft}} дн.{{end}}
+      </td></tr>
+      {{end}}
+      {{if .UpdatesUntil}}
+      <tr><th>Обновления до</th><td>{{.UpdatesUntil}}
+        <span class="help">(версии, собранные позже этой даты, не стартуют — гейт build-date)</span>
+      </td></tr>
+      {{end}}
+      {{if .Status.Features}}
+      <tr><th>Функции</th><td>{{range .Status.Features}}<span class="badge neutral">{{.}}</span> {{end}}</td></tr>
+      {{end}}
+    </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Загрузка лицензии</h2>
+  <form action="/admin/license" method="post" class="form">
+    {{csrf .CSRF}}
+    <input type="hidden" name="do" value="upload">
+    <label class="field">
+      <span class="field-label">License-файл</span>
+      <textarea name="blob" rows="6" placeholder="-----BEGIN LIGAMENT LICENSE-----&#10;...&#10;-----END LIGAMENT LICENSE-----" required></textarea>
+      <span class="help">Вставьте содержимое файла, полученного от вендора (полностью, включая строки BEGIN/END).</span>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Загрузить лицензию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>CRL-отзыв</h2>
+  <form action="/admin/license" method="post" class="form">
+    {{csrf .CSRF}}
+    <input type="hidden" name="do" value="crl">
+    <label class="field">
+      <span class="field-label">Revocation-файл</span>
+      <textarea name="crl" rows="4" placeholder="-----BEGIN LIGAMENT REVOCATION-----&#10;...&#10;-----END LIGAMENT REVOCATION-----"></textarea>
+      <span class="help">Досрочный отзыв подписки: загружается вместе с новой лицензией или отдельно.</span>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn">Загрузить CRL</button>
+    </div>
+  </form>
+</section>
+
+{{if eq .Status.Mode "licensed"}}
+<section class="card">
+  <h2>Удаление</h2>
+  <form action="/admin/license" method="post" class="form">
+    {{csrf .CSRF}}
+    <input type="hidden" name="do" value="remove">
+    <p class="help">Удаление лицензии возвращает сервер в бесплатный режим (5 активных пользователей).</p>
+    <div class="form-actions">
+      <button type="submit" class="btn danger">Удалить лицензию</button>
+    </div>
+  </form>
+</section>
+{{end}}
+{{end}}

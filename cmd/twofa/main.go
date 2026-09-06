@@ -11,6 +11,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,8 +21,10 @@ import (
 
 	"github.com/aligorov/twofa/internal/api"
 	"github.com/aligorov/twofa/internal/auth"
+	"github.com/aligorov/twofa/internal/backup"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
+	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/radiusserver"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
@@ -34,9 +37,17 @@ import (
 // telegramRestartBackoff — пауза перед перезапуском упавшего бота.
 const telegramRestartBackoff = 30 * time.Second
 
+// BuildDate — дата сборки бинарника (YYYY-MM-DD), вшивается
+// -ldflags "-X main.BuildDate=$(date +%F)" (Makefile/Dockerfile). Гейт
+// обновлений: licensed-сборка новее maintenance_expires лицензии не
+// стартует (report §3.4); пустая — сборка без релизной даты, гейт выключен.
+var BuildDate string
+
 func main() {
 	dsnFlag := flag.String("dsn", "", "PostgreSQL DSN (приоритет над env TWOFA_DB_DSN)")
 	addrFlag := flag.String("addr", "", "адрес HTTP-слушателя (переопределяет listen.http)")
+	backupFlag := flag.String("backup", "", "логический дамп БД в SQL: путь файла или «-» (stdout); восстановление — psql (README «Бэкап и перенос»)")
+	backupAuditFlag := flag.Bool("backup-audit", true, "включать audit_log в дамп -backup (false — переносить без журнала событий)")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
@@ -48,6 +59,16 @@ func main() {
 	if dsn == "" {
 		slog.Error("main: не задан DSN — укажите флаг -dsn или переменную TWOFA_DB_DSN")
 		os.Exit(1)
+	}
+
+	// Режим бэкапа: полный логический дамп и выход (сервер не поднимается).
+	// Дамп psql-совместим и не содержит master_key — см. README.
+	if *backupFlag != "" {
+		if err := runBackup(dsn, *backupFlag, *backupAuditFlag); err != nil {
+			slog.Error("main: бэкап", "error", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -80,6 +101,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Лицензирование: первый старт отмечает начало 30-дневного демо
+	// (персист в БД, сбрасывается только с ней; загрузка лицензии ставит
+	// неотзываемый license.trial_used — после удаления лицензии демо не
+	// воскрешается); гейт обновлений не пускает
+	// сборку новее maintenance_expires лицензии (perpetual-версионный
+	// пиннинг, report §3.4). free/trial не ограничены.
+	lic := license.NewManager(st)
+	if err := lic.Init(ctx); err != nil {
+		slog.Error("main: инициализация лицензии", "error", err)
+		os.Exit(1)
+	}
+	licStatus, err := lic.Effective(ctx)
+	if err != nil {
+		slog.Error("main: чтение состояния лицензии", "error", err)
+		os.Exit(1)
+	}
+	if err := license.CheckBuildAllowed(BuildDate, licStatus); err != nil {
+		slog.Error("main: " + err.Error())
+		os.Exit(1)
+	}
+	slog.Info("main: лицензия", "mode", string(licStatus.Mode),
+		"user_limit", licStatus.UserLimit, "build_date", BuildDate)
+
 	// Каналы доставки кодов и Telegram-бот (он же PushNotifier).
 	// botToken — токен, из которого собран текущий бот (для повторного
 	// использования при неизменном токене после SIGHUP).
@@ -88,7 +132,11 @@ func main() {
 	if bot != nil {
 		push = bot
 	}
-	pv := auth.NewLocalVerifier(st)
+	// Первый фактор: локальный argon2id + внешний каталог LDAP/AD
+	// (CompositeVerifier). Конфигурация LDAP читается из снимка настроек
+	// при каждой проверке — SIGHUP применяется без пересборки.
+	pvLocal := auth.NewLocalVerifier(st)
+	pv := auth.NewCompositeVerifier(st, pvLocal, auth.NewLdapVerifier(st, m))
 	core := auth.NewCore(st, m, box, senders, pv, push)
 
 	// WebAuthn необязателен: без webauthn.rp_id сервер работает, роуты
@@ -106,7 +154,7 @@ func main() {
 		os.Exit(1)
 	}
 	rt := api.BuildRouter(api.Deps{
-		Core: core, WA: wa, St: st, Box: box, PV: pv, M: m, Rend: rend,
+		Core: core, WA: wa, St: st, Box: box, PV: pv, M: m, Rend: rend, Lic: lic,
 	})
 	defer rt.Stop()
 
@@ -124,8 +172,9 @@ func main() {
 
 	// SIGHUP — горячая перезагрузка настроек. Политики и параметры TOTP
 	// подхватываются снимком; слой доставки (SMTP/SMS/Telegram-бот)
-	// пересобирается заново и подменяется в ядре; listen.* и webauthn.rp_id
-	// применяются после рестарта процесса.
+	// пересобирается заново и подменяется в ядре; настройки LDAP читаются
+	// верификатором из свежего снимка при каждом входе; listen.* и
+	// webauthn.rp_id применяются после рестарта процесса.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
@@ -213,6 +262,50 @@ func main() {
 	}
 	rt.Stop()
 	slog.Info("main: сервер остановлен")
+}
+
+// runBackup выполняет логический дамп БД (twofa -backup): opens store,
+// генерирует SQL-скрипт backup.Dump и пишет его в файл out («-» — stdout).
+// Файл создаётся с правами 0600: дамп содержит шифротексты TOTP, сессии и
+// секреты настроек. Сервер при этом не запускается.
+func runBackup(dsn, out string, includeAudit bool) error {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("подключение к БД: %w", err)
+	}
+	defer st.Close()
+
+	dump, err := backup.Dump(ctx, st.Pool(), backup.Options{IncludeAudit: includeAudit})
+	if err != nil {
+		return err
+	}
+
+	w, closeFn, err := openBackupOutput(out)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+	if _, err := w.Write(dump); err != nil {
+		return fmt.Errorf("запись дампа в %s: %w", out, err)
+	}
+	slog.Info("main: бэкап готов", "out", out, "bytes", len(dump), "audit", includeAudit)
+	return nil
+}
+
+// openBackupOutput открывает приёмник дампа: «-» — стандартный вывод, иначе
+// файл с правами 0600 (дамп секретен). Возвращает writer и функцию закрытия.
+func openBackupOutput(out string) (io.Writer, func(), error) {
+	if out == "-" {
+		return os.Stdout, func() {}, nil
+	}
+	f, err := os.OpenFile(out, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("открыть файл дампа %s: %w", out, err)
+	}
+	return f, func() { _ = f.Close() }, nil
 }
 
 // bootstrapAdmin создаёт первого администратора на пустой базе: пароль

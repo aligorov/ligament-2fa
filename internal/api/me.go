@@ -195,9 +195,18 @@ type passwordChangeReq struct {
 
 // handlePasswordChange: проверка старого пароля → новый хеш → отзыв ВСЕХ
 // сессий и доверенных устройств пользователя (спека §6). Текущая сессия
-// тоже отзывается — клиент обязан перелогиниться.
+// тоже отзывается — клиент обязан перелогиниться. LDAP-пользователям
+// смена локального пароля запрещена сервером (не только скрытой формой):
+// пароль живёт в каталоге, а Verify старого пароля прошёл бы bind-ом —
+// замена хеша на неизвестный стала бы lockout-ом.
 func (p *MeAPI) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
+	if user.Source == store.SourceLDAP {
+		p.audit(r.Context(), user.Username, "password_change", clientIP(r), "fail",
+			map[string]any{"reason": "ldap_managed"})
+		writeError(w, http.StatusBadRequest, "ldap_managed")
+		return
+	}
 	var req passwordChangeReq
 	if !decodeJSON(w, r, &req) {
 		return

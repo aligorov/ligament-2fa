@@ -1,0 +1,3009 @@
+openapi: 3.0.3
+info:
+  title: twofa API
+  version: 0.2.0
+  description: |
+    Сервер двухфакторной аутентификации twofa: коды доставки (email / SMS /
+    Telegram / Telegram-push), TOTP-приложения, резервные коды и WebAuthn
+    (passkeys). Четыре группы REST-эндпоинтов: публичный API входа (без
+    состояния, для интеграций), web-сессии (cookie + CSRF), кабинет
+    пользователя и админ API (Bearer admin_token).
+
+    Поддерживаемые факторы: TOTP (RFC 6238), коды доставки по каналам
+    email/sms/telegram (и approval push в Telegram), одноразовые резервные
+    коды, WebAuthn/passkeys.
+
+    Аутентификация: публичные /api/v1/auth/* — без авторизации; /api/v1/me/*
+    и /api/v1/logout — cookie twofa_session (+ заголовок X-CSRF-Token на
+    мутациях); /api/v1/admin/* — Authorization: Bearer <admin_token>.
+
+    Ошибки — JSON вида {"error":"<машинный_код>"}. Коды ответов значимы:
+    401 bad_credentials / bad_code, 409 no_channel / no_credentials /
+    username_taken, 423 locked (fail-блокировка), 429 rate_limited /
+    cooldown (+ retry_after, заголовок Retry-After), 410 expired.
+
+    RADIUS-интерфейс (Access-Request/Accounting на :1812/:1813, для
+    MikroTik/RouterOS) в REST не документируется — см. README.
+
+    Спецификация и человекочитаемая страница: GET /openapi.yaml и /api/docs.
+servers:
+  - url: http://localhost:8080
+    description: Локальный сервер (пример)
+tags:
+  - name: Public Auth
+    description: Публичный API входа /api/v1/auth/* — двухшаговый флоу start/verify, комбинированный вход, poll push-челленджей, WebAuthn-церемония. Без авторизации; rate-limit по username и IP.
+  - name: Web Session
+    description: Вход web-клиента /api/v1/login, /api/v1/login/2fa, /api/v1/logout — cookie twofa_session, CSRF-заголовок на мутациях, доверенные устройства (cookie twofa_device).
+  - name: Me
+    description: Кабинет пользователя /api/v1/me/* — профиль, контакты, prefer-каналы, пароль, TOTP, резервные коды, passkeys, Telegram, устройства. Cookie-сессия + CSRF.
+  - name: Admin
+    description: "Админ API /api/v1/admin/* — пользователи, сбросы факторов, аудит, челленджи, настройки. Authorization: Bearer admin_token."
+  - name: Service
+    description: Служебные эндпоинты (health-проверка).
+security: {}
+
+paths:
+  /healthz:
+    get:
+      tags: [Service]
+      summary: "Живость процесса и доступность PostgreSQL"
+      description: "SELECT 1 через пул соединений: БД недоступна → 503 db_error (балансировщик снимает экземпляр с ротации)."
+      operationId: healthz
+      responses:
+        '200':
+          description: Процесс жив, БД отвечает.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+              example: {status: ok}
+        '503':
+          description: БД недоступна.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [db_error]
+              example: {status: db_error}
+
+  # ---- Public Auth ----
+
+  /api/v1/auth/start:
+    post:
+      tags: [Public Auth]
+      summary: "Шаг 1 входа: проверка пароля и выдача челленджа"
+      description: "Проверяет первый фактор и создаёт челлендж по предпочтительному каналу пользователя (prefer_channels). Неверный пароль и несуществующий пользователь неотличимы (401 bad_credentials, анти-перечисление). Fail-блокировка → 423. Rate-limit по username и IP; повторная отправка раньше cooldown → 429."
+      operationId: authStart
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartRequest'
+            example: {username: user1, password: hunter2}
+      responses:
+        '200':
+          description: Челлендж выдан, код доставляется по каналу.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeIssued'
+              example: {challenge_id: 5f0c1b2e-3a4d-4c5b-9e6f-7a8b9c0d1e2f, channel: email, expires_in: 300}
+        '400':
+          description: Некорректное тело запроса (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Неверное имя пользователя или пароль.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_credentials}
+        '409':
+          description: Нет доступного канала доставки (no_channel).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: no_channel}
+        '423':
+          description: Fail-блокировка после серии неудачных входов.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: locked}
+        '429':
+          description: Rate-limit исчерпан или действует resend-cooldown.
+          headers:
+            Retry-After:
+              description: Секунды до повторной попытки.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitError'
+              example: {error: cooldown, retry_after: 30}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/auth/verify:
+    post:
+      tags: [Public Auth]
+      summary: "Шаг 2 входа: код конкретного челленджа"
+      description: "Неверный код → 401 с остатком попыток (attempts_left после атомарного декремента). Закрытый челлендж (использован / просрочен / попытки исчерпаны / удалён janitor'ом) → 410 expired без раскрытия причин."
+      operationId: authVerify
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+            example: {challenge_id: 5f0c1b2e-3a4d-4c5b-9e6f-7a8b9c0d1e2f, code: "123456"}
+      responses:
+        '200':
+          description: Код верен.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyOK'
+              example: {ok: true, username: user1}
+        '400':
+          description: Некорректное тело или challenge_id не UUID (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Неверный код; attempts_left — остаток попыток челленджа.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyFail'
+              example: {ok: false, attempts_left: 2}
+        '410':
+          description: Челлендж закрыт (expired).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: expired}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/auth/combined:
+    post:
+      tags: [Public Auth]
+      summary: "Комбинированный вход «пароль + код» одним вызовом"
+      description: "Код любой: доставленный (start), TOTP или резервный. Пишет login_ok/login_fail в аудит; неудачный код кормит единый fail-счётчик."
+      operationId: authCombined
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CombinedRequest'
+            example: {username: user1, password: hunter2, code: "123456"}
+      responses:
+        '200':
+          description: Оба фактора верны.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyOK'
+              example: {ok: true, username: user1}
+        '400':
+          description: Некорректное тело запроса (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Неверный пароль или код.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [false]
+              example: {ok: false}
+        '423':
+          description: Fail-блокировка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: locked}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/auth/poll:
+    post:
+      tags: [Public Auth]
+      summary: "Статус push-челленджа (опрос)"
+      description: "Клиент опрашивает, пока пользователь решает в Telegram («Подтвердить»/«Это не я»). Неизвестный/удалённый челлендж — терминальный expired (200), а не 404: poll-циклу нужен статус."
+      operationId: authPoll
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PollRequest'
+            example: {challenge_id: 5f0c1b2e-3a4d-4c5b-9e6f-7a8b9c0d1e2f}
+      responses:
+        '200':
+          description: Текущий статус челленджа.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PollStatus'
+              example: {status: pending}
+        '400':
+          description: Некорректное тело или challenge_id не UUID (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+
+  /api/v1/auth/webauthn/begin:
+    post:
+      tags: [Public Auth]
+      summary: "Вход WebAuthn, шаг 1: пароль + параметры церемонии"
+      description: "Проверяет пароль (+ fail-блокировку) и возвращает PublicKeyCredentialRequestOptions с одноразовым handle сессии церемонии. Нет зарегистрированных ключей → 409 no_credentials. WebAuthn не сконфигурирован (webauthn.rp_id) → 503."
+      operationId: authWebauthnBegin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartRequest'
+            example: {username: user1, password: hunter2}
+      responses:
+        '200':
+          description: Параметры церемонии; handle передаётся на finish.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebauthnBegin'
+        '400':
+          description: Некорректное тело запроса (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Неверное имя пользователя или пароль.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_credentials}
+        '409':
+          description: У пользователя нет зарегистрированных passkeys (no_credentials).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: no_credentials}
+        '423':
+          description: Fail-блокировка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: locked}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+        '503':
+          description: WebAuthn не сконфигурирован на сервере.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: webauthn_disabled}
+
+  /api/v1/auth/webauthn/finish:
+    post:
+      tags: [Public Auth]
+      summary: "Вход WebAuthn, шаг 2: проверка подписи ключом"
+      description: "Тело — сырой PublicKeyCredential (JSON, парсится библиотекой go-webauthn). Handle сессии церемонии — query-параметр ?handle=... или поле \"handle\" того же JSON. Неизвестная/истёкшая/погашенная сессия и неверная подпись — единый 401 bad_credentials. Успех создаёт одноразовое 5-минутное окно webauthn_web_pending: web-логин login/2fa с пустым кодом гасит его ровно один раз."
+      operationId: authWebauthnFinish
+      parameters:
+        - name: handle
+          in: query
+          required: false
+          description: "Одноразовый handle сессии церемонии из begin (альтернатива — поле handle в теле)."
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "PublicKeyCredential (id/rawId/type/response); опционально поле handle."
+              additionalProperties: true
+            example: {id: "Kw-3aM...", rawId: "Kw-3aM...", type: public-key, response: {clientDataJSON: "...", authenticatorData: "...", signature: "...", userHandle: "..."}}
+      responses:
+        '200':
+          description: Подпись верна (тело — пустой объект).
+          content:
+            application/json:
+              schema:
+                type: object
+              example: {}
+        '400':
+          description: Некорректное тело или отсутствует handle (bad_request / handle_required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: handle_required}
+        '401':
+          description: Сессия церемонии неизвестна/истекла или подпись неверна.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_credentials}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+        '503':
+          description: WebAuthn не сконфигурирован на сервере.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: webauthn_disabled}
+
+  # ---- Web Session ----
+
+  /api/v1/login:
+    post:
+      tags: [Web Session]
+      summary: "Шаг 1 web-входа: пароль (сессия или требование 2FA)"
+      description: "Доверенное устройство (cookie twofa_device) с верным паролем и пользователь без второго фактора получают сессию сразу: 200 {ok, username, csrf} + Set-Cookie twofa_session (HttpOnly, Secure, SameSite=Lax). Иначе — 200 {two_factor:\"required\", methods:[...]} без создания сессии; код вводится через /api/v1/login/2fa. Rate-limit по username и IP."
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example: {username: user1, password: hunter2, remember_device: false}
+      responses:
+        '200':
+          description: "Либо вход выполнен (сессия создана, csrf для заголовка X-CSRF-Token), либо требуется второй фактор."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/LoginOK'
+                  - $ref: '#/components/schemas/LoginTwoFactor'
+              examples:
+                ok:
+                  value: {ok: true, username: user1, csrf: 6bd0a8c1e2f34d5a...}
+                two_factor:
+                  value: {two_factor: required, methods: [totp, webauthn, email]}
+        '400':
+          description: Некорректное тело запроса (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Неверное имя пользователя или пароль.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_credentials}
+        '423':
+          description: Fail-блокировка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: locked}
+        '429':
+          description: Rate-limit исчерпан.
+          headers:
+            Retry-After:
+              description: Секунды до повторной попытки.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitError'
+              example: {error: rate_limited, retry_after: 5}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/login/2fa:
+    post:
+      tags: [Web Session]
+      summary: "Шаг 2 web-входа: «пароль + код» одним запросом"
+      description: "Код — доставленный (start/send-code), TOTP или резервный. Пустой код допустим сразу после успешной WebAuthn-церемонии входа (окно webauthn_web_pending создаётся /api/v1/auth/webauthn/finish). При remember_device дополнительно выпускается cookie twofa_device."
+      operationId: login2fa
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Login2FARequest'
+            example: {username: user1, password: hunter2, code: "123456", remember_device: true}
+      responses:
+        '200':
+          description: Сессия создана; csrf — для заголовка X-CSRF-Token мутаций.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginOK'
+              example: {ok: true, username: user1, csrf: 6bd0a8c1e2f34d5a...}
+        '400':
+          description: Некорректное тело запроса (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: "Неверные учётные данные (bad_credentials) либо неверный/отсутствующий код (bad_code)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_code}
+        '423':
+          description: Fail-блокировка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: locked}
+        '429':
+          description: Rate-limit исчерпан.
+          headers:
+            Retry-After:
+              description: Секунды до повторной попытки.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitError'
+              example: {error: rate_limited, retry_after: 5}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/logout:
+    post:
+      tags: [Web Session]
+      summary: "Выход: удалить текущую сессию"
+      description: "Удаляет сессию по cookie twofa_session и чистит cookie. Мутация — требует заголовок X-CSRF-Token со значением csrf из ответа login."
+      operationId: logout
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Сессия удалена, cookie очищена.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '403':
+          description: Отсутствует или неверен заголовок X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+
+  # ---- Me ----
+
+  /api/v1/me:
+    get:
+      tags: [Me]
+      summary: "Профиль и статус каналов второго фактора"
+      description: "csrf отдаётся в теле (cookie HttpOnly — скрипт токен не прочитает); поле radius_reply_set — признак заданных RADIUS-атрибутов ответа."
+      operationId: meProfile
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Профиль пользователя.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+              example: {username: user1, role: user, email: user1@example.com, phone: "+79001234567", email_set: true, phone_set: true, telegram_linked: false, totp_confirmed: true, webauthn_count: 2, prefer_channels: [totp, email], csrf: 6bd0a8c1e2f34d5a..., radius_push: false, radius_reply_set: false}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/password:
+    patch:
+      tags: [Me]
+      summary: "Смена пароля (с отзывом всех сессий и устройств)"
+      description: "Проверяет старый пароль, ставит новый (argon2id) и отзывает ВСЕ сессии и доверенные устройства пользователя, включая текущую — клиент обязан перелогиниться. Мутация: X-CSRF-Token."
+      operationId: mePasswordChange
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChangeRequest'
+            example: {old: hunter2, new: "N3w-P@ssw0rd!"}
+      responses:
+        '200':
+          description: Пароль изменён, сессии отозваны.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: "Пустой новый пароль (bad_request) либо LDAP-пользователь — пароль управляется Active Directory (ldap_managed)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Неверный старый пароль (или нет сессии).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_credentials}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/contacts:
+    put:
+      tags: [Me]
+      summary: "Смена email/телефона с кодом подтверждения"
+      description: "Чувствительная операция: поле с nil не меняется, пустая строка очищает контакт; code — доставленный/TOTP/резервный код подтверждения. Мутация: X-CSRF-Token."
+      operationId: meContactsPut
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactsRequest'
+            example: {email: user1@example.com, code: "123456"}
+      responses:
+        '200':
+          description: Контакты сохранены.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: "Нет полей для изменения (bad_request) или пустой код (code_required)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: code_required}
+        '401':
+          description: Неверный код подтверждения (или нет сессии).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_code}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/contacts/send-code:
+    put:
+      tags: [Me]
+      summary: "Отправить код подтверждения на СТАРЫЙ канал"
+      description: "Код подтверждения чувствительных операций кабинета (purpose ui_confirm) уходит по email/telegram из prefer_channels. Тело запроса не используется. Мутация: X-CSRF-Token."
+      operationId: meContactsSendCode
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Код отправлен по выбранному каналу.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeIssued'
+              example: {challenge_id: 5f0c1b2e-3a4d-4c5b-9e6f-7a8b9c0d1e2f, channel: email, expires_in: 300}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '409':
+          description: Нет доступного канала доставки (no_channel).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: no_channel}
+        '429':
+          description: Действует resend-cooldown.
+          headers:
+            Retry-After:
+              description: Секунды до повторной отправки.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitError'
+              example: {error: cooldown, retry_after: 30}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/prefer:
+    put:
+      tags: [Me]
+      summary: "Порядок prefer-каналов второго фактора"
+      description: "Список валидных имён каналов (хотя бы один): totp, email, sms, telegram, telegram_push. Мутация: X-CSRF-Token."
+      operationId: mePrefer
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreferRequest'
+            example: {channels: [totp, email]}
+      responses:
+        '200':
+          description: Каналы сохранены.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: Пустой список или неизвестное имя канала (bad_channel).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_channel}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/totp/enroll:
+    post:
+      tags: [Me]
+      summary: "Выдача нового секрета TOTP"
+      description: "Генерирует секрет (issuer/period/digits из настроек), шифрует AES-GCM и сохраняет до подтверждения. Ответ {secret, otpauth_url} показывается один раз; QR по otpauth_url рендерирует клиент. Мутация: X-CSRF-Token."
+      operationId: meTotpEnroll
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Секрет выдан, ожидает подтверждения кодом.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [secret, otpauth_url]
+                properties:
+                  secret:
+                    type: string
+                  otpauth_url:
+                    type: string
+                    format: uri
+              example: {secret: JBSWY3DPEHPK3PXP, otpauth_url: "otpauth://totp/twofa:user1?secret=JBSWY3DPEHPK3PXP&issuer=twofa&digits=6&period=30"}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/totp/confirm:
+    post:
+      tags: [Me]
+      summary: "Подтверждение TOTP кодом из приложения"
+      description: "Проверяет код по расшифрованному секрету, подтверждает фактор и выдаёт НОВУЮ партию резервных кодов (старые аннулируются; коды показываются ровно один раз). Подтверждённый код «сжигается» — replay невозможен. Мутация: X-CSRF-Token."
+      operationId: meTotpConfirm
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+            example: {code: "123456"}
+      responses:
+        '200':
+          description: TOTP подтверждён; резервные коды возвращаются один раз.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [backup_codes]
+                properties:
+                  backup_codes:
+                    type: array
+                    items:
+                      type: string
+              example: {backup_codes: [a1b2c3d4-e5f6, 1a2b3c4d-5e6f, 9z8y7x6w-5v4u]}
+        '400':
+          description: "Пустой код (code_required) либо секрет не выдан (totp_not_enrolled)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: totp_not_enrolled}
+        '401':
+          description: Неверный код (или нет сессии).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_code}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/totp/delete:
+    post:
+      tags: [Me]
+      summary: "Отвязка TOTP (чувствительная операция)"
+      description: "Удаляет TOTP-секрет пользователя; требует код подтверждения любым доступным способом. Мутация: X-CSRF-Token."
+      operationId: meTotpDelete
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+            example: {code: "123456"}
+      responses:
+        '200':
+          description: TOTP отвязан.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: Пустой код (code_required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: code_required}
+        '401':
+          description: Неверный код (или нет сессии).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_code}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/backup-codes/regenerate:
+    post:
+      tags: [Me]
+      summary: "Новая партия резервных кодов"
+      description: "Чувствительная операция: требует код подтверждения; старая партия аннулируется, новая показывается ровно один раз в теле ответа. Мутация: X-CSRF-Token."
+      operationId: meBackupCodesRegenerate
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+            example: {code: "123456"}
+      responses:
+        '200':
+          description: Новая партия (показ один раз).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [codes]
+                properties:
+                  codes:
+                    type: array
+                    items:
+                      type: string
+              example: {codes: [a1b2c3d4-e5f6, 1a2b3c4d-5e6f, 9z8y7x6w-5v4u]}
+        '400':
+          description: Пустой код (code_required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: code_required}
+        '401':
+          description: Неверный код (или нет сессии).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_code}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/webauthn/credentials:
+    get:
+      tags: [Me]
+      summary: "Список зарегистрированных passkeys"
+      description: "Метаданные ключей без public_key."
+      operationId: meWebauthnCredentials
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Список ключей пользователя.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [credentials]
+                properties:
+                  credentials:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebauthnCredential'
+              example: {credentials: [{id: 3, name: "YubiKey 5", attachment: cross-platform, transports: [usb, nfc], aaguid: fa2b99dc-9c3d-4f38-8f1e-3a2b1c0d9e5f, backup_eligible: false, backup_state: false, clone_warning: false, last_used_at: "2026-09-01T12:00:00Z"}]}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/webauthn/register/begin:
+    post:
+      tags: [Me]
+      summary: "Регистрация passkey, шаг 1: код + параметры"
+      description: "Чувствительная операция: код второго фактора (доставленный/TOTP/резервный) проверяется ДО старта церемонии; name — метка ключа (используется на finish). Мутация: X-CSRF-Token."
+      operationId: meWebauthnRegisterBegin
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebauthnRegisterBeginRequest'
+            example: {name: "YubiKey 5", code: "123456"}
+      responses:
+        '200':
+          description: Параметры церемонии регистрации с одноразовым handle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebauthnBegin'
+        '400':
+          description: "Пустое имя ключа (bad_request) или пустой код (code_required)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: code_required}
+        '401':
+          description: Неверный код (или нет сессии).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_code}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+        '503':
+          description: WebAuthn не сконфигурирован на сервере.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: webauthn_disabled}
+
+  /api/v1/me/webauthn/register/finish:
+    post:
+      tags: [Me]
+      summary: "Регистрация passkey, шаг 2: сохранение ключа"
+      description: "Тело — сырой PublicKeyCredential (парсит go-webauthn); handle и name — query-параметры или поля того же JSON. Мутация: X-CSRF-Token."
+      operationId: meWebauthnRegisterFinish
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: handle
+          in: query
+          required: false
+          description: "Одноразовый handle из register/begin (альтернатива — поле handle в теле)."
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: false
+          description: "Метка ключа (альтернатива — поле name в теле)."
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "PublicKeyCredential; опционально поля handle и name."
+              additionalProperties: true
+            example: {id: "Kw-3aM...", rawId: "Kw-3aM...", type: public-key, response: {clientDataJSON: "...", attestationObject: "..."}}
+      responses:
+        '200':
+          description: Ключ сохранён.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: "Некорректное тело / нет handle (bad_request, handle_required) либо церемония не удалась (webauthn_failed)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: webauthn_failed}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+        '503':
+          description: WebAuthn не сконфигурирован на сервере.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: webauthn_disabled}
+
+  /api/v1/me/webauthn/credentials/{id}:
+    delete:
+      tags: [Me]
+      summary: "Удаление passkey"
+      description: "Мутация: X-CSRF-Token."
+      operationId: meWebauthnCredentialDelete
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: "Идентификатор строки ключа."
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          description: Ключ удалён.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: Некорректный id (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '404':
+          description: Ключ не найден или принадлежит другому пользователю.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: not_found}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/telegram/link:
+    post:
+      tags: [Me]
+      summary: "Код привязки Telegram (XXXX-XXXX)"
+      description: "Выдача — чувствительная операция: при наличии у пользователя любого второго фактора требуется код подтверждения. Код отправляется боту Telegram, TTL 10 минут, одноразовый. Мутация: X-CSRF-Token."
+      operationId: meTelegramLink
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+            example: {code: "123456"}
+      responses:
+        '200':
+          description: Код привязки (показ один раз).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [link_code, instructions, expires_in]
+                properties:
+                  link_code:
+                    type: string
+                  instructions:
+                    type: string
+                  expires_in:
+                    type: integer
+              example: {link_code: 4f2a-9c1e, instructions: Отправьте код боту Telegram, expires_in: 600}
+        '400':
+          description: Требуется код подтверждения (code_required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: code_required}
+        '401':
+          description: Неверный код подтверждения (или нет сессии).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_code}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/telegram:
+    delete:
+      tags: [Me]
+      summary: "Отвязка чата Telegram"
+      description: "Мутация: X-CSRF-Token."
+      operationId: meTelegramDelete
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Чат отвязан.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/devices:
+    get:
+      tags: [Me]
+      summary: "Доверенные устройства пользователя"
+      description: "Токены не раскрываются, только метаданные."
+      operationId: meDevices
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Список действующих устройств.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Device'
+              example: {devices: [{id: 7, ua: "Mozilla/5.0 (Macintosh)", ip: 192.168.1.10, created_at: "2026-08-30T09:15:00Z", last_seen_at: "2026-09-04T18:22:10Z", expires_at: "2026-09-29T09:15:00Z"}]}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/me/devices/{id}:
+    delete:
+      tags: [Me]
+      summary: "Отзыв доверенного устройства"
+      description: "Мутация: X-CSRF-Token."
+      operationId: meDeviceDelete
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: "Идентификатор устройства."
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          description: Устройство отозвано.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: Некорректный id (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Нет/просрочена сессия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '403':
+          description: Отсутствует или неверен X-CSRF-Token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: csrf}
+        '404':
+          description: Устройство не найдено или чужое.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: not_found}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  # ---- Admin ----
+
+  /api/v1/admin/users:
+    get:
+      tags: [Admin]
+      summary: "Список пользователей"
+      operationId: adminUsersList
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Все пользователи (password_hash никогда не покидает БД).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+              example: {users: [{id: 019a1b2c-3d4e-5f60-7a8b-9c0d1e2f3a4b, username: user1, role: user, enabled: true, email: user1@example.com, phone: "+79001234567", telegram_linked: false, prefer_channels: [totp, email], radius_push: false, radius_reply: {Framed-IP-Address: 10.0.0.5}}]}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+    post:
+      tags: [Admin]
+      summary: "Создание пользователя"
+      description: "Пароль хешируется argon2id; role по умолчанию user; prefer_channels — валидные имена каналов."
+      operationId: adminUserCreate
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+            example: {username: user2, password: "S3cret-P@ss!", email: user2@example.com, phone: "+79009876543", role: user, prefer_channels: [email]}
+      responses:
+        '201':
+          description: Пользователь создан.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              example: {id: 019a1b2c-3d4e-5f60-7a8b-9c0d1e2f3a4c, username: user2, role: user, enabled: true, email: user2@example.com, phone: "+79009876543", telegram_linked: false, prefer_channels: [email], radius_push: false, radius_reply: null}
+        '400':
+          description: "Пустые username/password (bad_request) или неизвестный канал (bad_channel)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '409':
+          description: Имя пользователя занято (username_taken).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: username_taken}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/users/{id}:
+    get:
+      tags: [Admin]
+      summary: "Пользователь по id"
+      operationId: adminUserGet
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: "UUID пользователя."
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Пользователь.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: id не UUID (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '404':
+          description: Пользователь не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: not_found}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+    patch:
+      tags: [Admin]
+      summary: "Точечное изменение полей пользователя"
+      description: "nil-поля не трогаются; смена пароля хешируется argon2id."
+      operationId: adminUserPatch
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: "UUID пользователя."
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPatchRequest'
+            example: {enabled: false, prefer_channels: [email]}
+      responses:
+        '200':
+          description: Пользователь обновлён.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: "Некорректные поля (bad_request) или неизвестный канал (bad_channel)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '404':
+          description: Пользователь не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: not_found}
+        '409':
+          description: Новое имя пользователя занято.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: username_taken}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+    delete:
+      tags: [Admin]
+      summary: "Удаление пользователя (каскад)"
+      description: "Каскадно чистит секреты, сессии и устройства пользователя."
+      operationId: adminUserDelete
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: "UUID пользователя."
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Пользователь удалён.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: id не UUID (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '404':
+          description: Пользователь не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: not_found}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/users/{id}/reset-totp:
+    post:
+      tags: [Admin]
+      summary: "Сброс TOTP с новой партией резервных кодов"
+      description: "Удаляет TOTP-секрет и аннулирует старые резервные коды; новая партия возвращается один раз — админ передаёт её пользователю."
+      operationId: adminUserResetTotp
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: "UUID пользователя."
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: TOTP сброшен; резервные коды (один раз).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [backup_codes]
+                properties:
+                  backup_codes:
+                    type: array
+                    items:
+                      type: string
+              example: {backup_codes: [a1b2c3d4-e5f6, 1a2b3c4d-5e6f, 9z8y7x6w-5v4u]}
+        '400':
+          description: id не UUID (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '404':
+          description: Пользователь не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: not_found}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/users/{id}/reset-webauthn:
+    post:
+      tags: [Admin]
+      summary: "Удаление всех passkeys пользователя"
+      operationId: adminUserResetWebauthn
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: "UUID пользователя."
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Все ключи удалены.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: id не UUID (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '404':
+          description: Пользователь не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: not_found}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/users/{id}/unlink-telegram:
+    post:
+      tags: [Admin]
+      summary: "Отвязка чата Telegram пользователя"
+      operationId: adminUserUnlinkTelegram
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: "UUID пользователя."
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Чат отвязан.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: id не UUID (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '404':
+          description: Пользователь не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: not_found}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/users/{id}/devices:
+    delete:
+      tags: [Admin]
+      summary: "Отзыв всех доверенных устройств пользователя"
+      operationId: adminUserDeleteDevices
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: "UUID пользователя."
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Устройства отозваны.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+              example: {ok: true}
+        '400':
+          description: id не UUID (bad_request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '404':
+          description: Пользователь не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: not_found}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/audit:
+    get:
+      tags: [Admin]
+      summary: "Журнал аудита с фильтрами"
+      description: "Новые записи первыми; limit 1..1000 (по умолчанию 100)."
+      operationId: adminAudit
+      security:
+        - adminBearer: []
+      parameters:
+        - name: username
+          in: query
+          required: false
+          schema:
+            type: string
+          example: user1
+        - name: event
+          in: query
+          required: false
+          description: "Например login_fail, api_start, admin_action."
+          schema:
+            type: string
+          example: login_fail
+        - name: since
+          in: query
+          required: false
+          description: Нижняя граница (RFC3339).
+          schema:
+            type: string
+            format: date-time
+          example: "2026-09-01T00:00:00Z"
+        - name: until
+          in: query
+          required: false
+          description: Верхняя граница (RFC3339).
+          schema:
+            type: string
+            format: date-time
+          example: "2026-09-05T00:00:00Z"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+          example: 100
+      responses:
+        '200':
+          description: Записи аудита.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditRow'
+              example: {events: [{id: 142, ts: "2026-09-05T10:11:12Z", username: user1, event: login_ok, detail: {mode: password+code}, src_ip: 192.168.1.10, result: ok}]}
+        '400':
+          description: "Некорректные since/until (не RFC3339) или limit вне 1..1000 (bad_request)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_request}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/challenges:
+    get:
+      tags: [Admin]
+      summary: "Активные челленджи (только метаданные)"
+      description: "Неиспользованные, не истёкшие (до 500, новые первыми). code_hash не раскрывается; push_state — только для telegram_push."
+      operationId: adminChallenges
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Активные челленджи.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [challenges]
+                properties:
+                  challenges:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Challenge'
+              example: {challenges: [{id: 5f0c1b2e-3a4d-4c5b-9e6f-7a8b9c0d1e2f, user_id: 019a1b2c-3d4e-5f60-7a8b-9c0d1e2f3a4b, channel: telegram_push, purpose: api, push_state: pending, attempts_left: 1, expires_at: "2026-09-05T10:16:12Z", created_at: "2026-09-05T10:11:12Z"}]}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/settings:
+    get:
+      tags: [Admin]
+      summary: "Дерево настроек с маскированными секретами"
+      description: "Секретные значения — масками {\"set\":bool,\"value\":\"••••\"}. Асимметрия: GET отдаёт дерево по секциям, PUT принимает плоские известные ключи."
+      operationId: adminSettingsGet
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Маскированное дерево настроек.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsMasked'
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+    put:
+      tags: [Admin]
+      summary: "Мерж настроек по плоским ключам"
+      description: "Тело — объект {ключ: значение}; ключи — только известные (listen.*, radius.*, smtp, sms.gateway, telegram, totp, webauthn, policy, web.session_ttl, admin_token). Объекты сливаются с текущим значением рекурсивно; маска \"••••\" (или {\"value\":\"••••\"}) и пустая строка на любом уровне = «не менять поле». Атомарно: неизвестный ключ отклоняет запрос целиком (400 unknown_key). Ответ — как GET (маскированное дерево)."
+      operationId: adminSettingsPut
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Карта «известный ключ → значение» (объект мержится, скаляр заменяется)."
+              additionalProperties: true
+            example: {smtp: {host: smtp.example.com, port: 587}, policy: {code_ttl: 5m}}
+      responses:
+        '200':
+          description: Настройки применены; возвращено маскированное дерево.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsMasked'
+        '400':
+          description: "Неизвестный ключ (unknown_key, с полем key) либо невалидное значение (bad_key)."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    required: [error, key]
+                    properties:
+                      error:
+                        type: string
+                        enum: [unknown_key]
+                      key:
+                        type: string
+              example: {error: unknown_key, key: smtp.hostname}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/settings/regenerate:
+    post:
+      tags: [Admin]
+      summary: "Перегенерация секрета (admin_token / radius.secret)"
+      description: "Новое случайное значение возвращается один раз; GET всегда маскирует. Смена radius.secret применяется на лету."
+      operationId: adminSettingsRegenerate
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key]
+              properties:
+                key:
+                  type: string
+                  enum: [admin_token, radius.secret]
+            example: {key: admin_token}
+      responses:
+        '200':
+          description: Новое значение секрета (показ один раз).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key, value]
+                properties:
+                  key:
+                    type: string
+                  value:
+                    type: string
+              example: {key: admin_token, value: 9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c...}
+        '400':
+          description: Ключ не допускает регенерации (bad_key).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: bad_key}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/settings/export:
+    get:
+      tags: [Admin]
+      summary: "Экспорт настроек (файл с секретами)"
+      description: "Вложение ligament-settings-YYYYMMDD.json: ВСЕ настройки {ключ: значение}, кроме master_key и admin_token (не экспортируются никогда). Файл содержит секреты (radius.secret, smtp.password, токен Telegram, креды SMS/LDAP) и помечен полем _warning — храните его как секрет. Действие пишется в аудит (settings_export)."
+      operationId: adminSettingsExport
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: "JSON-файл экспорта (Content-Disposition: attachment)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsExport'
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/settings/import:
+    put:
+      tags: [Admin]
+      summary: "Импорт настроек (файл экспорта)"
+      description: "Применяет {settings:{ключ: значение}} заменой значения ключа. Атомарно: СНАЧАЛА валидируются все ключи — неизвестный отклоняет запрос целиком (400 unknown_key со списком keys), ничего не применяется. Затем ключи применяются по одному через settings-менеджер и следует один Reload. Пропускаются (skipped): null и маски («••••» / {\"value\":\"••••\"}), master_key/admin_token, ключи license.* (runtime-состояние инсталляции). Отсутствующие в файле ключи не затрагиваются. Ответ {applied, skipped}; аудит settings_import."
+      operationId: adminSettingsImport
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingsImportRequest'
+            example: {settings: {totp: {issuer: corp-2fa, digits: 6, period: 30, skew: 1}, "listen.http": ":8080"}}
+      responses:
+        '200':
+          description: Настройки применены.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsImportResult'
+        '400':
+          description: "Неизвестный ключ (unknown_key со списком keys) либо невалидное значение (bad_key)."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    required: [error, keys]
+                    properties:
+                      error:
+                        type: string
+                        enum: [unknown_key]
+                      keys:
+                        type: array
+                        items:
+                          type: string
+              example: {error: unknown_key, keys: [smtp.hostname]}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/backup:
+    get:
+      tags: [Admin]
+      summary: "Логический бэкап БД (SQL-дамп)"
+      description: "Вложение ligament-backup-YYYYMMDD.sql — тот же дамп, что даёт `twofa -backup` (BEGIN; DELETE FROM + multi-row INSERT; COMMIT;): пользователи, TOTP-шифротексты, сессии, настройки (без master_key), audit_log. master_key в дамп НЕ входит: восстановление на другую инсталляцию требует того же master_key. Восстановление — psql (см. README «Бэкап и перенос»). При audit_log > 500000 строк — 413 backup_too_large с подсказкой снять дамп CLI. Аудит backup_download пишется после генерации (событие не попадает в дамп)."
+      operationId: adminBackupGet
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: "SQL-дамп вложением (Content-Disposition: attachment)."
+          content:
+            application/sql:
+              schema:
+                type: string
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '413':
+          description: audit_log слишком велик для HTTP-бэкапа — используйте CLI.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, audit_rows, hint]
+                properties:
+                  error:
+                    type: string
+                    enum: [backup_too_large]
+                  audit_rows:
+                    type: integer
+                  hint:
+                    type: string
+              example: {error: backup_too_large, audit_rows: 600000, hint: "снимите дамп CLI: twofa -dsn ... -backup out.sql (-backup-audit=false — без журнала событий)"}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/license:
+    get:
+      tags: [Admin]
+      summary: "Статус лицензии (без блоба)"
+      description: "Режим free/trial/licensed, лимит и число активных пользователей, метаданные лицензии (клиент, lic_id, тариф), сроки подписки/демо и окна обновлений. Сам license-блоб не возвращается."
+      operationId: adminLicenseGet
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Маскированный статус лицензии.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseStatus'
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+    put:
+      tags: [Admin]
+      summary: "Загрузка license-файла"
+      description: "Тело {blob}: полное содержимое PEM-подобного файла (-----BEGIN LIGAMENT LICENSE----- ...). Проверка: формат, подпись Ed25519 зашитым ключом (kid), CRL-отзыв. Истёкшая подписка принимается (гаснет в free после grace) — 400 только для битого формата/подписки и отозванной лицензии. Действие пишется в аудит (license_upload)."
+      operationId: adminLicensePut
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [blob]
+              properties:
+                blob:
+                  type: string
+            example: {blob: "-----BEGIN LIGAMENT LICENSE-----\nZXhhbXBsZQ.c2ln\n-----END LIGAMENT LICENSE-----"}
+      responses:
+        '200':
+          description: Лицензия применена; возвращен статус.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseStatus'
+        '400':
+          description: "Битый формат (invalid_format), неверная подпись/ключ (invalid_signature), отозвана CRL (revoked) либо пустой blob (bad_request)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: invalid_signature}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+    delete:
+      tags: [Admin]
+      summary: "Удаление лицензии (free-режим)"
+      description: "Снимает загруженную лицензию: сервер возвращается в бесплатный режим (5 активных пользователей). Действие пишется в аудит (license_remove)."
+      operationId: adminLicenseDelete
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Лицензия удалена; возвращен статус free.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseStatus'
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/license/crl:
+    put:
+      tags: [Admin]
+      summary: "Загрузка CRL-отзыва лицензии"
+      description: "Тело {blob}: подписанный вендором revocation-файл (-----BEGIN LIGAMENT REVOCATION-----) — досрочный отзыв подписки. Проверка той же схемой Ed25519; отзыв действует на lic_id из блоба. Действие пишется в аудит (license_crl_upload)."
+      operationId: adminLicenseCrlPut
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [blob]
+              properties:
+                blob:
+                  type: string
+            example: {blob: "-----BEGIN LIGAMENT REVOCATION-----\nZXhhbXBsZQ.c2ln\n-----END LIGAMENT REVOCATION-----"}
+      responses:
+        '200':
+          description: CRL принят.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [lic_id, revoked_at]
+                properties:
+                  lic_id:
+                    type: string
+                  revoked_at:
+                    type: string
+              example: {lic_id: 11111111-2222-3333-4444-555555555555, revoked_at: "2026-09-06T10:00:00Z"}
+        '400':
+          description: "Битый формат (invalid_format), неверная подпись/ключ (invalid_signature) либо пустой blob (bad_request)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: invalid_signature}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+components:
+  securitySchemes:
+    adminBearer:
+      type: http
+      scheme: bearer
+      description: "Админ-токен из настроек (admin_token; задать/перегенерировать — POST /api/v1/admin/settings/regenerate). Заголовок Authorization: Bearer <token>; сравнение SHA-256 в постоянном времени."
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: twofa_session
+      description: "Web-сессия (cookie twofa_session, HttpOnly+Secure+SameSite=Lax; выдаётся POST /api/v1/login и /api/v1/login/2fa). Для МУТИРУЮЩИХ методов (POST/PUT/PATCH/DELETE) обязателен заголовок X-CSRF-Token со значением csrf из ответа входа — иначе 403 csrf. Доверенные устройства — отдельная cookie twofa_device (remember_device)."
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      description: "Машинный код ошибки без внутренних деталей."
+      properties:
+        error:
+          type: string
+      example: {error: bad_credentials}
+    LicenseStatus:
+      type: object
+      description: "Маскированный статус лицензии (license-блоб не входит). user_limit=0 и unlimited=true — не ограничено (демо/безлимит); free всегда 5."
+      required: [mode, user_limit, unlimited, active_users, at_limit, revoked, expired, grace, days_left, trial_days_left]
+      properties:
+        mode:
+          type: string
+          enum: [free, trial, licensed]
+        user_limit:
+          type: integer
+        unlimited:
+          type: boolean
+        active_users:
+          type: integer
+          description: Активные (не disabled) пользователи.
+        at_limit:
+          type: boolean
+        lic_id:
+          type: string
+        customer:
+          type: string
+        plan:
+          type: string
+          enum: [subscription, perpetual]
+        features:
+          type: array
+          items:
+            type: string
+        revoked:
+          type: boolean
+          description: Лицензия отозвана CRL — сервер в free.
+        expired:
+          type: boolean
+          description: Подписка истекла позже grace — сервер в free.
+        grace:
+          type: boolean
+          description: Подписка истекла, действует grace-окно 5 дней.
+        days_left:
+          type: integer
+          description: Дней подписки (0 в grace).
+        trial_days_left:
+          type: integer
+        updates_until:
+          type: string
+          description: "Окно обновлений (maintenance_expires), YYYY-MM-DD; версии, собранные позже, не стартуют."
+      example: {mode: licensed, user_limit: 25, unlimited: false, active_users: 3, at_limit: false, lic_id: 11111111-2222-3333-4444-555555555555, customer: "ООО Ромашка", plan: subscription, revoked: false, expired: false, grace: false, days_left: 360, trial_days_left: 0, updates_until: "2027-09-01"}
+    RateLimitError:
+      type: object
+      required: [error, retry_after]
+      properties:
+        error:
+          type: string
+          enum: [rate_limited, cooldown]
+        retry_after:
+          type: integer
+          description: Секунды до повторной попытки (дублируется заголовком Retry-After).
+      example: {error: cooldown, retry_after: 30}
+    Ok:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+      example: {ok: true}
+    StartRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+    VerifyRequest:
+      type: object
+      required: [challenge_id, code]
+      properties:
+        challenge_id:
+          type: string
+          format: uuid
+        code:
+          type: string
+    CombinedRequest:
+      type: object
+      required: [username, password, code]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+        code:
+          type: string
+          description: "Доставленный, TOTP или резервный код."
+    PollRequest:
+      type: object
+      required: [challenge_id]
+      properties:
+        challenge_id:
+          type: string
+          format: uuid
+    ChallengeIssued:
+      type: object
+      required: [challenge_id, channel, expires_in]
+      properties:
+        challenge_id:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum: [email, sms, telegram, telegram_push, totp]
+          description: "Канал выдачи кода; totp — челлендж без доставки (код генерируется приложением пользователя)."
+        expires_in:
+          type: integer
+          description: Секунды до истечения челленджа.
+    VerifyOK:
+      type: object
+      required: [ok, username]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        username:
+          type: string
+    VerifyFail:
+      type: object
+      required: [ok, attempts_left]
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+        attempts_left:
+          type: integer
+          description: Остаток попыток челленджа после неверного кода.
+    PollStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, approved, denied, expired]
+          description: "approved/denied — решение push-кнопок Telegram; expired — просрочен, попытки исчерпаны или код погашен."
+    WebauthnBegin:
+      type: object
+      required: [handle, options]
+      properties:
+        handle:
+          type: string
+          description: Одноразовый идентификатор сессии церемонии.
+        options:
+          type: object
+          additionalProperties: true
+          description: "PublicKeyCredentialRequestOptions (вход) или PublicKeyCredentialCreationOptions (регистрация) — формат WebAuthn Level 2."
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+        remember_device:
+          type: boolean
+          description: Доверять устройству (cookie twofa_device на срок policy.trusted_device_ttl).
+          default: false
+    Login2FARequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+        code:
+          type: string
+          description: "Код доставки/TOTP/резервный; пустой — только сразу после успешной WebAuthn-церемонии (webauthn_web_pending)."
+        remember_device:
+          type: boolean
+          default: false
+    LoginOK:
+      type: object
+      required: [ok, username, csrf]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        username:
+          type: string
+        csrf:
+          type: string
+          description: "CSRF-токен сессии — для заголовка X-CSRF-Token мутаций (cookie HttpOnly, скрипт прочитать не может)."
+    LoginTwoFactor:
+      type: object
+      required: [two_factor, methods]
+      properties:
+        two_factor:
+          type: string
+          enum: [required]
+        methods:
+          type: array
+          items:
+            type: string
+            enum: [totp, webauthn, email, sms, telegram]
+          description: Доступные пользователю способы второго фактора.
+    Profile:
+      type: object
+      required: [username, role, email, phone, email_set, phone_set, telegram_linked, totp_confirmed, webauthn_count, prefer_channels, csrf, radius_push, radius_reply_set]
+      properties:
+        username:
+          type: string
+        role:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        email_set:
+          type: boolean
+        phone_set:
+          type: boolean
+        telegram_linked:
+          type: boolean
+        totp_confirmed:
+          type: boolean
+        webauthn_count:
+          type: integer
+        prefer_channels:
+          type: array
+          items:
+            type: string
+        csrf:
+          type: string
+        radius_push:
+          type: boolean
+        radius_reply_set:
+          type: boolean
+    PasswordChangeRequest:
+      type: object
+      required: [old, new]
+      properties:
+        old:
+          type: string
+          format: password
+        new:
+          type: string
+          format: password
+    ContactsRequest:
+      type: object
+      required: [code]
+      properties:
+        email:
+          type: string
+          nullable: true
+          description: nil — не менять; пустая строка — очистить.
+        phone:
+          type: string
+          nullable: true
+        code:
+          type: string
+    PreferRequest:
+      type: object
+      required: [channels]
+      properties:
+        channels:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [totp, email, sms, telegram, telegram_push]
+    CodeRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+    WebauthnRegisterBeginRequest:
+      type: object
+      required: [name, code]
+      properties:
+        name:
+          type: string
+          description: Метка ключа.
+        code:
+          type: string
+    WebauthnCredential:
+      type: object
+      required: [id, name, attachment, transports, aaguid, backup_eligible, backup_state, clone_warning, last_used_at]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        attachment:
+          type: string
+        transports:
+          type: array
+          items:
+            type: string
+        aaguid:
+          type: string
+        backup_eligible:
+          type: boolean
+        backup_state:
+          type: boolean
+        clone_warning:
+          type: boolean
+        last_used_at:
+          type: string
+          nullable: true
+          format: date-time
+    Device:
+      type: object
+      required: [id, ua, ip, created_at, last_seen_at, expires_at]
+      properties:
+        id:
+          type: integer
+        ua:
+          type: string
+          description: User-Agent устройства.
+        ip:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+    User:
+      type: object
+      description: Пользователь в ответах admin API (password_hash никогда не раскрывается).
+      required: [id, username, role, enabled, email, phone, telegram_linked, prefer_channels, radius_push]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        role:
+          type: string
+          description: "user или admin."
+        enabled:
+          type: boolean
+        email:
+          type: string
+        phone:
+          type: string
+        telegram_linked:
+          type: boolean
+        prefer_channels:
+          type: array
+          items:
+            type: string
+        radius_push:
+          type: boolean
+        radius_reply:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+          description: RADIUS-атрибуты ответа для пользователя.
+    UserCreateRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+        email:
+          type: string
+        phone:
+          type: string
+        role:
+          type: string
+          default: user
+        prefer_channels:
+          type: array
+          items:
+            type: string
+            enum: [totp, email, sms, telegram, telegram_push]
+    UserPatchRequest:
+      type: object
+      description: Отсутствующие (nil) поля не меняются.
+      properties:
+        username:
+          type: string
+          nullable: true
+        password:
+          type: string
+          nullable: true
+          format: password
+        email:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        role:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+          nullable: true
+        prefer_channels:
+          type: array
+          nullable: true
+          items:
+            type: string
+            enum: [totp, email, sms, telegram, telegram_push]
+        radius_push:
+          type: boolean
+          nullable: true
+        radius_reply:
+          type: object
+          additionalProperties:
+            type: string
+    AuditRow:
+      type: object
+      description: Запись audit_log.
+      required: [id, ts, username, event, detail, src_ip, result]
+      properties:
+        id:
+          type: integer
+          format: int64
+        ts:
+          type: string
+          format: date-time
+        username:
+          type: string
+          description: Пустая строка — системное событие.
+        event:
+          type: string
+        detail:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: JSONB-детали события.
+        src_ip:
+          type: string
+        result:
+          type: string
+          enum: [ok, fail]
+    Challenge:
+      type: object
+      description: Метаданные активного челленджа (code_hash не раскрывается).
+      required: [id, user_id, channel, purpose, push_state, attempts_left, expires_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum: [email, sms, telegram, telegram_push, totp, webauthn]
+        purpose:
+          type: string
+          enum: [api, radius, radius_prefetch, ui_confirm, webauthn_session, webauthn_web_pending, tg_link]
+        push_state:
+          type: string
+          enum: ["", pending, approved, denied]
+          description: Только для telegram_push; пустая строка для прочих каналов.
+        attempts_left:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    SettingsMasked:
+      type: object
+      description: "Дерево настроек по секциям; секретные значения маскируются форматом {\"set\":bool,\"value\":\"••••\"}. PUT принимает плоские известные ключи, маска/пустая строка = «не менять»."
+      additionalProperties: true
+      example: {listen: {http: "0.0.0.0:8080", radius_auth: "0.0.0.0:1812", radius_acct: "0.0.0.0:1813"}, admin_token: {set: true, value: "••••"}, radius: {secret: {set: true, value: "••••"}, max_fail_per_user: 5, push_wait: 20s}, smtp: {host: smtp.example.com, port: 587, password: {set: true, value: "••••"}, starttls: true}, telegram: {bot_token: {set: true, value: "••••"}}, totp: {issuer: twofa, digits: 6, period: 30, skew: 1}, webauthn: {rp_id: 2fa.example.com}, policy: {code_ttl: 5m, code_length: 6, max_attempts: 3, resend_cooldown: 30s, session_ttl: 12h}}
+    SettingsExport:
+      type: object
+      description: "Файл экспорта настроек: все ключи с СЫРЫМИ значениями (секреты включены — файл хранить как секрет), master_key/admin_token исключены всегда."
+      required: [_warning, exported_at, settings]
+      properties:
+        _warning:
+          type: string
+          example: "файл содержит секреты — храните безопасно"
+        exported_at:
+          type: string
+          format: date-time
+        settings:
+          type: object
+          additionalProperties: true
+          description: "Карта «известный ключ → значение» (сырой JSON значений)."
+      example: {_warning: "файл содержит секреты — храните безопасно", exported_at: "2026-09-05T12:00:00Z", settings: {totp: {issuer: corp-2fa, digits: 6, period: 30, skew: 1}, radius: {secret: "raw-radius-secret", code_lengths: [6, 8]}, smtp: {host: smtp.example.com, port: 587, password: raw-smtp-password}}}
+    SettingsImportRequest:
+      type: object
+      required: [settings]
+      properties:
+        settings:
+          type: object
+          additionalProperties: true
+          description: "Карта «известный ключ → значение»; null/маски/master_key/admin_token/license.* пропускаются."
+      example: {settings: {totp: {issuer: corp-2fa}, "listen.http": ":8080"}}
+    SettingsImportResult:
+      type: object
+      required: [applied, skipped]
+      properties:
+        applied:
+          type: integer
+          description: Число применённых ключей.
+        skipped:
+          type: integer
+          description: "Число пропущенных ключей (null, маски, master_key/admin_token, license.*)."
+      example: {applied: 12, skipped: 3}

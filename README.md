@@ -1,4 +1,10 @@
-# twofa
+# Ligament
+
+> **Ligament** (связка) — то, что соединяет части в единую конструкцию:
+> пользователь ↔ роутер (RADIUS), пользователь ↔ сервис (REST), пользователь ↔
+> телефон (TOTP/Telegram-push), админ ↔ факторы, политики и шлюзы.
+> Технические имена (бинарник `twofa`, compose-сервис, go-модуль) сохранены
+> для совместимости.
 
 Автономный сервер двухфакторной аутентификации на Go: **RADIUS-сервер для
 MikroTik/RouterOS** (L2TP/PPTP/PPPoE/вход в роутер), **REST API** для
@@ -90,6 +96,69 @@ Custom-шлюз (JSONPath-правило успеха и т.п. — см. спе
 
 `rp_id` — домен, с которого открывается web-UI (localhost для локальных
 тестов). Регистрация passkey — в кабинете /me → Passkeys.
+
+## LDAP / Active Directory
+
+Первый фактор можно делегировать корпоративному каталогу: пароль
+проверяется **bind-ом в LDAP/AD** (локальный argon2id-хеш для таких
+пользователей не используется), второй фактор остаётся штатным (TOTP,
+Telegram, email, SMS, passkeys). Секция «LDAP / Active Directory» в
+админке (Настройки); эквивалентный ключ `ldap`:
+
+```json
+{
+  "enabled": true,
+  "url": "ldaps://dc1.example.com:636",
+  "starttls": false,
+  "bind_dn": "CN=svc-twofa,OU=Service,DC=example,DC=com",
+  "bind_password": "…",
+  "base_dn": "DC=example,DC=com",
+  "user_filter": "(&(objectClass=user)(sAMAccountName={login}))",
+  "group_base_dn": "",
+  "group_filter": "(&(objectClass=group)(member={dn}))",
+  "attrs": {"email": "mail", "phone": "telephoneNumber", "display_name": "displayName"},
+  "allow_groups": ["CN=VPN-Users,OU=Groups,DC=example,DC=com"],
+  "role_map": {"CN=VPN-Admins,OU=Groups,DC=example,DC=com": "admin"}
+}
+```
+
+Дефолтные фильтры рассчитаны на Active Directory (`sAMAccountName`,
+`member`); для OpenLDAP подойдут, например,
+`(&(objectClass=inetOrgPerson)(uid={login}))` и
+`(&(objectClass=groupOfNames)(member={dn}))`. Плейсхолдер `{login}`
+экранируется по RFC 4515 — спецсимволы логина не ломают фильтр.
+`bind_dn` — сервисная учётка для поиска (пустая — анонимный поиск),
+`bind_password` маскируется в UI и API.
+
+**Группы.** `allow_groups` (массив DN, сравнение регистронезависимое) —
+список доступа: вход только участникам хотя бы одной перечисленной
+групп; пустой массив `[]` — все найденные в каталоге. `role_map`
+(объект «DN **или** CN группы → роль») назначает роли: `admin`
+побеждает при любом совпадении, отсутствие соответствий оставляет
+`user`. Роль пересчитывается при каждом входе — вывод из группы
+админов отзывает права при следующей аутентификации. Короткие ключи
+по CN удобны, когда группы в одном OU:
+`{"VPN-Admins": "admin"}`.
+
+**Синхронизация и авто-провижининг.** При первом успешном входе
+пользователь создаётся в `users` с `source='ldap'` и случайным
+непригодным локальным хешем (локальный вход невозможен). При каждом
+входе синхронизируются `email`, `phone` и `display_name` (имена
+атрибутов — карта `attrs`) и роль из `role_map` — только изменившиеся
+поля; Telegram-привязка, TOTP, prefer-каналы и доверенные устройства
+не затрагиваются. Отключённая админом учётка остаётся отключённой
+(синхронизация не ре-включает).
+
+**Ограничения.** Локальные пользователи продолжают входить по
+локальному паролю; существующее имя в каталоге не «перехватывается»
+(двойной источник пароля запрещён — каталог проверяется только для
+пользователей с `source='ldap'` и неизвестных имён). Смена пароля в
+кабинете недоступна LDAP-пользователям — блокируется и сервером
+(API отвечает 400 `ldap_managed`), пароль меняется средствами каталога.
+Все операции с каталогом (подключение, поиск, bind) накрыты
+безусловным 30-секундным потолком — зависший каталог не подвешивает
+вход. Рекомендуется `ldaps://` (порт 636) или `ldap://` + STARTTLS: без
+шифрования пароль bind-а и cookies сессий ходят открытым текстом.
 
 ## SMS-шлюзы (пресеты)
 
@@ -187,6 +256,228 @@ enroll/confirm, `POST /api/v1/me/backup-codes/regenerate` — новая пар�
 Ошибки: 401 `bad_credentials`/`bad_code` (с `attempts_left`), 410 `expired`,
 423 `locked` (fail-лок), 429 `rate_limited`/`cooldown`, 409 `no_channel`.
 
+## API-документация (OpenAPI)
+
+Полный контракт REST API (все 44 операции `/api/v1/*` + `/healthz`, схемы
+запросов/ответов, коды ошибок, примеры) — OpenAPI 3.0.3:
+
+- **`/openapi.yaml`** — сама спецификация (встроена в бинарник,
+  `Content-Type: text/yaml`);
+- **`/api/docs`** — компактная встроенная страница: эндпоинты по группам
+  (Public Auth / Web Session / Me / Admin) с методами, путями и кодами
+  ответов (ссылка «API» в админ-разделе бокового меню).
+
+Импорт в Postman: **Import → File** (или ссылку `http://localhost:8080/openapi.yaml`),
+в Insomnia: **Create → Import From URL**. Swagger UI/editor — «openapi 3.0»
+из URL `/openapi.yaml`.
+
+Замечания по авторизации при импорте:
+
+- админ-эндпоинты `/api/v1/admin/*` — заголовок `Authorization: Bearer
+  <admin_token>` (в Postman — тип Auth **Bearer Token**);
+- кабинет `/api/v1/me/*` и `POST /api/v1/logout` — cookie `twofa_session`
+  (Auth **API Key** → тип Cookie, значение из ответа `/api/v1/login`);
+  мутации (POST/PUT/PATCH/DELETE) дополнительно требуют заголовок
+  `X-CSRF-Token` со значением `csrf` из ответа входа — иначе 403 `csrf`;
+- cookie выпускается с флагом Secure — при импорте через plain HTTP
+  используйте `localhost` или TLS-прокси.
+
+## Бэкап и перенос
+
+Три слоя — от переноса одной конфигурации до полного бэкапа продакшена.
+
+### 1. Экспорт/импорт настроек (конфигурация без учётных записей)
+
+Админка → Настройки → «Экспорт и импорт настроек», либо API:
+
+```sh
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  localhost:8080/api/v1/admin/settings/export -o ligament-settings.json
+
+curl -s -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
+  localhost:8080/api/v1/admin/settings/import \
+  -d @ligament-settings.json        # → {"applied":N,"skipped":M}
+```
+
+Файл содержит всю конфигурацию с НАСТОЯЩИМИ значениями секретов
+(`radius.secret`, пароль SMTP, токен Telegram, креды SMS-шлюза и LDAP) —
+храните его как секрет (в файле об этом предупреждает поле `_warning`).
+**`master_key` и `admin_token` не экспортируются никогда** и импортом не
+принимаются. Импорт атомарен: неизвестный ключ отклоняет запрос целиком
+(400 со списком), маски «••••», `null` и ключи `license.*` (состояние
+инсталляции, не конфигурация) пропускаются, отсутствующие в файле ключи
+не затрагиваются.
+
+### 2. Логический дамп БД (`twofa -backup`)
+
+Полный дамп данных в SQL силами самого бинарника — pg_dump в
+distroless-образе отсутствует:
+
+```sh
+docker compose exec twofa twofa -backup - > backup.sql     # stdout (DSS из env)
+./twofa -dsn "$TWOFA_DB_DSN" -backup out.sql               # файл с правами 0600
+./twofa -dsn "$TWOFA_DB_DSN" -backup out.sql -backup-audit=false  # без audit_log
+```
+
+Дамп — транзакция (`BEGIN;`…`COMMIT;`) из `DELETE FROM` + multi-row INSERT
+по всем таблицам (порядок по FK); применяется в **уже мигрированную** БД и
+идемпотентен. Восстановление — через psql (флага `-restore` намеренно нет:
+автоматически применять дамп опасно):
+
+```sh
+docker compose exec -T db psql -U twofa -d twofa < backup.sql
+```
+
+**`master_key` в дамп НЕ входит; но дамп содержит `admin_token` и все секреты
+настроек** (таблица settings целиком) — храните файл дампа как секрет (при
+выводе в файл права 0600). TOTP-секреты хранятся шифротекстами
+AES-256-GCM под мастер-ключом, поэтому на ДРУГОЙ инсталляции дамп
+расшифруется только при том же master_key: восстановите данные, затем
+перенесите master_key прежней инсталляции (слой 3) и перезапустите
+сервер. Скачать дамп из браузера — админка → Настройки → «Обслуживание» →
+«Скачать бэкап» (`GET /api/v1/admin/backup`; при `audit_log` свыше
+500 000 строк ответ 413 — снимите дамп CLI: тот же профиль памяти, но без
+лимита строк).
+
+### 3. Продакшен: pg_dump/том + master_key отдельно
+
+Канонический бэкап продакшена — `pg_dump` или копия тома `twofa_pgdata`
+(полная БД, включая `master_key` внутри `settings`):
+
+```sh
+docker compose exec -T db pg_dump -U twofa twofa | gzip > twofa-$(date +%F).sql.gz
+```
+
+`master_key` дополнительно дублируйте ОТДЕЛЬНО от бэкапов БД и храните в
+секретном хранилище: это ключ ко всем TOTP-секретам, утечка бэкапа БД без
+него не раскрывает второй фактор, а наличие — раскрывает:
+
+```sh
+docker compose exec -T db psql -U twofa -d twofa -Atc \
+  "select value from settings where key='master_key'" > master_key.txt
+```
+
+Ночной бэкап с ротацией (cron на хосте):
+
+```cron
+30 2 * * * docker compose -f /opt/twofa/docker-compose.yml exec -T db pg_dump -U twofa twofa | gzip > /var/backups/twofa/twofa-$(date +\%F).sql.gz && find /var/backups/twofa -name 'twofa-*.sql.gz' -mtime +14 -delete
+```
+
+## Лицензирование (реализация)
+
+Модель утверждена в `docs/reports/2026-09-06-licensing.md`: оффлайн
+подписанный license-файл (Ed25519), без activation-сервера и phone-home —
+интернет на площадке клиента не нужен.
+
+### Режимы и лимиты
+
+| Режим | Условие | Лимит активных пользователей |
+|---|---|---|
+| **free** | лицензии нет (или отозвана/истекла) | **5**, навсегда |
+| **trial** | первый старт сервера | без лимита, **30 дней** full-featured (старт демо персистится в БД — `settings.license.trial_started`; сбрасывается только с БД) |
+| | загрузка лицензии ставит неотзываемый маркер `settings.license.trial_used`: после удаления лицензии сервер возвращается в **free** (5 п.), **оставшиеся дни демо не восстанавливаются** — цикл «загрузил → удалил → рестарт» новое демо не даёт |  |
+| **licensed** | загружен валидный файл | `user_limit` из лицензии |
+
+Что блокируется: **только создание и включение пользователей сверх лимита**
+(JSON API → 403 `license_limit`, форма /admin/users → флеш-ошибка; событие
+`license_limit` в аудите). При первом достижении лимита даётся **30-дневный
+grace на превышение** (report §3.3): фиксация `settings.license.over_limit_since`,
+создание сверх лимита разрешено с аудитом-предупреждением `license_over_limit_grace`,
+после 30 дней — 403; возврат активных под лимит сбрасывает фиксацию (новое
+превышение начнёт grace заново). **Вход/аутентификация существующих пользователей
+(RADIUS, REST, web) не блокируется никогда** — организация не теряет доступ.
+Истечение демо/подписки — тихая деградация в free (не хард-блок): баннер в
+админке при достижении лимита, превышении лимита в любом режиме (в т.ч.
+бесплатном после удаления лицензии: «Превышен лимит бесплатного режима (5):
+создание пользователей заблокировано»), демо ≤7 дн., подписке ≤14 дн. (или в
+grace), окне обновлений ≤30 дн., отзыве/истечении.
+
+Подписка (`expires_at` ≤ 13 мес.) гаснет через **grace-окно 5 дней** после
+`expires_at`; perpetual — бессрочная, обновления до `maintenance_expires`.
+
+### Формат файла
+
+```
+-----BEGIN LIGAMENT LICENSE-----
+<base64(canonical JSON payload)>.<base64(Ed25519-подпись)>
+-----END LIGAMENT LICENSE-----
+```
+
+Payload: `lic_id` (UUID), `customer`, `plan` (`subscription`|`perpetual`),
+`user_limit`, `issued_at`, `expires_at` (только подписка), `maintenance_expires`,
+`features`, `kid` (ID ключа подписи — ротация), `notes`. Канонический JSON —
+отсортированные ключи без пробелов (стабильные байты для подписи). Публичные
+ключи зашиты в бинарник (`internal/license`, `trustedKeys`); подделка без
+приватного ключа вендора невозможна.
+
+Загрузка: **Админ → Лицензия** (`/admin/license`) — вставка файла в textarea
+или `PUT /api/v1/admin/license {"blob": ...}` (статус — `GET`, снятие —
+`DELETE`; все действия в аудите). Ошибки: `invalid_format`,
+`invalid_signature`, `revoked`.
+
+### Гейт обновлений (build-date)
+
+Дата сборки вшивается в бинарник: `make build` / `make docker` добавляют
+`-ldflags "-X main.BuildDate=$(date +%F)"` (в Docker — `ARG BUILD_DATE`).
+Licensed-сервер **не стартует**, если сборка новее `maintenance_expires`
+лицензии: «версия новее окна обновлений лицензии — откатитесь или продлите
+maintenance». Free/trial не ограничены; perpetual сохраняет вечное право на
+версии, выпущенные до конца maintenance (версионный пиннинг).
+
+### Отзыв (CRL)
+
+Досрочный отзыв подписки — подписанный блоб, загружается отдельно или с новой
+лицензией (`PUT /api/v1/admin/license/crl`):
+
+```
+-----BEGIN LIGAMENT REVOCATION-----
+<base64({"lic_id":...,"revoked_at":...,"kid":...})>.<base64(sig)>
+-----END LIGAMENT REVOCATION-----
+```
+
+Совпадение `lic_id` с загруженной **подпиской** переводит сервер в free
+(статус показывает `revoked: true`); повторная загрузка такой лицензии —
+400 `revoked`. Perpetual технически не отзывается (только юридически):
+CRL с совпадающим `lic_id` perpetual-лицензии игнорируется. Битые значения
+`license.trial_started`/`license.trial_used` не валят старт сервера —
+предупреждение в логе и трактовка как отсутствующих (без перезаписи).
+
+### licgen (генератор вендора)
+
+`cmd/licgen` в этом же репозитории — публичность безопасна: без приватного
+ключа вендора генератор бесполезен.
+
+```sh
+# пара ключей: приватный PKCS8 PEM (хранить офлайн!), публичный PEM + hex
+go run ./cmd/licgen -genkey
+
+# подписка на 12 мес, 50 пользователей
+go run ./cmd/licgen -key vendor.pem -kid 2026-09 \
+    -customer "ООО Ромашка" -plan subscription -users 50 -months 12 -out lic.pem
+
+# perpetual с 12 мес обновлений
+go run ./cmd/licgen -key vendor.pem -kid 2026-09 \
+    -customer "ООО Ромашка" -plan perpetual -users 100 -maintenance-months 12
+
+# CRL-отзыв
+go run ./cmd/licgen -key vendor.pem -kid 2026-09 -crl -revoke <lic_id>
+```
+
+### Ключи выпуска
+
+В `internal/license/file.go` зашит ПЛЕЙСХОЛДЕР (`dev-1`) для разработки.
+Перед релизом вендор обязан: (1) `licgen -genkey` — сгенерировать пару,
+(2) hex публичного ключа вписать в `trustedKeys` с новым `kid` (можно 2–3
+ключа для ротации), (3) приватный ключ — офлайн-хранилище (HSM/шифрованный
+носитель), НЕ в репозиторий. Сгенерированные ранее плейсхолдером лицензии
+перестанут проходить проверку — это ожидаемо.
+
+### LDAP-провижининг
+
+Авторизация через LDAP (внешний каталог) при автоматическом создании
+пользователей **пока не блокируется лимитом** — только учитывается в счётчике
+активных (интеграционная проверка — отдельным коммитом).
+
 ## Безопасность
 
 - Пароли — **argon2id**; TOTP-секреты — AES-256-**GCM** с AAD-привязкой к
@@ -251,10 +542,12 @@ make e2e     # E2E-сценарий (Docker): testcontainer PG + HTTP + RADIUS
 
 ```
 cmd/twofa/       композиция и запуск (main)
+api/             OpenAPI-спецификация (openapi.yaml + go:embed)
 internal/api/    REST API + web-страницы (chi)
 internal/auth/   ядро аутентификации (челленджи, сплиты, TOTP)
 internal/radiusserver/  RADIUS auth/acct (layeh.com/radius)
 internal/store/  PostgreSQL (pgx) — пользователи, челленджи, аудит...
+internal/backup/ логический SQL-дамп БД (twofa -backup, GET /admin/backup)
 internal/settings/ конфигурация в БД (defaults, hot-reload)
 internal/delivery/ email/SMS-отправка (9 пресетов шлюзов: smsc, sms.ru,
                  smsaero, mainsms, bytehand, prostor, unisender,

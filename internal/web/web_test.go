@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aligorov/twofa/internal/channel"
+	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
 )
@@ -20,7 +21,7 @@ import (
 var wantPages = []string{
 	"login", "me_profile", "me_totp", "me_backup", "me_telegram",
 	"me_passkeys", "me_devices", "admin_users", "admin_audit",
-	"admin_challenges", "admin_settings", "error",
+	"admin_challenges", "admin_settings", "admin_license", "error",
 }
 
 const (
@@ -260,6 +261,29 @@ func TestRenderPages(t *testing.T) {
 			data: ErrorData{BaseData: base("Ошибка"), Code: 404, Message: "Страница не найдена"},
 			want: []string{"Ошибка 404", "Страница не найдена"},
 		},
+		{
+			name: "admin_license",
+			tmpl: "admin_license",
+			data: AdminLicenseData{
+				BaseData: func() BaseData {
+					b := base("Лицензия")
+					b.Nav = "admin-license"
+					b.LicenseWarnings = []string{"Демо-режим: осталось 3 дн. — загрузите лицензию."}
+					return b
+				}(),
+				Status: license.Status{
+					Mode: license.ModeTrial, TrialDaysLeft: 3, UsersActive: 2,
+				},
+				ModeText:  "Демо (30 дней, полный функционал)",
+				LimitText: "не ограничено",
+			},
+			want: []string{
+				"Лицензия", `href="/admin/license"`, "Демо-режим: осталось 3 дн.",
+				"не ограничено", `action="/admin/license"`,
+				`name="blob"`, `name="crl"`, `name="csrf_token"`,
+				"BEGIN LIGAMENT LICENSE", "BEGIN LIGAMENT REVOCATION",
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -355,7 +379,7 @@ func TestRenderSidebar(t *testing.T) {
 			t.Errorf("сайдбар админа: нет пункта %q (%s)", label, href)
 		}
 	}
-	for _, w := range []string{"Кабинет", "Админ", "twofa"} {
+	for _, w := range []string{"Кабинет", "Админ", "Ligament"} {
 		if !strings.Contains(adminOut, w) {
 			t.Errorf("сайдбар админа: нет %q", w)
 		}

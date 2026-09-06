@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/aligorov/twofa/internal/auth"
+	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -52,6 +53,7 @@ type Deps struct {
 	PV   auth.PasswordVerifier
 	M    *settings.M
 	Rend *web.Renderer
+	Lic  *license.Manager // nil — лицензирование не смонтировано
 }
 
 // Router — собранный обработчик со стоп-функциями компонентов.
@@ -79,7 +81,7 @@ func BuildRouter(d Deps) *Router {
 	pub := NewPublicAPI(d.Core, d.WA, d.St, d.PV, d.M)
 	sess := NewSessionAPI(d.Core, d.St, d.PV, d.M)
 	me := NewMeAPI(d.Core, d.WA, d.St, d.Box, d.PV, d.M)
-	admin := NewAdminAPI(d.St, d.M)
+	admin := NewAdminAPI(d.St, d.M, d.Lic)
 	pages := NewPagesAPI(d.Rend, sess, admin, d.Core, d.WA, d.St, d.Box, d.PV, d.M)
 
 	pub.Register(r)
@@ -87,6 +89,8 @@ func BuildRouter(d Deps) *Router {
 	me.Register(r)
 	admin.Register(r)
 	pages.Register(r)
+
+	registerOpenAPI(r)
 
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(web.Static())))
 	r.NotFound(pages.NotFound)

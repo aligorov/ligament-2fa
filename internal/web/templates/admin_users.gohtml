@@ -28,11 +28,12 @@
   <div class="table-wrap">
     <table class="table">
       <tr>
-        <th>Имя</th><th>Роль</th><th>Включён</th><th>Каналы</th><th>RADIUS Push</th><th>Действия</th>
+        <th>Имя</th><th>Источник</th><th>Роль</th><th>Включён</th><th>Каналы</th><th>RADIUS Push</th><th>Действия</th>
       </tr>
       {{range .Users}}
       <tr{{if not .Enabled}} class="row-off"{{end}}>
-        <td class="cell-strong">{{.Username}}</td>
+        <td class="cell-strong">{{.Username}}{{if .DisplayName}} <span class="muted">({{.DisplayName}})</span>{{end}}</td>
+        <td>{{if eq .Source "ldap"}}<span class="badge warn">ldap</span>{{else}}<span class="badge neutral">local</span>{{end}}</td>
         <td><span class="badge {{if eq .Role "admin"}}ok{{else}}neutral{{end}}">{{.Role}}</span></td>
         <td>{{if .Enabled}}<span class="badge ok">да</span>{{else}}<span class="badge err">нет</span>{{end}}</td>
         <td>{{range .PreferChannels}}<span class="badge neutral">{{.}}</span> {{end}}</td>
@@ -107,6 +108,16 @@
     </select>
     <span class="help">admin видит раздел «Админ» и управляет настройками.</span>
   </label>
+  <label class="field">
+    <span class="field-label">Источник пароля</span>
+    <select class="select" name="source">
+      <option value="local"{{if or (not .Edit) (ne .Edit.Source "ldap")}} selected{{end}}>local — локальный пароль</option>
+      <option value="ldap"{{if and .Edit (eq .Edit.Source "ldap")}} selected{{end}}>ldap — каталог LDAP/AD</option>
+    </select>
+    <span class="help">ldap: пароль проверяется bind-ом в каталоге, при
+    первом входе учётка создаётся автоматически. При переводе LDAP→local
+    задайте новый пароль — прежний локальный хеш непригоден.</span>
+  </label>
   <div class="field">
     <span class="field-label">Доступ</span>
     <label class="check"><input type="checkbox" name="enabled" value="1"{{if or (not .Edit) .Edit.Enabled}} checked{{end}}> <span>Включён</span></label>
@@ -124,6 +135,12 @@
     <input class="input" type="tel" name="phone" value="{{if .Edit}}{{.Edit.Phone}}{{end}}" placeholder="+79990001122">
   </label>
 </div>
+<label class="field">
+  <span class="field-label">Отображаемое имя</span>
+  <input class="input" type="text" name="display_name" value="{{if .Edit}}{{.Edit.DisplayName}}{{end}}"
+    {{if and .Edit (eq .Edit.Source "ldap")}}disabled title="Синхронизируется из каталога LDAP при каждом входе"{{end}}>
+  {{if and .Edit (eq .Edit.Source "ldap")}}<span class="help">Синхронизируется из каталога при каждом входе LDAP-пользователя.</span>{{end}}
+</label>
 <fieldset class="check-group">
   <legend>Каналы второго фактора</legend>
   <label class="check"><input type="checkbox" name="prefer_channels" value="totp"{{if and .Edit (hasChan .Edit.PreferChannels "totp")}} checked{{end}}> <span>TOTP</span></label>
