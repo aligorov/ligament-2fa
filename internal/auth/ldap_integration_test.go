@@ -16,6 +16,7 @@ import (
 	"time"
 
 	ldap "github.com/go-ldap/ldap/v3"
+	"github.com/google/uuid"
 
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -243,6 +244,40 @@ func TestLdapVerifyAutoProvisionAndSync(t *testing.T) {
 	// Неверный пароль каталога.
 	if _, err := v.Verify(ctx, "syncuser", "wrong"); !errors.Is(err, ErrBadCredentials) {
 		t.Fatalf("неверный пароль = %v, want ErrBadCredentials", err)
+	}
+}
+
+// TestLdapVerifyProvisionBareEntry — авто-провижининг записи БЕЗ атрибутов
+// (пустые mail/phone/displayName, без групп и role_map): пользователь всё
+// равно должен сохраниться в БД, а не вернуться «фантомом» с пустым ID.
+// Регрессия: старая ветка создания срабатывала только при изменении полей,
+// а у новой записи с нулевыми атрибутами «изменений» нет.
+func TestLdapVerifyProvisionBareEntry(t *testing.T) {
+	dir := newFakeDirectory()
+	dir.addUser("noattrsuser", "pw", nil)
+	// Запись без единого атрибута контакта (addUser всегда добавляет mail).
+	dir.mu.Lock()
+	dir.entries["noattrsuser"] = userEntry("CN=noattrsuser,OU=Users,DC=example,DC=com",
+		map[string][]string{"sAMAccountName": {"noattrsuser"}})
+	dir.mu.Unlock()
+	v, set := newLdapVerifier(t, dir)
+	ctx := t.Context()
+	enableLDAP(t, ctx, set, nil)
+
+	u, err := v.Verify(ctx, "noattrsuser", "pw")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if u.ID == uuid.Nil {
+		t.Fatal("Verify вернул пользователя с пустым ID — строка не сохранена")
+	}
+	st, _, _ := setup(t)
+	persisted, err := st.UserByUsername(ctx, "noattrsuser")
+	if err != nil {
+		t.Fatalf("строка не найдена в БД после первого входа: %v", err)
+	}
+	if persisted.Source != store.SourceLDAP || persisted.Role != "user" || persisted.Email != "" {
+		t.Fatalf("сохранённая строка: %+v", persisted)
 	}
 }
 

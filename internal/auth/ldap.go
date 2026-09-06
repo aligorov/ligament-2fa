@@ -255,19 +255,22 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 		return nil, ErrBadCredentials
 	}
 
-	if u.Email != res.email || u.Phone != res.phone ||
-		u.DisplayName != res.displayName || u.Role != res.role {
-		u.Email = res.email
-		u.Phone = res.phone
-		u.DisplayName = res.displayName
-		u.Role = res.role
-		if create {
-			if err := v.st.UserCreate(ctx, u); err != nil {
-				return nil, fmt.Errorf("auth/ldap: авто-провижининг %q: %w", username, err)
-			}
-			slog.InfoContext(ctx, "auth/ldap: пользователь создан авто-провижинингом",
-				"username", username, "role", u.Role)
-		} else if err := v.st.UserUpdate(ctx, u); err != nil {
+	changed := u.Email != res.email || u.Phone != res.phone ||
+		u.DisplayName != res.displayName || u.Role != res.role
+	u.Email = res.email
+	u.Phone = res.phone
+	u.DisplayName = res.displayName
+	u.Role = res.role
+	// Новая запись сохраняется всегда — даже с нулевыми атрибутами (иначе
+	// Verify вернёт «фантома» с пустым ID); существующая — только при изменениях.
+	if create {
+		if err := v.st.UserCreate(ctx, u); err != nil {
+			return nil, fmt.Errorf("auth/ldap: авто-провижининг %q: %w", username, err)
+		}
+		slog.InfoContext(ctx, "auth/ldap: пользователь создан авто-провижинингом",
+			"username", username, "role", u.Role)
+	} else if changed {
+		if err := v.st.UserUpdate(ctx, u); err != nil {
 			return nil, fmt.Errorf("auth/ldap: синхронизация %q: %w", username, err)
 		}
 	}
