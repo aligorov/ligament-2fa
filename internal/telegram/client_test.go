@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -174,5 +175,33 @@ func TestClientBrokenBody(t *testing.T) {
 	}
 	if apiErr.Code != http.StatusInternalServerError {
 		t.Errorf("code = %d, want 500", apiErr.Code)
+	}
+}
+
+// TestClientTransportErrorRedacted (SEC-003): ошибка сети несёт полный URL
+// (…/bot<token>/<method>) — текст ошибки не должен раскрывать токен бота;
+// хост и класс причины остаются для диагностики.
+func TestClientTransportErrorRedacted(t *testing.T) {
+	// httptest-сервер сразу закрывается: соединения падают с *url.Error,
+	// содержащим полный URL запроса.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	base := srv.URL
+	host := strings.TrimPrefix(base, "http://")
+	srv.Close()
+
+	cl := NewClient(base, "SECRET-TOKEN-xyz", &http.Client{Timeout: 2 * time.Second})
+	err := cl.sendMessage(context.Background(), 42, "Код: 123456", nil)
+	if err == nil {
+		t.Fatal("sendMessage на закрытый сервер не вернул ошибку")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "SECRET-TOKEN-xyz") || strings.Contains(msg, "/bot") {
+		t.Fatalf("ошибка раскрывает токен/путь: %q", msg)
+	}
+	if !strings.Contains(msg, host) {
+		t.Fatalf("ошибка не содержит хост для диагностики: %q (want %s)", msg, host)
+	}
+	if !strings.Contains(msg, "sendMessage") {
+		t.Fatalf("ошибка не содержит метод: %q", msg)
 	}
 }

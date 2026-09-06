@@ -76,12 +76,18 @@ func (a *AdminAPI) Register(r chi.Router) {
 
 // RequireAdminToken пропускает запросы с Authorization: Bearer <admin_token>.
 // Сравниваются SHA-256 обоих значений в постоянном времени — длина секрета
-// не раскрывается и сравнение не зависит от совпавшего префикса.
+// не раскрывается и сравнение не зависит от совпавшего префикса. Неудачная
+// попытка пишется в аудит (SEC-010, event admin_auth_fail) — брут токена
+// виден в журнале наравне с брутом паролей.
 func (a *AdminAPI) RequireAdminToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		want := sha256.Sum256([]byte(a.m.Get().AdminToken))
 		got := sha256.Sum256([]byte(bearerToken(r)))
 		if subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
+			if err := a.st.Audit(r.Context(), "", "admin_auth_fail",
+				map[string]any{"has_token": bearerToken(r) != ""}, clientIP(r), "fail"); err != nil {
+				slog.Warn("api: аудит admin_auth_fail не записан", "error", err)
+			}
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

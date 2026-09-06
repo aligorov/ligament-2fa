@@ -635,3 +635,56 @@ func TestRadiusEmptySecretSkipsListeners(t *testing.T) {
 		t.Fatalf("ServeAuth: err=%v, хочу ErrNoSecret", err)
 	}
 }
+
+// TestRadiusSecretHotRotation (F1): секрет читается из текущего снимка
+// настроек НА КАЖДЫЙ пакет — смена radius.secret применяется к работающему
+// серверу без рестарта: exchange с новым секретом проходит, со старым —
+// молча дропается. Accounting-запросы отвечают независимо от пользователей,
+// поэтому ротация проверяется детерминированно.
+func TestRadiusSecretHotRotation(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	secretA := set.Get().RadiusSecret
+
+	srv := New(newCore(st, set, box, nil, nil), st, set)
+	srvCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	_, acctAddr := startServers(t, srvCtx, srv)
+
+	acct := func(secret string) radius.Code {
+		pkt := radius.New(radius.CodeAccountingRequest, []byte(secret))
+		rfc2865.UserName_SetString(pkt, "rotate-user")
+		rfc2866.AcctStatusType_Set(pkt, rfc2866.AcctStatusType_Value_Start)
+		cctx, ccancel := context.WithTimeout(ctx, 3*time.Second)
+		defer ccancel()
+		resp, err := exchangeWrap(cctx, pkt, acctAddr)
+		if err != nil {
+			t.Fatalf("Exchange(secret=%q…): %v", secret[:4], err)
+		}
+		return resp.Code
+	}
+
+	// Секрет A (стартовый): обмен работает.
+	if code := acct(secretA); code != radius.CodeAccountingResponse {
+		t.Fatalf("до ротации: код %v, хочу Accounting-Response", code)
+	}
+
+	// Ротация: radius.secret = B — новый секрет работает сразу.
+	secretB := "rotated-hot-" + secrets.RandomToken(16)
+	mustPut(t, ctx, set, "radius.secret", `"`+secretB+`"`)
+	t.Cleanup(func() { mustPut(t, ctx, set, "radius.secret", `"`+secretA+`"`) })
+	if code := acct(secretB); code != radius.CodeAccountingResponse {
+		t.Fatalf("после ротации (новый секрет): код %v, хочу Accounting-Response", code)
+	}
+
+	// Старый секрет больше не аутентичен: пакет дропается, клиент
+	// ретранслирует до отмены контекста.
+	pkt := radius.New(radius.CodeAccountingRequest, []byte(secretA))
+	rfc2865.UserName_SetString(pkt, "rotate-user")
+	rfc2866.AcctStatusType_Set(pkt, rfc2866.AcctStatusType_Value_Start)
+	cctx, ccancel := context.WithTimeout(ctx, 900*time.Millisecond)
+	defer ccancel()
+	if _, err := exchangeWrap(cctx, pkt, acctAddr); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("старый секрет после ротации: err=%v, хочу context.DeadlineExceeded (drop)", err)
+	}
+}

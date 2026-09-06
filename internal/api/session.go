@@ -219,7 +219,9 @@ func (s *SessionAPI) loginStep2(ctx context.Context, r *http.Request, username, 
 	}
 
 	if code != "" {
-		if _, err := s.core.VerifyAnyCode(ctx, user, code); err != nil {
+		// Purpose-изоляция (SEC-001): вход принимают только коды входа
+		// (api/radius_prefetch) + факторы пользователя (TOTP/резервные).
+		if _, err := s.core.VerifyAnyCode(ctx, user, code, auth.LoginCodePurposes...); err != nil {
 			if !errors.Is(err, auth.ErrBadCode) {
 				slog.Error("api: login/2fa код", "error", err)
 				return nil, http.StatusInternalServerError, "internal"

@@ -1,22 +1,35 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
-<h1>Журнал аудита</h1>
-<p class="muted">Последние события безопасности, новые первыми.</p>
+<header class="page-head">
+  <h1>Журнал аудита</h1>
+  <p class="page-sub">Последние события безопасности, новые первыми.</p>
+</header>
 
 {{if .Rows}}
-<table class="audit">
-  <tr><th>Время</th><th>Пользователь</th><th>Событие</th><th>IP</th><th>Результат</th><th>Детали</th></tr>
-  {{range .Rows}}
-  <tr>
-    <td class="nowrap">{{dt .Ts}}</td>
-    <td>{{if .Username}}{{.Username}}{{else}}<span class="muted">система</span>{{end}}</td>
-    <td><span class="badge">{{.Event}}</span></td>
-    <td>{{.SrcIP}}</td>
-    <td>{{if eq .Result "ok"}}<span class="badge ok">ok</span>{{else if .Result}}<span class="badge">{{.Result}}</span>{{end}}</td>
-    <td class="detail">{{if .Detail}}<pre>{{jsonPretty .Detail}}</pre>{{else}}<span class="muted">—</span>{{end}}</td>
-  </tr>
-  {{end}}
-</table>
+<section class="card">
+  <div class="table-wrap">
+    <table class="table compact">
+      <tr><th>Время</th><th>Пользователь</th><th>Событие</th><th>IP</th><th>Результат</th><th>Детали</th></tr>
+      {{range .Rows}}
+      <tr>
+        <td class="nowrap">{{dt .Ts}}</td>
+        <td>{{if .Username}}{{.Username}}{{else}}<span class="muted">система</span>{{end}}</td>
+        <td><span class="badge neutral">{{.Event}}</span></td>
+        <td>{{.SrcIP}}</td>
+        <td>{{if eq .Result "ok"}}<span class="badge ok">ok</span>{{else if .Result}}<span class="badge err">{{.Result}}</span>{{end}}</td>
+        <td class="detail">{{if .Detail}}<pre>{{jsonPretty .Detail}}</pre>{{else}}<span class="muted">—</span>{{end}}</td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+</section>
 {{else}}
-<p>Записей нет.</p>
+<section class="card">
+  <div class="empty">
+    <p>Записей нет.</p>
+    <p class="help">События входа, смены каналов и админ-действия появятся
+    здесь автоматически.</p>
+  </div>
+</section>
 {{end}}
 {{end}}

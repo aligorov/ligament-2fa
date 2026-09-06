@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -186,7 +187,7 @@ func TestRenderPages(t *testing.T) {
 			}},
 			want: []string{
 				`action="/me/webauthn/credentials"`, `action="/me/webauthn/credentials/7/delete"`,
-				"twofaRegisterPasskey", "MacBook · Touch ID", "Добавить passkey",
+				"data-passkey-register", "MacBook · Touch ID", "Добавить passkey",
 			},
 		},
 		{
@@ -280,7 +281,9 @@ func TestRenderPages(t *testing.T) {
 			if !strings.Contains(out, `src="/static/webauthn.js"`) {
 				t.Errorf("Render(%s): нет подключения webauthn.js", tc.tmpl)
 			}
-			if tc.tmpl != "login" && !strings.Contains(out, `name="csrf_token"`) {
+			// CSRF несут страницы с мутациями (logout и формы); login и
+			// error — карточки без форм сессии.
+			if tc.tmpl != "login" && tc.tmpl != "error" && !strings.Contains(out, `name="csrf_token"`) {
 				t.Errorf("Render(%s): нет CSRF-поля", tc.tmpl)
 			}
 		})
@@ -319,6 +322,125 @@ func TestRenderAdminLogoutAndFlash(t *testing.T) {
 	}
 }
 
+// wantNavItems — пункты бокового меню: подпись → href.
+var wantNavItems = map[string]string{
+	"Профиль":            "/me",
+	"Приложение TOTP":    "/me/totp",
+	"Резервные коды":     "/me/backup",
+	"Telegram":           "/me/telegram",
+	"Passkeys":           "/me/passkeys",
+	"Устройства":         "/me/devices",
+	"Пользователи":       "/admin/users",
+	"Аудит":              "/admin/audit",
+	"Активные challenge": "/admin/challenges",
+	"Настройки":          "/admin/settings",
+}
+
+// wantAdminNavItems — пункты, видимые только админу.
+var wantAdminNavItems = []string{"/admin/users", "/admin/audit", "/admin/challenges", "/admin/settings"}
+
+// TestRenderSidebar: боковое меню авторизованной страницы содержит все
+// пункты (админу — включая раздел «Админ»), не-админу админ-пункты скрыты.
+func TestRenderSidebar(t *testing.T) {
+	r := mustNew(t)
+
+	bd := base("Профиль")
+	var sb strings.Builder
+	if err := r.Render(&sb, "me_profile", MeProfileData{BaseData: bd, User: testUser()}); err != nil {
+		t.Fatalf("Render(me_profile): %v", err)
+	}
+	adminOut := sb.String()
+	for label, href := range wantNavItems {
+		if !strings.Contains(adminOut, `href="`+href+`"`) {
+			t.Errorf("сайдбар админа: нет пункта %q (%s)", label, href)
+		}
+	}
+	for _, w := range []string{"Кабинет", "Админ", "twofa"} {
+		if !strings.Contains(adminOut, w) {
+			t.Errorf("сайдбар админа: нет %q", w)
+		}
+	}
+
+	bd = BaseData{Title: "Профиль", Username: "vasya", IsAdmin: false, CSRF: testCSRF}
+	sb.Reset()
+	if err := r.Render(&sb, "me_profile", MeProfileData{BaseData: bd, User: testUser()}); err != nil {
+		t.Fatalf("Render(me_profile): %v", err)
+	}
+	userOut := sb.String()
+	for _, href := range wantAdminNavItems {
+		if strings.Contains(userOut, `href="`+href+`"`) {
+			t.Errorf("сайдбар не-админа: не должен содержать %q", href)
+		}
+	}
+	if !strings.Contains(userOut, `href="/me/totp"`) {
+		t.Error("сайдбар не-админа: нет пункта кабинета /me/totp")
+	}
+}
+
+// TestRenderNavActive: Nav подсвечивает ровно один пункт меню классом
+// nav-link active.
+func TestRenderNavActive(t *testing.T) {
+	r := mustNew(t)
+	cases := []struct{ nav, href string }{
+		{"me", "/me"},
+		{"totp", "/me/totp"},
+		{"backup", "/me/backup"},
+		{"telegram", "/me/telegram"},
+		{"passkeys", "/me/passkeys"},
+		{"devices", "/me/devices"},
+		{"admin-users", "/admin/users"},
+		{"admin-audit", "/admin/audit"},
+		{"admin-challenges", "/admin/challenges"},
+		{"admin-settings", "/admin/settings"},
+	}
+	for _, tc := range cases {
+		bd := base("Профиль")
+		bd.Nav = tc.nav
+		var sb strings.Builder
+		if err := r.Render(&sb, "me_profile", MeProfileData{BaseData: bd, User: testUser()}); err != nil {
+			t.Fatalf("Render(me_profile): %v", err)
+		}
+		out := sb.String()
+		if !strings.Contains(out, `class="nav-link active" href="`+tc.href+`"`) {
+			t.Errorf("Nav=%q: пункт %s не подсвечен", tc.nav, tc.href)
+		}
+		// Активен ровно один пункт.
+		if n := strings.Count(out, `class="nav-link active"`); n != 1 {
+			t.Errorf("Nav=%q: активных пунктов %d, ожидался 1", tc.nav, n)
+		}
+	}
+
+	// Пустой Nav (страницы без меню) — ничего не подсвечено.
+	var sb strings.Builder
+	if err := r.Render(&sb, "me_profile", MeProfileData{BaseData: base("Профиль"), User: testUser()}); err != nil {
+		t.Fatalf("Render(me_profile): %v", err)
+	}
+	if strings.Contains(sb.String(), `class="nav-link active"`) {
+		t.Error("пустой Nav не должен подсвечивать пункты")
+	}
+}
+
+// TestStyleCSSDesignSystem: в style.css есть автоматическая тёмная тема
+// (prefers-color-scheme) и мобильная точка перелома (max-width: 900px).
+func TestStyleCSSDesignSystem(t *testing.T) {
+	rec := httptest.NewRecorder()
+	http.FileServer(Static()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/style.css", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /style.css: статус %d, ожидался 200", rec.Code)
+	}
+	css := rec.Body.String()
+	for _, w := range []string{
+		"prefers-color-scheme: dark",
+		"--accent",
+		"(max-width: 900px)",
+		"prefers-color-scheme",
+	} {
+		if !strings.Contains(css, w) {
+			t.Errorf("style.css: нет %q", w)
+		}
+	}
+}
+
 func TestRenderUnknownTemplate(t *testing.T) {
 	r := mustNew(t)
 	if err := r.Render(&strings.Builder{}, "no_such_page", nil); err == nil {
@@ -350,6 +472,73 @@ func TestStatic(t *testing.T) {
 		}
 		if rec.Body.Len() == 0 {
 			t.Errorf("GET /%s: пустой ответ", name)
+		}
+	}
+}
+
+// TestRenderAdminSettingsSMSPresets — карточка SMS на странице настроек
+// содержит выбор пресета шлюза: select с 9 пресетами (без name — поле не
+// отправляется, JS заполняет textarea sms.gateway), каждый option несёт
+// конфиг (data-config) и описание; контракт формы не меняется.
+func TestRenderAdminSettingsSMSPresets(t *testing.T) {
+	r := mustNew(t)
+	choices := []SMSPresetChoice{
+		{Name: "bytehand", Title: "ByteHand", Description: "Креды: id, key, sender.", ConfigJSON: `{"preset":"bytehand","method":"GET","url":"https://api.bytehand.com/v1/send?id={id}","headers":{"id":"","key":"","sender":""},"success":{"json_path":"$.status","equals":"0"}}`},
+		{Name: "mainsms", Title: "MainSMS", Description: "Креды: project и api_key.", ConfigJSON: `{"preset":"mainsms","method":"GET","url":"https://mainsms.ru/","headers":{"project":"","api_key":""},"success":{"json_path":"$.status","equals":"success"}}`},
+		{Name: "prostor", Title: "Простор-СМС", Description: "Креды: login, password и sender.", ConfigJSON: `{"preset":"prostor","method":"POST","url":"https://api.prostor-sms.ru/messages/v2/send.json","content_type":"application/json","headers":{"login":"","password":"","sender":""},"success":{"json_path":"$.status","equals":"ok"}}`},
+		{Name: "smsaero", Title: "SMS Aero", Description: "Креды: auth_base64 = base64(email:api_key).", ConfigJSON: `{"preset":"smsaero","method":"GET","url":"https://gate.smsaero.ru/v2/sms/send","headers":{"Authorization":"Basic {auth_base64}","auth_base64":"","sender":"SMS Aero"},"success":{"http_status":200}}`},
+		{Name: "smsc", Title: "SMSC.ru", Description: "Креды: login и psw.", ConfigJSON: `{"preset":"smsc","method":"GET","url":"https://smsc.ru/sys/send.php","headers":{"login":"","psw":""},"success":{"http_status":200,"json_path":"$.cnt","equals":"1"}}`},
+		{Name: "smsgateway24", Title: "SMSGateway24", Description: "Креды: token и device_id.", ConfigJSON: `{"preset":"smsgateway24","method":"GET","url":"https://smsgateway24.com/getdata/addsms","headers":{"token":"","device_id":""},"success":{"json_path":"$.error","equals":"0"}}`},
+		{Name: "smsru", Title: "SMS.ru", Description: "Кред: api_id.", ConfigJSON: `{"preset":"smsru","method":"GET","url":"https://sms.ru/sms/send","headers":{"api_id":""},"success":{"json_path":"$.status","equals":"OK"}}`},
+		{Name: "twilio", Title: "Twilio", Description: "Креды: sid, token и from.", ConfigJSON: `{"preset":"twilio","method":"POST","url":"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json","headers":{"sid":"","token":"","from":""},"success":{}}`},
+		{Name: "unisender", Title: "Unisender", Description: "Креды: api_key и sender.", ConfigJSON: `{"preset":"unisender","method":"GET","url":"https://api.unisender.com/ru/api/sendSms","headers":{"api_key":"","sender":""},"success":{"http_status":200}}`},
+	}
+	var sb strings.Builder
+	if err := r.Render(&sb, "admin_settings", AdminSettingsData{
+		BaseData: base("Настройки"), S: testSettings(),
+		SMSPresetChoices: choices,
+	}); err != nil {
+		t.Fatalf("Render(admin_settings): %v", err)
+	}
+	out := sb.String()
+
+	// Select пресетов + все 9 пунктов; конфиг виден браузеру (dataset)
+	// после разэкранирования HTML-сущностей атрибута.
+	unescaped := html.UnescapeString(out)
+	for _, ch := range choices {
+		if !strings.Contains(out, `<option value="`+ch.Name+`"`) {
+			t.Errorf("нет option пресета %q", ch.Name)
+		}
+		if !strings.Contains(unescaped, `data-config='`+ch.ConfigJSON+`'`) {
+			t.Errorf("у пресета %q нет data-config с JSON конфига", ch.Name)
+		}
+	}
+	// Select пресетов присутствует.
+	if !strings.Contains(out, `data-sms-preset`) {
+		t.Error("нет select выбора пресета (data-sms-preset)")
+	}
+	// Контракт формы не меняется: textarea sms.gateway остаётся.
+	if !strings.Contains(out, `name="sms.gateway"`) {
+		t.Error("textarea sms.gateway пропала (контракт формы)")
+	}
+	// У select НЕТ name — поле не отправляется на сервер.
+	if strings.Contains(out, "name=\"sms.preset\"") {
+		t.Error("select пресета не должен иметь name (не часть формы)")
+	}
+}
+
+// TestAppJSSMSPreset — app.js подключён к макету и знает о пресетах
+// SMS (заполняет textarea sms.gateway из data-config выбранной option).
+func TestAppJSSMSPreset(t *testing.T) {
+	rec := httptest.NewRecorder()
+	http.FileServer(Static()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /app.js: статус %d, ожидался 200", rec.Code)
+	}
+	js := rec.Body.String()
+	for _, w := range []string{"data-sms-preset", "sms.gateway", "data-config", "JSON.stringify"} {
+		if !strings.Contains(js, w) {
+			t.Errorf("app.js: нет %q (обработчик выбора пресета)", w)
 		}
 	}
 }

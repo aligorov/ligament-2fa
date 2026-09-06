@@ -1,20 +1,33 @@
+{{define "layout"}}{{template "layout_center" .}}{{end}}
 {{define "content"}}
-<h1>Вход</h1>
-<p class="muted">Введите имя пользователя и пароль. Если у вас включён второй
-фактор — введите код из приложения или сообщения.</p>
-{{with .Err}}<div class="flash err">{{.}}</div>{{end}}
-{{if .NeedCode}}<div class="flash ok">Введите код второго фактора.</div>{{end}}
-<form action="/login" method="post" class="card">
-  <label>Имя пользователя
-    <input type="text" name="username" value="{{.Prefill}}" required autofocus autocomplete="username">
-  </label>
-  <label>Пароль
-    <input type="password" name="password" required autocomplete="current-password">
-  </label>
-  <label>Код 2FA (если включён)
-    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="например, 123456">
-  </label>
-  <label class="check"><input type="checkbox" name="remember" value="1"> Запомнить это устройство</label>
-  <button type="submit">Войти</button>
-</form>
+<div class="login-card">
+  <div class="login-brand"><span class="brand-mark">2FA</span>twofa</div>
+  <h1>Вход</h1>
+  <p class="page-sub">Имя пользователя, пароль и — если включён второй
+  фактор — код из приложения или сообщения.</p>
+  {{with .Err}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
+  {{if .NeedCode}}<div class="flash ok"><span class="flash-icon">🔐</span>Введите код второго фактора.</div>{{end}}
+  <form action="/login" method="post" class="form">
+    <label class="field">
+      <span class="field-label">Имя пользователя</span>
+      <input class="input" type="text" name="username" value="{{.Prefill}}" required autofocus autocomplete="username">
+    </label>
+    <label class="field">
+      <span class="field-label">Пароль</span>
+      <input class="input" type="password" name="password" required autocomplete="current-password">
+    </label>
+    <label class="field">
+      <span class="field-label">Код 2FA (если включён)</span>
+      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="например, 123456">
+      <span class="help">Шестизначный код из приложения-аутентификатора или сообщения.</span>
+    </label>
+    <label class="check">
+      <input type="checkbox" name="remember" value="1">
+      <span>Запомнить это устройство<span class="help">30 дней без кода на этом браузере</span></span>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Войти</button>
+    </div>
+  </form>
+</div>
 {{end}}

@@ -1,46 +1,72 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
-<h1>Passkeys</h1>
-<p class="muted">Биометрия, синхронизируемые ключи или USB-ключи. Добавление
-требует код из приложения или резервный код.</p>
+<header class="page-head">
+  <h1>Passkeys</h1>
+  <p class="page-sub">Биометрия, синхронизируемые ключи или USB-ключи. Добавление
+  требует код из приложения или резервный код.</p>
+</header>
 
-{{if .Creds}}
-<table>
-  <tr><th>Имя</th><th>Подключение</th><th>Последнее использование</th><th></th></tr>
-  {{range .Creds}}
-  <tr>
-    <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">без имени</span>{{end}}</td>
-    <td>{{.Attachment}}</td>
-    <td>{{dt .LastUsedAt}}</td>
-    <td>
-      <form action="/me/webauthn/credentials/{{.ID}}/delete" method="post" class="inline-del">
-        {{csrf $.CSRF}}
-        <button type="submit" class="danger">Удалить</button>
-      </form>
-    </td>
-  </tr>
+<section class="card">
+  <div class="card-head">
+    <h2>Ваши ключи</h2>
+    <p>Каждый ключ можно использовать для входа без кода из приложения.</p>
+  </div>
+  {{if .Creds}}
+  <div class="table-wrap">
+    <table class="table">
+      <tr><th>Имя</th><th>Подключение</th><th>Последнее использование</th><th></th></tr>
+      {{range .Creds}}
+      <tr>
+        <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">без имени</span>{{end}}</td>
+        <td><span class="badge neutral">{{.Attachment}}</span></td>
+        <td>{{dt .LastUsedAt}}</td>
+        <td>
+          <form action="/me/webauthn/credentials/{{.ID}}/delete" method="post" class="form-inline">
+            {{csrf $.CSRF}}
+            <button type="submit" class="btn danger sm">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+  {{else}}
+  <div class="empty">
+    <p>Passkeys ещё не добавлены.</p>
+    <p class="help">Добавьте ключ ниже: Touch ID, Windows Hello или USB-ключ.</p>
+  </div>
   {{end}}
-</table>
-{{else}}
-<p>Passkeys ещё не добавлены.</p>
-{{end}}
+</section>
 
-<h2>Добавить passkey</h2>
-{{if .Handle}}
-<div id="passkey-pending" class="flash ok"
-     data-handle="{{.Handle}}" data-name="{{.RegName}}" data-options="{{.OptionsJSON}}">
-Подтвердите создание ключа «{{.RegName}}» в диалоге браузера…
-</div>
-{{end}}
-<form action="/me/webauthn/credentials" method="post" id="passkey-form">
-  {{csrf .CSRF}}
-  <label>Имя ключа
-    <input type="text" name="name" placeholder="например, MacBook · Touch ID" required>
-  </label>
-  <label>Код подтверждения
-    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
-  </label>
-  <button type="button" onclick="return twofaRegisterPasskey(this.form)">Добавить passkey</button>
-  <noscript><p class="flash err">Для добавления passkey нужен включённый
-  JavaScript (WebAuthn-церемония браузера).</p></noscript>
-</form>
+<section class="card">
+  <div class="card-head">
+    <h2>Добавить passkey</h2>
+    <p>Придумайте имя ключу и подтвердите действие кодом.</p>
+  </div>
+  {{if .Handle}}
+  <div id="passkey-pending" class="flash ok"
+       data-handle="{{.Handle}}" data-name="{{.RegName}}" data-options="{{.OptionsJSON}}">
+    <span class="flash-icon">🔑</span>Подтвердите создание ключа «{{.RegName}}» в диалоге браузера…
+  </div>
+  {{end}}
+  <div id="passkey-flash"></div>
+  <form action="/me/webauthn/credentials" method="post" id="passkey-form" class="form">
+    {{csrf .CSRF}}
+    <div class="field-row">
+      <label class="field">
+        <span class="field-label">Имя ключа</span>
+        <input class="input" type="text" name="name" placeholder="например, MacBook · Touch ID" required>
+      </label>
+      <label class="field">
+        <span class="field-label">Код подтверждения</span>
+        <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+      </label>
+    </div>
+    <div class="form-actions">
+      <button type="button" data-passkey-register class="btn primary">Добавить passkey</button>
+    </div>
+    <noscript><p class="flash err">Для добавления passkey нужен включённый
+    JavaScript (WebAuthn-церемония браузера).</p></noscript>
+  </form>
+</section>
 {{end}}

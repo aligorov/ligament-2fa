@@ -6,9 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"time"
 )
 
@@ -71,6 +74,30 @@ type apiResponse struct {
 	} `json:"parameters"`
 }
 
+// urlInErrorRE — http(s)-URL внутри текста ошибки: *url.Error несёт полный
+// URL запроса (с бот-токеном в пути), поэтому исходный текст в логи/ошибки
+// не отдаётся.
+var urlInErrorRE = regexp.MustCompile(`https?://[^\s"']+`)
+
+// redactTransportError sanitizes ошибку транспорта hc.Do: сырой *url.Error
+// содержит полный URL (…/bot<token>/<method>) — токен бота не должен
+// попадать в логи, аудит и ответы. Остаётся метод, хост и класс причины
+// (контекст-таймаут, отказ соединения и т.п.); URL'ы в тексте причины
+// вырезаются регуляркой (защита от вложенных ошибок с адресом).
+func redactTransportError(prefix, method string, reqURL *url.URL, err error) error {
+	host := ""
+	if reqURL != nil {
+		host = reqURL.Host
+	}
+	cause := err
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		cause = ue.Err
+	}
+	msg := urlInErrorRE.ReplaceAllString(cause.Error(), "[url]")
+	return fmt.Errorf("%s: %s %s: %s", prefix, method, host, msg)
+}
+
 // call выполняет POST <base>/bot<token>/<method> с JSON-телом req и
 // разбирает конверт; при успехе result декодируется в out (если не nil).
 func (c *Client) call(ctx context.Context, method string, req any, out any) error {
@@ -86,7 +113,7 @@ func (c *Client) call(ctx context.Context, method string, req any, out any) erro
 	httpReq.Header.Set("Content-Type", "application/json")
 	resp, err := c.hc.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("telegram: вызов %s: %w", method, err)
+		return redactTransportError("telegram", method, httpReq.URL, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))

@@ -1,27 +1,40 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
-<h1>Доверенные устройства</h1>
-<p class="muted">Устройства, отмеченные «Запомнить» при входе: без второго
-фактора до истечения срока доверия.</p>
+<header class="page-head">
+  <h1>Доверенные устройства</h1>
+  <p class="page-sub">Устройства, отмеченные «Запомнить» при входе: без второго
+  фактора до истечения срока доверия.</p>
+</header>
 
 {{if .Devices}}
-<table>
-  <tr><th>Устройство (User-Agent)</th><th>IP</th><th>Активность</th><th>Истекает</th><th></th></tr>
-  {{range .Devices}}
-  <tr>
-    <td class="ua">{{.UA}}</td>
-    <td>{{.IP}}</td>
-    <td>{{dt .LastSeenAt}}</td>
-    <td>{{dt .ExpiresAt}}</td>
-    <td>
-      <form action="/me/devices/{{.ID}}/delete" method="post" class="inline-del">
-        {{csrf $.CSRF}}
-        <button type="submit" class="danger">Отозвать</button>
-      </form>
-    </td>
-  </tr>
-  {{end}}
-</table>
+<section class="card">
+  <div class="table-wrap">
+    <table class="table">
+      <tr><th>Устройство (User-Agent)</th><th>IP</th><th>Активность</th><th>Истекает</th><th></th></tr>
+      {{range .Devices}}
+      <tr>
+        <td class="ua">{{.UA}}</td>
+        <td>{{.IP}}</td>
+        <td>{{dt .LastSeenAt}}</td>
+        <td>{{dt .ExpiresAt}}</td>
+        <td>
+          <form action="/me/devices/{{.ID}}/delete" method="post" class="form-inline">
+            {{csrf $.CSRF}}
+            <button type="submit" class="btn danger sm">Отозвать</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+</section>
 {{else}}
-<p>Доверенных устройств нет.</p>
+<section class="card">
+  <div class="empty">
+    <p>Доверенных устройств нет.</p>
+    <p class="help">Отметьте «Запомнить это устройство» при следующем входе,
+    чтобы не вводить код 30 дней.</p>
+  </div>
+</section>
 {{end}}
 {{end}}

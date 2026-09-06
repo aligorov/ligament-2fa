@@ -47,15 +47,24 @@ SMS-шлюз, Telegram) перестраивается по SIGHUP (смена �
 ```
 
 **SMS-шлюз** — любой HTTP-шлюз: метод, URL/тело с плейсхолдерами
-`{phone}/{text}`, заголовки и правило успеха. Пресеты: `smsc`, `twilio`.
+`{phone}/{text}`, заголовки и правило успеха. Готовые пресеты — в списке
+«Пресет шлюза» на странице настроек (выбор заполняет JSON — останется
+вписать креды); полный список — в разделе [SMS-шлюзы](#sms-шлюзы-пресеты).
 
 ```json
-{"preset":"smsc","headers":{"login":"user","psw":"pass"}}
+{
+  "preset": "smsc",
+  "method": "GET",
+  "url": "https://smsc.ru/sys/send.php?login={login}&psw={psw}&phones={phone}&mes={text}&fmt=3&charset=utf-8",
+  "headers": {"login": "ЛОГИН", "psw": "ПАРОЛЬ"},
+  "body": "",
+  "content_type": "",
+  "success": {"http_status": 200, "json_path": "$.cnt", "equals": "1"}
+}
 ```
 
-```json
-{"preset":"twilio","headers":{"sid":"AC...","token":"...","from":"+15550001111"}}
-```
+Поле `preset` — памятка для админа; отправка строится из полной конфигурации
+(проще взять готовую выбором в «Пресет шлюза»).
 
 Custom-шлюз (JSONPath-правило успеха и т.п. — см. спеку §8):
 
@@ -81,6 +90,42 @@ Custom-шлюз (JSONPath-правило успеха и т.п. — см. спе
 
 `rp_id` — домен, с которого открывается web-UI (localhost для локальных
 тестов). Регистрация passkey — в кабинете /me → Passkeys.
+
+## SMS-шлюзы (пресеты)
+
+Девять готовых пресетов (Настройки → SMS-шлюз → «Пресет шлюза»). Данные
+сверены живыми запросами к шлюзам — [research-док](docs/research/2026-09-06-sms-gateways-ru.md).
+
+| Пресет | Креды (headers) | Телефон | Тест-режим | Цена ~ |
+|---|---|---|---|---|
+| `smsc` (SMSC.ru) | `login`, `psw` | любой, дефолт страны | `cost=1` (прайс без отправки) | 3.8–11 ₽ |
+| `smsru` (SMS.ru) | `api_id` | 11 цифр, с `7` | `test=1` | ~8.4 ₽ |
+| `smsaero` (SMS Aero) | `auth_base64`, `sender` | 11 цифр без `+` | имя «SMS Aero» | 1.95–3.3 ₽ |
+| `mainsms` (MainSMS) | `project`, `api_key` | E.164 (`+7…`) | `test=1` | от ~1.3 ₽ |
+| `bytehand` (ByteHand) | `id`, `key`, `sender` | `+7…` | нет | 7–9 ₽ |
+| `prostor` (Простор-СМС) | `login`, `password`, `sender` | `+7…` | 50 дней / 10 SMS | от 1.49 ₽ |
+| `unisender` (Unisender) | `api_key`, `sender` | `7…` (`+` опционален) | нет (`checkSms`) | 8–37 ₽ |
+| `smsgateway24` | `token`, `device_id` | `+7…` — **с плюсом** | trial 5 дней | $38/мес без лимита |
+| `twilio` (Twilio) | `sid`, `token`, `from` | E.164 | нет | по тарифу |
+
+Нюансы правил успеха: `smsc`, `smsgateway24` и `smsru` возвращают ошибки
+с HTTP 200 — успех проверяется по JSON-полю (`$.cnt=="1"`, `$.error=="0"`,
+`$.status=="OK"`); `bytehand` отвечает числовым статусом `0`; `smsaero` и
+`unisender` ошибками отвечают не-200; `twilio` на успех отвечает 201 —
+успехом считается любой 2xx.
+
+**SMS Aero — auth_base64.** Шлюз авторизуется заголовком
+`Authorization: Basic …`, где после `Basic ` — base64 от `email:API-ключ`.
+Вычислите один раз и положите в headers:
+
+```sh
+echo -n 'user@example.com:API_KEY' | base64
+```
+
+**Почему нет ePochta.** API v3 ePochta (Atompark) требует MD5-подпись
+`sum` от отсортированных параметров (включая текст SMS) на каждый запрос —
+шаблонный движок с подстановкой плейсхолдеров такое не умеет, пресет
+невозможен по построению.
 
 ## MikroTik (RouterOS)
 
@@ -148,13 +193,26 @@ enroll/confirm, `POST /api/v1/me/backup-codes/regenerate` — новая пар�
   username (секрет, украденный из БД, не расшифровывается без master_key и
   не переносится на другого пользователя).
 - Все события (входы, коды, изменения) — в `audit_log`; единый per-user
-  fail-счётчик: **5 неудач / 5 минут → блок 15 минут**.
+  fail-счётчик: **5 неудач / 5 минут → блок 15 минут**. Семантика: счётчик
+  сбрасывается сам через `policy.fail_window` после последней неудачи
+  (окно скользящее от последней попытки), а каждая новая неудача внутри
+  блокировки продлевает её — «отсидеть» бан, продолжая брут, нельзя; бан
+  кончается через `policy.ban_time` после ПОСЛЕДНЕЙ неудачи. RADIUS-поток
+  имеет отдельный лимит `radius.max_fail_per_user` за `radius.fail_window`
+  в дополнение к общему.
 - Челленджи одноразовые (атомарный claim), коды — SHA-256 в БД, TOTP —
-  replay-защита по счётчику окна.
+  replay-защита по счётчику окна (CAS: одна попытка — одно окно, повтор
+  того же кода и параллельные предъявления rejected). Коды изолированы по
+  назначению (purpose): экранный код привязки Telegram и код подтверждения
+  операций кабинета не работают как второй фактор входа.
 - RADIUS: **Message-Authenticator реализован** (RFC 3579) — ответы подписаны,
-  митигация BlastRADIUS; шифрование пароля PAP стандартное.
-- Rate-limit: публичный API ~10 start/мин по username и по IP; веб-логин —
-  аналогично; push — cooldown 30 с и не более 10/час.
+  митигация BlastRADIUS; шифрование пароля PAP стандартное. Смена
+  `radius.secret` применяется на лету (новые пакеты проверяются новым
+  секретом, рестарт не нужен).
+- Rate-limit: публичный API и веб-логин — token bucket **burst 5, далее
+  12 запросов/мин** sustained (по username и по IP независимо, окна
+  изолированы); RADIUS-попытки ограничены своим fail-счётчиком (см. выше),
+  а не HTTP-лимитом; push — cooldown 30 с и не более 10/час.
 
 ## Ограничения v1
 
@@ -169,6 +227,11 @@ enroll/confirm, `POST /api/v1/me/backup-codes/regenerate` — новая пар�
 - Эндпоинт отправки кода подтверждения фактически называется
   `PUT /api/v1/me/contacts/send-code` (в спеке фигурирует как
   `/api/v1/me/send-code`).
+- Настройки через API асимметричны: `GET /api/v1/admin/settings` отдаёт
+  ДЕРЕВО по секциям (секреты — масками `{"set":…,"value":"••••"}`), а
+  `PUT` принимает ПЛОСКИЕ известные ключи (`{"radius.secret":"…",
+  "smtp":{"host":"…"}}`); объекты мержатся с текущим значением, маска или
+  пустая строка на любом уровне = «не менять поле».
 - QR для REST-энролла TOTP рендерится клиентом по `otpauth_url` из ответа
   enroll (поля `qr_png_base64` в API нет; web-UI рисует QR сам).
 - Cookie web-сессий выпускаются с флагом Secure — web-UI по plain HTTP
@@ -193,7 +256,9 @@ internal/auth/   ядро аутентификации (челленджи, сп
 internal/radiusserver/  RADIUS auth/acct (layeh.com/radius)
 internal/store/  PostgreSQL (pgx) — пользователи, челленджи, аудит...
 internal/settings/ конфигурация в БД (defaults, hot-reload)
-internal/delivery/ email/SMS-отправка (пресеты smsc/twilio)
+internal/delivery/ email/SMS-отправка (9 пресетов шлюзов: smsc, sms.ru,
+                 smsaero, mainsms, bytehand, prostor, unisender,
+                 smsgateway24, twilio)
 internal/telegram/ бот: коды, push-подтверждения, привязка
 internal/webauthn/ passkeys (go-webauthn)
 internal/secrets/ argon2id, AES-GCM+AAD, генерация кодов

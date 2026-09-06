@@ -56,28 +56,42 @@ func slogBridge() *log.Logger {
 	return slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn)
 }
 
-// buildAuth/buildAcct собирают PacketServer-ы с секретом из текущего
-// снимка настроек.
-func (s *Server) buildAuth() (*radius.PacketServer, error) {
-	secret := s.m.Get().RadiusSecret
+// settingsSecretSource — секрет из ТЕКУЩЕГО снимка настроек на каждый
+// пакет: смена radius.secret применяется к новым пакетам без рестарта
+// слушателей (горячая ротация, F1). Пустой секрет — ошибка: библиотека
+// отбрасывает пакет (живой аналог «не стартовать без секрета»).
+type settingsSecretSource struct{ m *settings.M }
+
+// RADIUSSecret реализует radius.SecretSource.
+func (src settingsSecretSource) RADIUSSecret(_ context.Context, _ net.Addr) ([]byte, error) {
+	secret := src.m.Get().RadiusSecret
 	if secret == "" {
+		return nil, ErrNoSecret
+	}
+	return []byte(secret), nil
+}
+
+// buildAuth/buildAcct собирают PacketServer-ы; стартовый секрет проверяется
+// сразу (пустой — ErrNoSecret), дальше каждый пакет подписывается текущим
+// значением из настроек.
+func (s *Server) buildAuth() (*radius.PacketServer, error) {
+	if s.m.Get().RadiusSecret == "" {
 		return nil, ErrNoSecret
 	}
 	return &radius.PacketServer{
 		Handler:      radius.HandlerFunc(s.handleAuth),
-		SecretSource: radius.StaticSecretSource([]byte(secret)),
+		SecretSource: settingsSecretSource{m: s.m},
 		ErrorLog:     slogBridge(),
 	}, nil
 }
 
 func (s *Server) buildAcct() (*radius.PacketServer, error) {
-	secret := s.m.Get().RadiusSecret
-	if secret == "" {
+	if s.m.Get().RadiusSecret == "" {
 		return nil, ErrNoSecret
 	}
 	return &radius.PacketServer{
 		Handler:      radius.HandlerFunc(s.handleAcct),
-		SecretSource: radius.StaticSecretSource([]byte(secret)),
+		SecretSource: settingsSecretSource{m: s.m},
 		ErrorLog:     slogBridge(),
 	}, nil
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sync"
 	"time"
 
@@ -92,6 +93,20 @@ func (c *Core) audit(ctx context.Context, username, event string, detail map[str
 }
 
 func ptrString(s string) *string { return &s }
+
+// urlInErrorRE — http(s)-URL в тексте ошибки доставки (токен бота, креды
+// SMS-шлюза и текст сообщения не должны попадать в audit_log).
+var urlInErrorRE = regexp.MustCompile(`https?://[^\s"']+`)
+
+// redactErrText вырезает http(s)-URL'ы из текста ошибки для деталей аудита
+// (SEC-003): отправители уже санитизируют свои транспортные ошибки, здесь —
+// эшелонированная защита от любых вложенных ошибок с адресом.
+func redactErrText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return urlInErrorRE.ReplaceAllString(err.Error(), "[url]")
+}
 
 // binding возвращает отправителя и адрес получателя для кодового канала,
 // если канал привязан у пользователя и отправитель зарегистрирован.
@@ -181,7 +196,7 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 			code := secrets.GenDigits(pol.CodeLength)
 			if err := sender.Send(ctx, to, code); err != nil {
 				c.audit(ctx, user.Username, "code_sent",
-					map[string]any{"channel": string(ch), "purpose": purpose, "error": err.Error()},
+					map[string]any{"channel": string(ch), "purpose": purpose, "error": redactErrText(err)},
 					ip, "fail")
 				continue // канал недоступен — следующий в списке
 			}
@@ -238,7 +253,7 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 						"id", c2.ID, "error", derr)
 				}
 				c.audit(ctx, user.Username, "push_sent",
-					map[string]any{"purpose": purpose, "error": err.Error()}, ip, "fail")
+					map[string]any{"purpose": purpose, "error": redactErrText(err)}, ip, "fail")
 				continue
 			}
 			return c2, nil
@@ -317,13 +332,23 @@ func (c *Core) VerifyChallengeCode(ctx context.Context, ch *store.Challenge, cod
 	return false, ErrBadCode
 }
 
+// LoginCodePurposes — purpose челленджей, пригодных в качестве второго
+// фактора ВХОДА (web login/2fa, combined, RADIUS): api (публичный /auth/start)
+// и radius_prefetch (предварительный запрос кода для VPN). Экранные коды
+// tg_link (привязка Telegram) и ui_confirm (подтверждение операций кабинета)
+// входом не считаются (SEC-001).
+var LoginCodePurposes = []string{"api", "radius_prefetch"}
+
 // VerifyAnyCode опознаёт код любым способом, в порядке: резервные коды
 // (одноразовое потребление по SHA-256) → TOTP (с replay-защитой) →
-// активные кодовые челленджи пользователя (первый точный хеш, mark used).
+// активные кодовые челленджи пользователя с purpose из purposes (первый
+// точный хеш, mark used). Резервные коды и TOTP — факторы пользователя и
+// purposes не фильтруются; доставленные коды — только своего назначения:
+// пустой список purposes означает «доставленные коды не принимаются».
 // Возвращает канал, по которому код опознан (BackupChannel — резервный
 // код). Никто не подошёл → ErrBadCode. Аудит пишет вызывающий
 // (VerifyPasswordAndCode / RADIUSAuth) — одна запись на попытку входа.
-func (c *Core) VerifyAnyCode(ctx context.Context, user *store.User, code string) (channel.Channel, error) {
+func (c *Core) VerifyAnyCode(ctx context.Context, user *store.User, code string, purposes ...string) (channel.Channel, error) {
 	// 1. Резервные коды.
 	if ok, err := c.st.BackupConsume(ctx, user.ID, secrets.SHA256(code)); err == nil && ok {
 		return BackupChannel, nil
@@ -332,22 +357,24 @@ func (c *Core) VerifyAnyCode(ctx context.Context, user *store.User, code string)
 	if err := c.verifyTOTP(ctx, user, code); err == nil {
 		return channel.TOTP, nil
 	}
-	// 3. Активные кодовые челленджи.
-	list, err := c.st.ActiveCodeChallenges(ctx, user.ID)
-	if err != nil {
-		return "", err
-	}
-	sum := secrets.SHA256(code)
-	for _, ch := range list {
-		if bytes.Equal(ch.CodeHash, sum) {
-			if err := c.st.ChallengeMarkUsed(ctx, ch.ID); err != nil {
-				if errors.Is(err, store.ErrNotFound) {
-					// Челлендж уже использован конкурентным запросом.
-					return "", ErrBadCode
+	// 3. Активные кодовые челленджи перечисленных назначений.
+	if len(purposes) > 0 {
+		list, err := c.st.ActiveCodeChallenges(ctx, user.ID, purposes...)
+		if err != nil {
+			return "", err
+		}
+		sum := secrets.SHA256(code)
+		for _, ch := range list {
+			if bytes.Equal(ch.CodeHash, sum) {
+				if err := c.st.ChallengeMarkUsed(ctx, ch.ID); err != nil {
+					if errors.Is(err, store.ErrNotFound) {
+						// Челлендж уже использован конкурентным запросом.
+						return "", ErrBadCode
+					}
+					return "", err
 				}
-				return "", err
+				return ch.Channel, nil
 			}
-			return ch.Channel, nil
 		}
 	}
 	return "", ErrBadCode
@@ -363,11 +390,15 @@ func (c *Core) VerifyAnyCode(ctx context.Context, user *store.User, code string)
 // полной строки (push-режим «пароль без кода»). Возвращает
 // (user, true) при полном успехе; (user, false) — пароль верен, но
 // код не опознан; (nil, false) — неверный логин или пароль.
-// Блокировка fail-счётчика → ErrLocked.
-func (c *Core) VerifyPasswordAndCode(ctx context.Context, username, password, code string) (*store.User, bool, error) {
+// Блокировка fail-счётчика → ErrLocked. purposes — назначения кодовых
+// челленджей, принимаемые как второй фактор (см. LoginCodePurposes).
+func (c *Core) VerifyPasswordAndCode(ctx context.Context, username, password, code string, purposes ...string) (*store.User, bool, error) {
 	user, err := c.st.UserByUsername(ctx, username)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			// Тайминг-оракул (SEC-005): отсутствие пользователя отвечает
+			// argon2-ценой неверного пароля, как LocalVerifier.Verify.
+			BurnDummyVerify(password)
 			c.audit(ctx, username, "login_fail", map[string]any{"reason": "no_user"}, "", "fail")
 			return nil, false, nil
 		}
@@ -386,7 +417,7 @@ func (c *Core) VerifyPasswordAndCode(ctx context.Context, username, password, co
 	// Фаза 1: код дёшево по всем кандидатам; пароль — одна проверка у
 	// первого подошедшего (ONE password verify per request).
 	for i := range cands {
-		if _, err := c.VerifyAnyCode(ctx, user, cands[i].Code); err != nil {
+		if _, err := c.VerifyAnyCode(ctx, user, cands[i].Code, purposes...); err != nil {
 			continue
 		}
 		if _, err := c.pv.Verify(ctx, username, cands[i].Password); err == nil {
@@ -460,6 +491,9 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 
 	user, err := c.st.UserByUsername(ctx, username)
 	if err != nil {
+		// Тайминг-оракул (SEC-005): RADIUS-ветка «нет пользователя» тоже
+		// платит полную argon2-цену — как VPN-клиент с неверным паролем.
+		BurnDummyVerify(papString)
 		audit("no_user", false)
 		return false, "no_user"
 	}
@@ -492,7 +526,7 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 	// неудача пароля → bad_credentials без перебора остальных.
 	splits := SplitCandidates(papString, c.set.Get().Radius.CodeLengths)
 	for i := range splits {
-		if _, err := c.VerifyAnyCode(ctx, user, splits[i].Code); err != nil {
+		if _, err := c.VerifyAnyCode(ctx, user, splits[i].Code, LoginCodePurposes...); err != nil {
 			continue
 		}
 		if _, err := c.pv.Verify(ctx, username, splits[i].Password); err == nil {

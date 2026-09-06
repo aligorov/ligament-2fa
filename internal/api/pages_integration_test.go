@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -272,6 +274,9 @@ func TestPagesAdminAccess(t *testing.T) {
 	rec = c2.get("/admin/settings")
 	wantStatus(t, rec, http.StatusOK)
 	wantBody(t, rec, "<h1>Настройки сервера</h1>", "•••• (задано)", `action="/admin/settings"`)
+	// Пресеты шлюзов: select наполнен реальными пресетами delivery.Presets
+	// (маппинг smsPresetChoices), каждый option несёт JSON конфига.
+	wantBody(t, rec, `data-sms-preset`, `value="smsaero"`, `value="smsgateway24"`, `data-config=`)
 }
 
 // TestPagesAdminSettingsPost: сохранение секции (мерж объектного ключа) и
@@ -726,4 +731,129 @@ func TestPagesAnonymousRedirects(t *testing.T) {
 	rec := c.get("/no/such/page")
 	wantStatus(t, rec, http.StatusNotFound)
 	wantBody(t, rec, "Ошибка 404")
+}
+
+// TestPagesAdminSettingsSMSMasked (SEC-004): страница настроек рендерит
+// sms.gateway замаскированным (креды не покидают сервер); отправка формы
+// без изменений сохраняет креды, ввод новых — заменяет.
+func TestPagesAdminSettingsSMSMasked(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	admin := mkUser(t, ctx, st, "smsadmin", func(u *store.User) { u.Role = "admin" })
+	t.Cleanup(func() {
+		_ = set.Put(ctx, "sms.gateway", json.RawMessage(`{}`))
+	})
+
+	// Реальный конфиг с кредами.
+	gw := json.RawMessage(`{"preset":"smsc","method":"GET","url":"https://gate.example/send",` +
+		`"headers":{"login":"REAL-LOGIN","psw":"REAL-PSW"},"success":{"http_status":200}}`)
+	if err := set.Put(ctx, "sms.gateway", gw); err != nil {
+		t.Fatalf("set.Put(sms.gateway): %v", err)
+	}
+
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.login(t, admin.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	// GET: маска в textarea, креды не в теле страницы.
+	rec = c.get("/admin/settings")
+	wantStatus(t, rec, http.StatusOK)
+	for _, secret := range []string{"REAL-LOGIN", "REAL-PSW"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Fatalf("страница настроек раскрывает кред %q", secret)
+		}
+	}
+	// textarea sms.gateway содержит маски-объекты и подсказку.
+	m := textareaRe.FindStringSubmatch(rec.Body.String())
+	var found bool
+	for _, mm := range textareaRe.FindAllStringSubmatch(rec.Body.String(), -1) {
+		if mm[1] == "sms.gateway" {
+			m = mm
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("textarea sms.gateway не найдена на странице")
+	}
+	if !strings.Contains(m[2], "••••") {
+		t.Fatalf("textarea sms.gateway без масок: %s", m[2])
+	}
+
+	// POST секции sms с замаскированным значением как есть → креды живы.
+	form := url.Values{
+		"section":     {"sms"},
+		"sms.gateway": {html.UnescapeString(m[2])},
+		"sms.presets": {"{}"},
+	}
+	rec = c.postForm("/admin/settings", form, true)
+	wantStatus(t, rec, http.StatusFound)
+	after, err := set.Get().SMSGateway()
+	if err != nil {
+		t.Fatalf("SMSGateway: %v", err)
+	}
+	if after.Headers["login"] != "REAL-LOGIN" || after.Headers["psw"] != "REAL-PSW" {
+		t.Fatalf("отправка маскированной формы изменила креды: %v", after.Headers)
+	}
+
+	// POST с новыми кредами → заменены.
+	form = url.Values{
+		"section":     {"sms"},
+		"sms.gateway": {`{"preset":"smsc","method":"GET","url":"https://gate.example/send","headers":{"login":"NEW-LOGIN","psw":"NEW-PSW"},"success":{"http_status":200}}`},
+		"sms.presets": {"{}"},
+	}
+	rec = c.postForm("/admin/settings", form, true)
+	wantStatus(t, rec, http.StatusFound)
+	after, err = set.Get().SMSGateway()
+	if err != nil {
+		t.Fatalf("SMSGateway: %v", err)
+	}
+	if after.Headers["login"] != "NEW-LOGIN" || after.Headers["psw"] != "NEW-PSW" {
+		t.Fatalf("новые креды не применились: %v", after.Headers)
+	}
+}
+
+// TestSecurityHeaders (SEC-011): заголовки безопасности присутствуют на
+// HTML-страницах (/ и /login) и статике полной композиции BuildRouter.
+func TestSecurityHeaders(t *testing.T) {
+	st, set, box := setup(t)
+	rt := newPagesRouter(t, st, set, box)
+
+	for _, path := range []string{"/", "/login"} {
+		rec := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		rt.Handler.ServeHTTP(w, rec)
+		h := w.Header()
+		if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", path, got)
+		}
+		if got := h.Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("%s: X-Frame-Options = %q, want DENY", path, got)
+		}
+		if got := h.Get("Referrer-Policy"); got != "no-referrer" {
+			t.Errorf("%s: Referrer-Policy = %q, want no-referrer", path, got)
+		}
+		wantCSP := "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
+		if got := h.Get("Content-Security-Policy"); got != wantCSP {
+			t.Errorf("%s: CSP = %q, want %q", path, got, wantCSP)
+		}
+	}
+
+	// Инлайн-обработчики вынесены в data-атрибуты (CSP без unsafe-*):
+	// ни один шаблон не содержит onclick=/style=.
+	files, err := filepath.Glob(filepath.Join("..", "web", "templates", "*.gohtml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("шаблоны не найдены: %v", err)
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("чтение %s: %v", f, err)
+		}
+		for _, bad := range []string{"onclick=", "onchange=", "onsubmit=", "style="} {
+			if strings.Contains(string(b), bad) {
+				t.Errorf("%s содержит инлайн-атрибут %q (запрещён CSP)", filepath.Base(f), bad)
+			}
+		}
+	}
 }

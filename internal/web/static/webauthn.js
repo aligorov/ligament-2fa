@@ -1,5 +1,7 @@
 // twofa: минимальный WebAuthn-клиент привязки passkey (единственный JS).
 // Самодостаточен, без фреймворков: base64url-хелперы + две фазы регистрации.
+// UI-обвязка: кнопка «Добавить passkey» получает состояние загрузки, ошибки
+// выводятся в .flash (контейнер #passkey-flash) вместо alert.
 "use strict";
 
 function b64uToBytes(s) {
@@ -25,6 +27,35 @@ function csrfToken(form) {
   return el ? el.value : "";
 }
 
+// showErr выводит ошибку церемонии контейнером .flash над формой; alert
+// больше не блокирует страницу.
+function showErr(msg) {
+  const box = document.getElementById("passkey-flash");
+  if (!box) { alert(msg); return; }
+  box.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "flash err";
+  const icon = document.createElement("span");
+  icon.className = "flash-icon";
+  icon.textContent = "⚠️";
+  div.appendChild(icon);
+  div.appendChild(document.createTextNode(msg));
+  box.appendChild(div);
+}
+
+// setBusy переключает кнопку формы в состояние загрузки и обратно.
+function setBusy(btn, busy) {
+  if (!btn) return;
+  if (busy) {
+    btn.dataset.label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Создание ключа…";
+  } else {
+    if (btn.dataset.label) btn.textContent = btn.dataset.label;
+    btn.disabled = false;
+  }
+}
+
 // PublicKeyCredentialCreationOptions: строки base64url → Uint8Array.
 function decodeCreationOptions(o) {
   o.challenge = b64uToBytes(o.challenge);
@@ -36,9 +67,11 @@ function decodeCreationOptions(o) {
 }
 
 async function twofaRegisterPasskey(form) {
+  const btn = form.querySelector('button[type="button"]');
   const name = form.elements["name"].value.trim();
   const code = form.elements["code"].value.trim();
-  if (!name) { alert("Укажите имя ключа."); return false; }
+  if (!name) { showErr("Укажите имя ключа."); return false; }
+  setBusy(btn, true);
   try {
     const begin = await fetch("/api/v1/me/webauthn/register/begin", {
       method: "POST",
@@ -52,7 +85,8 @@ async function twofaRegisterPasskey(form) {
     await finishRegistration(data.handle, name, cred);
     window.location.reload();
   } catch (e) {
-    alert("Не удалось добавить passkey: " + e.message);
+    setBusy(btn, false);
+    showErr("Не удалось добавить passkey: " + e.message);
   }
   return false;
 }
@@ -83,6 +117,17 @@ async function finishRegistration(handle, name, cred) {
   if (!finish.ok) throw new Error("завершение регистрации: HTTP " + finish.status);
 }
 
+// Кнопка «Добавить passkey» (data-passkey-register) вместо инлайн-onclick
+// (CSP запрещает инлайн-обработчики).
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.querySelector("[data-passkey-register]");
+  if (!btn) return;
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    twofaRegisterPasskey(btn.form);
+  });
+});
+
 // Продолжение регистрации, начатой с сервера: POST /me/webauthn/credentials
 // (форма без JS-fallback) перерендеривает страницу с data-атрибутами
 // handle/name/options — проводим церемонию сразу и завершаем через JSON API.
@@ -96,7 +141,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     window.location.reload();
   } catch (e) {
     if (e.name !== "NotAllowedError") { // отмена диалога — не ошибка
-      alert("Не удалось добавить passkey: " + e.message);
+      showErr("Не удалось добавить passkey: " + e.message);
     }
   }
 });

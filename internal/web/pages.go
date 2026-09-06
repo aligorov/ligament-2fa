@@ -11,11 +11,16 @@ import (
 )
 
 // BaseData — общие данные макета base.gohtml. Username пуст на /login —
-// тогда заголовок не показывает меню и кнопку выхода.
+// тогда приложение не показывает боковое меню и кнопку выхода.
 type BaseData struct {
 	Title    string
 	Username string // текущий пользователь (пусто до входа)
 	IsAdmin  bool
+	// Nav — идентификатор активного пункта бокового меню: "me", "totp",
+	// "backup", "telegram", "passkeys", "devices", "admin-users",
+	// "admin-audit", "admin-challenges", "admin-settings"; пусто для
+	// страниц без меню (login, error).
+	Nav      string
 	CSRF     string // CSRF-токен сессии; пусто для анонимных форм
 	Flash    string // флеш-успех (после редиректа)
 	FlashErr string // флеш-ошибка (после редиректа)
@@ -66,6 +71,9 @@ type MeTelegramData struct {
 	Linked   bool
 	ChatID   *int64
 	LinkCode string // непусто после POST /me/telegram/link
+	// NeedCode — у пользователя есть второй фактор: выдача кода привязки
+	// требует кода подтверждения (SEC-002).
+	NeedCode bool
 }
 
 // MePasskeysData — /me/passkeys: список credential и форма добавления
@@ -115,6 +123,18 @@ type AdminChallengesData struct {
 	Usernames  map[uuid.UUID]string
 }
 
+// SMSPresetChoice — пункт выбора пресета SMS-шлюза на странице настроек
+// (select в карточке SMS). web не зависит от delivery: HTTP-слой
+// собирает пункты из delivery.Presets(). ConfigJSON — конфиг пресета с
+// пустыми кредами-заглушками в форме настроек sms.gateway; выбор пункта
+// подставляет этот JSON в textarea sms.gateway (app.js).
+type SMSPresetChoice struct {
+	Name        string
+	Title       string
+	Description string // русское описание: креды, телефон, тест-режим, цена
+	ConfigJSON  string // JSON GatewayConfig (snake_case, как sms.gateway)
+}
+
 // AdminSettingsData — /admin/settings: снимок настроек по секциям.
 // Секретные значения НЕ входят: только *Set-флаги («•••• (задано)»);
 // изменение — ввод нового значения в поле с placeholder.
@@ -122,15 +142,16 @@ type AdminChallengesData struct {
 // показывается один раз в теле ответа (пусто — блок не рендерится).
 type AdminSettingsData struct {
 	BaseData
-	S               *settings.T
-	RadiusSecretSet bool
-	SMTPPasswordSet bool
-	TGBotTokenSet   bool
-	SMSGatewayJSON  string // сырой JSON sms.gateway для textarea
-	SMSPresetsJSON  string // сырой JSON sms.presets для textarea
-	ReplyAttrsJSON  string // radius.reply_attributes для textarea
-	OneTimeValue    string // новое значение секрета (показ один раз)
-	OneTimeLabel    string // ключ секрета (admin_token / radius.secret)
+	S                *settings.T
+	RadiusSecretSet  bool
+	SMTPPasswordSet  bool
+	TGBotTokenSet    bool
+	SMSGatewayJSON   string            // сырой JSON sms.gateway для textarea
+	SMSPresetsJSON   string            // сырой JSON sms.presets для textarea
+	SMSPresetChoices []SMSPresetChoice // пресеты шлюзов для select (заполняют textarea через JS)
+	ReplyAttrsJSON   string            // radius.reply_attributes для textarea
+	OneTimeValue     string            // новое значение секрета (показ один раз)
+	OneTimeLabel     string            // ключ секрета (admin_token / radius.secret)
 }
 
 // ErrorData — страница ошибки (код + сообщение по-русски).

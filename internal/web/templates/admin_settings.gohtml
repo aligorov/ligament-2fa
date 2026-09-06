@@ -1,204 +1,326 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
-<h1>Настройки сервера</h1>
-<p class="muted">Каждая секция сохраняется отдельно. Секретные поля показывают
-только факт «задано»; чтобы изменить — введите новое значение, пустое поле
-не меняет текущее.</p>
-
-<h2>Слушатели <span class="badge off">нужен перезапуск</span></h2>
-<form action="/admin/settings" method="post" class="wide">
-  {{csrf .CSRF}}<input type="hidden" name="section" value="listen">
-  <div class="grid">
-    <label>HTTP
-      <input type="text" name="listen.http" value="{{.S.Listen.HTTP}}">
-    </label>
-    <label>RADIUS Auth
-      <input type="text" name="listen.radius_auth" value="{{.S.Listen.RadiusAuth}}">
-    </label>
-    <label>RADIUS Acct
-      <input type="text" name="listen.radius_acct" value="{{.S.Listen.RadiusAcct}}">
-    </label>
-  </div>
-  <button type="submit">Сохранить секцию</button>
-</form>
-
-<h2>RADIUS</h2>
-<form action="/admin/settings" method="post" class="wide">
-  {{csrf .CSRF}}<input type="hidden" name="section" value="radius">
-  <div class="grid">
-    <label>Секрет {{if .RadiusSecretSet}}<span class="badge">•••• (задано)</span>{{end}}
-      <input type="password" name="radius.secret" placeholder="введите новое, чтобы изменить">
-    </label>
-    <label>Длины кодов (JSON)
-      <input type="text" name="radius.code_lengths" value='{{jsonPretty .S.Radius.CodeLengths}}'>
-    </label>
-    <label>Макс. неудач на пользователя
-      <input type="number" name="radius.max_fail_per_user" value="{{.S.Radius.MaxFailPerUser}}">
-    </label>
-    <label>Окно неудач (duration)
-      <input type="text" name="radius.fail_window" value="{{.S.Radius.FailWindow}}">
-    </label>
-    <label>Ожидание push (duration)
-      <input type="text" name="radius.push_wait" value="{{.S.Radius.PushWait}}">
-    </label>
-  </div>
-  <label>Reply-атрибуты Accept (JSON)
-    <textarea name="radius.reply_attributes" rows="4">{{.ReplyAttrsJSON}}</textarea>
-  </label>
-  <div class="row-actions">
-    <button type="submit">Сохранить секцию</button>
-    <button type="submit" name="regenerate" value="radius.secret" class="danger"
-      onclick="return confirm('Перегенерировать radius.secret? Все NAS отключатся, пока не обновят секрет.')">Перегенерировать секрет</button>
-  </div>
-</form>
-
-<h2>Токены доступа</h2>
-<form action="/admin/settings" method="post" class="wide">
-  {{csrf .CSRF}}
-  <p class="muted">admin_token — Bearer-токен REST API <code>/api/v1/admin/*</code>.
-  Новое значение показывается один раз; интеграции со старым токеном
-  перестанут работать сразу после перегенерации.</p>
-  <div class="row-actions">
-    <button type="submit" name="regenerate" value="admin_token" class="danger"
-      onclick="return confirm('Перегенерировать admin_token? Все интеграции со старым токеном перестанут работать.')">Перегенерировать admin_token</button>
-  </div>
-</form>
-
-<h2>SMTP <span class="badge off">применяется после SIGHUP/перезапуска</span></h2>
-<form action="/admin/settings" method="post" class="wide">
-  {{csrf .CSRF}}<input type="hidden" name="section" value="smtp">
-  <div class="grid">
-    <label>Хост
-      <input type="text" name="smtp.host" value="{{.S.SMTP.Host}}">
-    </label>
-    <label>Порт
-      <input type="number" name="smtp.port" value="{{.S.SMTP.Port}}">
-    </label>
-    <label>Пользователь
-      <input type="text" name="smtp.user" value="{{.S.SMTP.User}}">
-    </label>
-    <label>Пароль {{if .SMTPPasswordSet}}<span class="badge">•••• (задано)</span>{{end}}
-      <input type="password" name="smtp.password" placeholder="введите новое, чтобы изменить">
-    </label>
-    <label>От кого
-      <input type="text" name="smtp.from" value="{{.S.SMTP.From}}">
-    </label>
-    <label>Тема письма
-      <input type="text" name="smtp.subject" value="{{.S.SMTP.Subject}}">
-    </label>
-    <label>Таймаут (duration)
-      <input type="text" name="smtp.timeout" value="{{.S.SMTP.Timeout}}">
-    </label>
-    <label class="check"><input type="checkbox" name="smtp.starttls" value="1"{{if .S.SMTP.StartTLS}} checked{{end}}> STARTTLS</label>
-  </div>
-  <button type="submit">Сохранить секцию</button>
-</form>
-
-<h2>SMS-шлюз <span class="badge off">применяется после SIGHUP/перезапуска</span></h2>
-<form action="/admin/settings" method="post" class="wide">
-  {{csrf .CSRF}}<input type="hidden" name="section" value="sms">
-  <label>Шлюз (JSON: preset, method, url, headers, body, content_type, success)
-    <textarea name="sms.gateway" rows="8">{{.SMSGatewayJSON}}</textarea>
-  </label>
-  <label>Пресеты (JSON)
-    <textarea name="sms.presets" rows="4">{{.SMSPresetsJSON}}</textarea>
-  </label>
-  <button type="submit">Сохранить секцию</button>
-</form>
-
-<h2>Telegram <span class="badge off">смена токена — перезапуск</span></h2>
-<form action="/admin/settings" method="post" class="wide">
-  {{csrf .CSRF}}<input type="hidden" name="section" value="telegram">
-  <label>Токен бота {{if .TGBotTokenSet}}<span class="badge">•••• (задано)</span>{{else}}<span class="badge off">не задан — бот выключен</span>{{end}}
-    <input type="password" name="telegram.bot_token" placeholder="введите новое, чтобы изменить">
-  </label>
-  <button type="submit">Сохранить секцию</button>
-</form>
-
-<h2>TOTP</h2>
-<form action="/admin/settings" method="post" class="wide">
-  {{csrf .CSRF}}<input type="hidden" name="section" value="totp">
-  <div class="grid">
-    <label>Издатель (issuer)
-      <input type="text" name="totp.issuer" value="{{.S.TOTP.Issuer}}">
-    </label>
-    <label>Цифр в коде
-      <input type="number" name="totp.digits" value="{{.S.TOTP.Digits}}">
-    </label>
-    <label>Период, сек
-      <input type="number" name="totp.period" value="{{.S.TOTP.Period}}">
-    </label>
-    <label>Skew (шагов допуска)
-      <input type="number" name="totp.skew" value="{{.S.TOTP.Skew}}">
-    </label>
-  </div>
-  <button type="submit">Сохранить секцию</button>
-</form>
-
-<h2>WebAuthn</h2>
-<form action="/admin/settings" method="post" class="wide">
-  {{csrf .CSRF}}<input type="hidden" name="section" value="webauthn">
-  <div class="grid">
-    <label>RP ID (домен сервера)
-      <input type="text" name="webauthn.rp_id" value="{{.S.WebAuthn.RPID}}">
-    </label>
-    <label>RP Name (отображаемое имя)
-      <input type="text" name="webauthn.rp_name" value="{{.S.WebAuthn.RPName}}">
-    </label>
-  </div>
-  <p class="muted">Смена RP ID отвязывает существующие passkeys — миграция
-  описана в README.</p>
-  <button type="submit">Сохранить секцию</button>
-</form>
-
-<h2>Политики</h2>
-<form action="/admin/settings" method="post" class="wide">
-  {{csrf .CSRF}}<input type="hidden" name="section" value="policy">
-  <div class="grid">
-    <label>Время жизни кода
-      <input type="text" name="policy.code_ttl" value="{{.S.Policy.CodeTTL}}">
-    </label>
-    <label>Длина кода
-      <input type="number" name="policy.code_length" value="{{.S.Policy.CodeLength}}">
-    </label>
-    <label>Попыток ввода
-      <input type="number" name="policy.max_attempts" value="{{.S.Policy.MaxAttempts}}">
-    </label>
-    <label>Cooldown повторной отправки
-      <input type="text" name="policy.resend_cooldown" value="{{.S.Policy.ResendCooldown}}">
-    </label>
-    <label>Cooldown push
-      <input type="text" name="policy.push_cooldown" value="{{.S.Policy.PushCooldown}}">
-    </label>
-    <label>Push в час
-      <input type="number" name="policy.push_per_hour" value="{{.S.Policy.PushPerHour}}">
-    </label>
-    <label>Срок доверия устройству
-      <input type="text" name="policy.trusted_device_ttl" value="{{.S.Policy.TrustedDeviceTTL}}">
-    </label>
-    <label>Неудач до блокировки
-      <input type="number" name="policy.max_fail" value="{{.S.Policy.MaxFail}}">
-    </label>
-    <label>Окно неудач
-      <input type="text" name="policy.fail_window" value="{{.S.Policy.FailWindow}}">
-    </label>
-    <label>Время блокировки
-      <input type="text" name="policy.ban_time" value="{{.S.Policy.BanTime}}">
-    </label>
-    <label>Сессия web (duration)
-      <input type="text" name="web.session_ttl" value="{{.S.Policy.SessionTTL}}">
-    </label>
-  </div>
-  <label>Каналы по умолчанию (JSON)
-    <input type="text" name="policy.default_prefer_channels" value='{{jsonPretty .S.Policy.DefaultPrefer}}'>
-  </label>
-  <button type="submit">Сохранить секцию</button>
-</form>
+<header class="page-head">
+  <h1>Настройки сервера</h1>
+  <p class="page-sub">Каждая секция сохраняется отдельно. Секретные поля
+  показывают только факт «задано»; чтобы изменить — введите новое значение,
+  пустое поле не меняет текущее.</p>
+</header>
 
 {{if .OneTimeValue}}
-<div class="card">
-  <h3>Новое значение: {{.OneTimeLabel}}</h3>
-  <p class="flash err">Показывается только один раз — сохраните!</p>
-  <pre>{{.OneTimeValue}}</pre>
-</div>
+<section class="card">
+  <div class="card-head">
+    <h2>Новое значение: {{.OneTimeLabel}}</h2>
+  </div>
+  <div class="flash err"><span class="flash-icon">⚠️</span>Показывается только один раз — сохраните!</div>
+  <pre class="one-time">{{.OneTimeValue}}</pre>
+</section>
 {{end}}
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">📡</span>Слушатели <span class="badge warn">нужен перезапуск</span></h2>
+    <p>Адреса, на которых сервер принимает соединения.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="listen">
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">HTTP</span>
+        <input class="input" type="text" name="listen.http" value="{{.S.Listen.HTTP}}">
+        <span class="help">Веб-интерфейс и REST API.</span>
+      </label>
+      <label class="field">
+        <span class="field-label">RADIUS Auth</span>
+        <input class="input" type="text" name="listen.radius_auth" value="{{.S.Listen.RadiusAuth}}">
+      </label>
+      <label class="field">
+        <span class="field-label">RADIUS Acct</span>
+        <input class="input" type="text" name="listen.radius_acct" value="{{.S.Listen.RadiusAcct}}">
+        <span class="help">Учётный порт (accounting).</span>
+      </label>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">🔑</span>RADIUS</h2>
+    <p>Параметры протокола для NAS-устройств: секрет, коды, ограничения.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="radius">
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Секрет {{if .RadiusSecretSet}}<span class="badge neutral">•••• (задано)</span>{{end}}</span>
+        <input class="input" type="password" name="radius.secret" placeholder="введите новое, чтобы изменить">
+        <span class="help">Общий секрет с NAS-устройствами.</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Длины кодов (JSON)</span>
+        <input class="input mono" type="text" name="radius.code_lengths" value='{{jsonPretty .S.Radius.CodeLengths}}'>
+      </label>
+      <label class="field">
+        <span class="field-label">Макс. неудач на пользователя</span>
+        <input class="input" type="number" name="radius.max_fail_per_user" value="{{.S.Radius.MaxFailPerUser}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Окно неудач (duration)</span>
+        <input class="input mono" type="text" name="radius.fail_window" value="{{.S.Radius.FailWindow}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Ожидание push (duration)</span>
+        <input class="input mono" type="text" name="radius.push_wait" value="{{.S.Radius.PushWait}}">
+      </label>
+    </div>
+    <label class="field">
+      <span class="field-label">Reply-атрибуты Accept (JSON)</span>
+      <textarea class="textarea" name="radius.reply_attributes" rows="4">{{.ReplyAttrsJSON}}</textarea>
+      <span class="help">Атрибуты, добавляемые в Access-Accept всем пользователям.</span>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+      <button type="submit" name="regenerate" value="radius.secret" class="btn danger"
+        data-confirm="Перегенерировать radius.secret? Все NAS отключатся, пока не обновят секрет.">Перегенерировать секрет</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">🎫</span>Токены доступа</h2>
+    <p>admin_token — Bearer-токен REST API <code>/api/v1/admin/*</code>.
+    Новое значение показывается один раз; интеграции со старым токеном
+    перестанут работать сразу после перегенерации.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}
+    <div class="form-actions">
+      <button type="submit" name="regenerate" value="admin_token" class="btn danger"
+        data-confirm="Перегенерировать admin_token? Все интеграции со старым токеном перестанут работать.">Перегенерировать admin_token</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">✉️</span>SMTP <span class="badge warn">SIGHUP</span></h2>
+    <p>Отправка кодов по email; применяется после SIGHUP или перезапуска.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="smtp">
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Хост</span>
+        <input class="input" type="text" name="smtp.host" value="{{.S.SMTP.Host}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Порт</span>
+        <input class="input" type="number" name="smtp.port" value="{{.S.SMTP.Port}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Пользователь</span>
+        <input class="input" type="text" name="smtp.user" value="{{.S.SMTP.User}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Пароль {{if .SMTPPasswordSet}}<span class="badge neutral">•••• (задано)</span>{{end}}</span>
+        <input class="input" type="password" name="smtp.password" placeholder="введите новое, чтобы изменить">
+      </label>
+      <label class="field">
+        <span class="field-label">От кого</span>
+        <input class="input" type="text" name="smtp.from" value="{{.S.SMTP.From}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Тема письма</span>
+        <input class="input" type="text" name="smtp.subject" value="{{.S.SMTP.Subject}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Таймаут (duration)</span>
+        <input class="input mono" type="text" name="smtp.timeout" value="{{.S.SMTP.Timeout}}">
+      </label>
+      <div class="field">
+        <span class="field-label">Шифрование</span>
+        <label class="check"><input type="checkbox" name="smtp.starttls" value="1"{{if .S.SMTP.StartTLS}} checked{{end}}> <span>STARTTLS</span></label>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">📱</span>SMS-шлюз <span class="badge warn">SIGHUP</span></h2>
+    <p>HTTP-шлюз отправки SMS; применяется после SIGHUP или перезапуска.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="sms">
+    {{if .SMSPresetChoices}}
+    <label class="field">
+      <span class="field-label">Пресет шлюза</span>
+      <select class="input" data-sms-preset>
+        <option value="">— выбрать пресет —</option>
+        {{range .SMSPresetChoices}}<option value="{{.Name}}" data-config='{{.ConfigJSON}}' data-description="{{.Description}}">{{.Title}}</option>{{end}}
+      </select>
+      <span class="help" data-sms-preset-desc>Выберите шлюз — JSON ниже заполнится шаблоном; останется вписать свои учётные данные и сохранить секцию.</span>
+    </label>
+    {{end}}
+    <label class="field">
+      <span class="field-label">Шлюз (JSON)</span>
+      <textarea class="textarea" name="sms.gateway" rows="8" placeholder="preset, method, url, headers, body, content_type, success">{{.SMSGatewayJSON}}</textarea>
+      <span class="help">Учётные данные скрыты маской «••••» — оставьте поле
+      как есть (креды сохранятся) или введите новые значения.</span>
+    </label>
+    <label class="field">
+      <span class="field-label">Пресеты (JSON)</span>
+      <textarea class="textarea" name="sms.presets" rows="4">{{.SMSPresetsJSON}}</textarea>
+      <span class="help">Готовые наборы параметров шлюза по имени.</span>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">📨</span>Telegram <span class="badge warn">смена токена — перезапуск</span></h2>
+    <p>Чат-бот для кодов и push-подтверждений.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="telegram">
+    <label class="field">
+      <span class="field-label">Токен бота {{if .TGBotTokenSet}}<span class="badge neutral">•••• (задано)</span>{{else}}<span class="badge warn">не задан — бот выключен</span>{{end}}</span>
+      <input class="input mono" type="password" name="telegram.bot_token" placeholder="введите новое, чтобы изменить">
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">🔢</span>TOTP</h2>
+    <p>Параметры кодов приложений-аутентификаторов.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="totp">
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Издатель (issuer)</span>
+        <input class="input" type="text" name="totp.issuer" value="{{.S.TOTP.Issuer}}">
+        <span class="help">Отображается в приложении над аккаунтом.</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Цифр в коде</span>
+        <input class="input" type="number" name="totp.digits" value="{{.S.TOTP.Digits}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Период, сек</span>
+        <input class="input" type="number" name="totp.period" value="{{.S.TOTP.Period}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Skew (шагов допуска)</span>
+        <input class="input" type="number" name="totp.skew" value="{{.S.TOTP.Skew}}">
+        <span class="help">Насколько шагов вперёд/назад принимает код.</span>
+      </label>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">🔐</span>WebAuthn</h2>
+    <p>Домен и имя сервиса для passkeys.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="webauthn">
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">RP ID (домен сервера)</span>
+        <input class="input" type="text" name="webauthn.rp_id" value="{{.S.WebAuthn.RPID}}">
+      </label>
+      <label class="field">
+        <span class="field-label">RP Name (отображаемое имя)</span>
+        <input class="input" type="text" name="webauthn.rp_name" value="{{.S.WebAuthn.RPName}}">
+      </label>
+    </div>
+    <p class="help">Смена RP ID отвязывает существующие passkeys — миграция
+    описана в README.</p>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">🛡️</span>Политики</h2>
+    <p>Сроки жизни кодов, лимиты попыток и блокировки.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="policy">
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Время жизни кода</span>
+        <input class="input mono" type="text" name="policy.code_ttl" value="{{.S.Policy.CodeTTL}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Длина кода</span>
+        <input class="input" type="number" name="policy.code_length" value="{{.S.Policy.CodeLength}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Попыток ввода</span>
+        <input class="input" type="number" name="policy.max_attempts" value="{{.S.Policy.MaxAttempts}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Cooldown повторной отправки</span>
+        <input class="input mono" type="text" name="policy.resend_cooldown" value="{{.S.Policy.ResendCooldown}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Cooldown push</span>
+        <input class="input mono" type="text" name="policy.push_cooldown" value="{{.S.Policy.PushCooldown}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Push в час</span>
+        <input class="input" type="number" name="policy.push_per_hour" value="{{.S.Policy.PushPerHour}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Срок доверия устройству</span>
+        <input class="input mono" type="text" name="policy.trusted_device_ttl" value="{{.S.Policy.TrustedDeviceTTL}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Неудач до блокировки</span>
+        <input class="input" type="number" name="policy.max_fail" value="{{.S.Policy.MaxFail}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Окно неудач</span>
+        <input class="input mono" type="text" name="policy.fail_window" value="{{.S.Policy.FailWindow}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Время блокировки</span>
+        <input class="input mono" type="text" name="policy.ban_time" value="{{.S.Policy.BanTime}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Сессия web (duration)</span>
+        <input class="input mono" type="text" name="web.session_ttl" value="{{.S.Policy.SessionTTL}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Каналы по умолчанию (JSON)</span>
+        <input class="input mono" type="text" name="policy.default_prefer_channels" value='{{jsonPretty .S.Policy.DefaultPrefer}}'>
+      </label>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
 {{end}}

@@ -3,10 +3,12 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,23 +19,28 @@ import (
 // Headers — шаблоны с плейсхолдерами {phone} и {text} (номер и текст
 // сообщения). Пресеты дополнительно подставляют свои значения из
 // Headers по ключу плейсхолдера (см. Preset).
+//
+// JSON-теги совпадают с зеркальным типом settings.SMSGatewayConfig
+// (ключ sms.gateway): конфиг, отданный в UI (Presets), кладётся в
+// textarea настроек и читается обратно без потерь.
 type GatewayConfig struct {
-	Preset      string            // имя пресета ("smsc", "twilio") или пусто для произвольного шлюза
-	Method      string            // HTTP-метод; пусто — POST при заданном Body, иначе GET
-	URL         string            // шаблон URL шлюза
-	Body        string            // шаблон тела запроса (подстановка как есть)
-	ContentType string            // Content-Type тела запроса
-	Headers     map[string]string // HTTP-заголовки запроса; для пресетов — также значения их плейсхолдеров
-	Success     SuccessRule       // правило проверки ответа шлюза
+	Preset      string            `json:"preset"`
+	Method      string            `json:"method"`
+	URL         string            `json:"url"`
+	Body        string            `json:"body"`
+	ContentType string            `json:"content_type"`
+	Headers     map[string]string `json:"headers"`
+	Success     SuccessRule       `json:"success"`
 }
 
 // SuccessRule проверяет ответ шлюза: должны выполниться ВСЕ непустые
-// поля (логическое И).
+// поля (логическое И). JSONPath-сравнение строкифицирует JSON-значения:
+// число 0 совпадает с "0", true — с "true".
 type SuccessRule struct {
-	HTTPStatus   int    // точный HTTP-статус ответа
-	BodyContains string // подстрока в теле ответа
-	JSONPath     string // путь к полю JSON-ответа
-	Equals       string // ожидаемое строковое значение по JSONPath
+	HTTPStatus   int    `json:"http_status"`
+	BodyContains string `json:"body_contains"`
+	JSONPath     string `json:"json_path"`
+	Equals       string `json:"equals"`
 }
 
 // SMSSender отправляет SMS через HTTP-шлюз, описанный GatewayConfig.
@@ -58,8 +65,10 @@ func (s *SMSSender) Name() channel.Channel { return channel.SMS }
 
 // Send выполняет запрос к шлюзу и проверяет ответ по SuccessRule.
 // Плейсхолдеры {phone} и {text} (номер и текст сообщения, построенный
-// из BodyTemplate) подставляются в URL через url.QueryEscape, а в тело
-// и значения заголовков — как есть.
+// из BodyTemplate) подставляются в URL через url.QueryEscape, в значения
+// заголовков — как есть, а в тело — как есть ЛИБО, при ContentType
+// application/json, с экранированием JSON-строки (jsonEscape): кавычки,
+// обратные слэши и переводы строк не ломают JSON-тело (prostor и т.п.).
 func (s *SMSSender) Send(ctx context.Context, to, code string) error {
 	text := strings.ReplaceAll(BodyTemplate, "{code}", code)
 	method := s.gw.Method
@@ -69,8 +78,12 @@ func (s *SMSSender) Send(ctx context.Context, to, code string) error {
 			method = http.MethodPost
 		}
 	}
-	urlRepl := s.replacer(to, text, true)
-	bodyRepl := s.replacer(to, text, false)
+	urlRepl := s.replacer(to, text, escURL)
+	headerRepl := s.replacer(to, text, escNone)
+	bodyRepl := headerRepl
+	if isJSONContentType(s.gw.ContentType) {
+		bodyRepl = s.replacer(to, text, escJSON)
+	}
 
 	var body io.Reader
 	var contentType string
@@ -99,7 +112,7 @@ func (s *SMSSender) Send(ctx context.Context, to, code string) error {
 		req.Header.Set("Content-Type", contentType)
 	}
 	for k, v := range s.gw.Headers {
-		req.Header.Set(k, bodyRepl.Replace(v))
+		req.Header.Set(k, headerRepl.Replace(v))
 	}
 	if s.gw.Preset == "twilio" { // basic-auth из учётных данных пресета
 		req.SetBasicAuth(s.gw.Headers["sid"], s.gw.Headers["token"])
@@ -107,7 +120,7 @@ func (s *SMSSender) Send(ctx context.Context, to, code string) error {
 
 	resp, err := s.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("delivery: sms: шлюз: %w", err)
+		return redactTransportError(method, req.URL, err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -123,17 +136,51 @@ func (s *SMSSender) Send(ctx context.Context, to, code string) error {
 	return nil
 }
 
+// urlInErrorRE — http(s)-URL внутри текста ошибки: *url.Error несёт полный
+// URL запроса к шлюзу (в нём — креды и текст SMS в query).
+var urlInErrorRE = regexp.MustCompile(`https?://[^\s"']+`)
+
+// redactTransportError sanitizes ошибку транспорта hc.Do: сырой *url.Error
+// содержит полный URL шлюза — с логином/паролем и кодом подтверждения в
+// query. Остаётся метод, хост и класс причины; URL'ы в тексте причины
+// вырезаются регуляркой (защита от вложенных ошибок с адресом).
+func redactTransportError(method string, reqURL *url.URL, err error) error {
+	host := ""
+	if reqURL != nil {
+		host = reqURL.Host
+	}
+	cause := err
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		cause = ue.Err
+	}
+	msg := urlInErrorRE.ReplaceAllString(cause.Error(), "[url]")
+	return fmt.Errorf("delivery: sms: %s %s: %s", method, host, msg)
+}
+
+// escMode — способ подстановки значений плейсхолдеров.
+type escMode int
+
+const (
+	escNone escMode = iota // как есть (значения заголовков)
+	escURL                 // url.QueryEscape (URL запроса)
+	escJSON                // экранирование JSON-строки (JSON-тело запроса)
+)
+
 // replacer собирает strings.Replacer для плейсхолдеров {phone} и {text},
 // а также {<ключ>} для каждого ключа из Headers (значения пресетов:
-// login/psw, sid/token/from). При escape=true значения кодируются
-// url.QueryEscape (используется для URL), иначе подставляются как есть
-// (тело запроса и заголовки).
-func (s *SMSSender) replacer(phone, text string, escape bool) *strings.Replacer {
+// login/psw, sid/token/from и т.д.). mode задаёт способ экранирования
+// значений (см. escMode).
+func (s *SMSSender) replacer(phone, text string, mode escMode) *strings.Replacer {
 	esc := func(v string) string {
-		if escape {
+		switch mode {
+		case escURL:
 			return url.QueryEscape(v)
+		case escJSON:
+			return jsonEscape(v)
+		default:
+			return v
 		}
-		return v
 	}
 	pairs := []string{
 		"{phone}", esc(phone),
@@ -143,6 +190,52 @@ func (s *SMSSender) replacer(phone, text string, escape bool) *strings.Replacer 
 		pairs = append(pairs, "{"+k+"}", esc(v))
 	}
 	return strings.NewReplacer(pairs...)
+}
+
+// isJSONContentType — Content-Type объявляет JSON (допускает суффиксы вида
+// «; charset=utf-8»), без учёта регистра и пробелов по краям.
+func isJSONContentType(ct string) bool {
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	return ct == "application/json" || strings.HasPrefix(ct, "application/json;")
+}
+
+// jsonEscape экранирует значение как содержимое JSON-строки: кавычки,
+// обратные слэши и управляющие символы — по правилам encoding/json, БЕЗ
+// HTML-экранирования (<, >, & остаются как есть — round-trip текста).
+func jsonEscape(s string) string {
+	need := false
+	for _, r := range s {
+		if r == '"' || r == '\\' || r < 0x20 {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				fmt.Fprintf(&b, `\u%04x`, r)
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // check проверяет ответ по правилу: все непустые поля — по И.

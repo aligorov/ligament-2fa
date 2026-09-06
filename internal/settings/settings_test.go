@@ -340,8 +340,49 @@ func TestMaskedUnit(t *testing.T) {
 		"smtp":          json.RawMessage(`{"host":"h","password":"` + realPass + `"}`),
 		"telegram":      json.RawMessage(`{"bot_token":"` + realBotTok + `"}`),
 		"sms.gateway":   json.RawMessage(`{"method":"POST","headers":{"Authorization":"Bearer ` + realSMSTok + `","X-Ok":"visible"},"success":{"http_status":200}}`),
-		"sms.presets":   json.RawMessage(`{"twilio":{"sid":"AC1","token":"` + realTwilio + `"}}`),
+		"sms.presets":   json.RawMessage(`{"twilio":{"sid":"` + realTwilio + `","token":"` + realTwilio + `"}}`),
 	})
+
+	// Креды всех пресетов шлюзов маскируются (SEC-004): login/psw (smsc,
+	// prostor), auth_base64 (smsaero), project/api_key/api_id (mainsms,
+	// unisender, smsru), id/key (bytehand), sid/token (twilio),
+	// device_id/token (smsgateway24).
+	presetCreds := map[string]string{
+		"login":       "real-login",
+		"psw":         "real-psw",
+		"password":    "real-pass2",
+		"auth_base64": "real-auth-b64",
+		"project":     "real-project",
+		"api_key":     "real-api-key",
+		"api_id":      "real-api-id",
+		"id":          "real-id",
+		"key":         "real-key",
+		"device_id":   "real-device",
+	}
+	hdr := make(map[string]string, len(presetCreds))
+	for k, v := range presetCreds {
+		hdr[k] = v
+	}
+	hdr["sender"] = "open-sender" // не кред
+	snapCreds := buildT(map[string]json.RawMessage{
+		"sms.gateway": json.RawMessage(func() string {
+			b, _ := json.Marshal(map[string]any{"headers": hdr})
+			return string(b)
+		}()),
+	})
+	dumpCreds, err := json.Marshal(snapCreds.masked())
+	if err != nil {
+		t.Fatalf("Marshal(masked creds): %v", err)
+	}
+	sc := string(dumpCreds)
+	for k, v := range presetCreds {
+		if strings.Contains(sc, v) {
+			t.Errorf("кред %q (%s) попал в Masked-дамп: %s", v, k, sc)
+		}
+	}
+	if !strings.Contains(sc, "open-sender") {
+		t.Errorf("sender не кред и должен оставаться открытым: %s", sc)
+	}
 
 	masked := snap.masked()
 	dump, err := json.Marshal(masked)
@@ -401,8 +442,27 @@ func TestMaskedUnit(t *testing.T) {
 	presets := sms["presets"].(map[string]any)
 	twilio := presets["twilio"].(map[string]any)
 	maskObj("sms.presets.twilio.token", twilio["token"])
-	if twilio["sid"] != "AC1" {
-		t.Errorf("sms.presets.twilio.sid = %#v, ожидался открытым", twilio["sid"])
+	// sid — Account SID Twilio, кред: маскируется (SEC-004).
+	maskObj("sms.presets.twilio.sid", twilio["sid"])
+}
+
+// TestMaskedJSONTree (SEC-004): pretty-JSON для HTML-формы настроек —
+// креды масками-объектами, прочие поля как есть; мерж таких значений
+// (mergeSettingMap/isNoChangeValue в api) трактует их как «не менять».
+func TestMaskedJSONTree(t *testing.T) {
+	raw := json.RawMessage(`{"preset":"smsc","method":"GET","url":"https://x/y","headers":{"login":"LOG","psw":"PW","sender":"S"},"success":{"http_status":200}}`)
+	out := MaskedJSONTree(raw)
+	if strings.Contains(out, "LOG") || strings.Contains(out, "PW") {
+		t.Fatalf("MaskedJSONTree раскрыл креды: %s", out)
+	}
+	for _, want := range []string{`"preset": "smsc"`, `"method": "GET"`, `"sender": "S"`, maskValue} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("MaskedJSONTree потерял %q: %s", want, out)
+		}
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("разбор MaskedJSONTree: %v", err)
 	}
 }
 

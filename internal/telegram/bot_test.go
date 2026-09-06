@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -389,6 +390,13 @@ func TestCallbackApproveDeny(t *testing.T) {
 				audits[0].result != tc.wantResult || audits[0].username != "bob" {
 				t.Errorf("аудит = %+v", audits)
 			}
+			// answerCallbackQuery отправляется ПОСЛЕ editMessageText и
+			// аудита — ждём сам вызов, а не предшествующий ему edit
+			// (фикс гонки ожидания).
+			waitFor(t, "answerCallbackQuery", func() bool {
+				_, _, answers, _ := api.snapshot()
+				return len(answers) == 1
+			})
 			_, _, answers, _ := api.snapshot()
 			if len(answers) != 1 || answers[0]["callback_query_id"] != "cb1" {
 				t.Errorf("answerCallbackQuery = %v, want всегда cb1", answers)
@@ -423,6 +431,11 @@ func TestCallbackDoublePress(t *testing.T) {
 	if setPushN != 0 {
 		t.Errorf("ChallengeSetPush вызовов = %d, want 0 (повторное нажатие)", setPushN)
 	}
+	// Ответ кнопке приходит после edit — ждём его, а не edit (фикс гонки).
+	waitFor(t, "answerCallbackQuery на повторное нажатие", func() bool {
+		_, _, answers, _ := api.snapshot()
+		return len(answers) == 1
+	})
 	_, _, answers, _ := api.snapshot()
 	if len(answers) != 1 {
 		t.Errorf("answerCallbackQuery вызовов = %d, want 1 (всегда)", len(answers))
@@ -667,4 +680,75 @@ func TestGenerateLinkCode(t *testing.T) {
 
 func contains(s, sub string) bool {
 	return bytes.Contains([]byte(s), []byte(sub))
+}
+
+// TestLinkRelinkNotifiesOldChat (SEC-002): перепривязка аккаунта на новый
+// чат отправляет старому чату уведомление «Telegram отвязан…» ДО
+// перезаписи telegram_chat_id.
+func TestLinkRelinkNotifiesOldChat(t *testing.T) {
+	fs := newFakeStore()
+	uid, _ := addLinkUser(fs, "carol", "AB12-CD34")
+	old := int64(100)
+	fs.users[uid].TelegramChatID = &old
+	b, api := newTestBot(t, "TOK", fs)
+	api.pushUpdate(`{"update_id":1,"message":{"chat":{"id":12345},"text":"AB12-CD34"}}`)
+
+	stop := runBot(t, b)
+	waitFor(t, "уведомление старому чату + подтверждение новому", func() bool {
+		_, sent, _, _ := api.snapshot()
+		notified, linked := false, false
+		for _, m := range sent {
+			switch m["chat_id"] {
+			case float64(100):
+				if txt, _ := m["text"].(string); strings.Contains(txt, "отвязан от аккаунта carol") &&
+					strings.Contains(txt, "смените пароль") {
+					notified = true
+				}
+			case float64(12345):
+				if m["text"] == "✅ Telegram привязан" {
+					linked = true
+				}
+			}
+		}
+		return notified && linked
+	})
+	if err := stop(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	users, _, _, _ := fs.snapshot()
+	if got := users[uid].TelegramChatID; got == nil || *got != 12345 {
+		t.Errorf("telegram_chat_id = %v, want 12345", got)
+	}
+}
+
+// TestLinkSameChatNoNotification: повторная привязка ТОГО ЖЕ чата не
+// рассылает «отвязан» (это просто обновление кода).
+func TestLinkSameChatNoNotification(t *testing.T) {
+	fs := newFakeStore()
+	uid, _ := addLinkUser(fs, "dave", "AB12-CD34")
+	same := int64(42)
+	fs.users[uid].TelegramChatID = &same
+	b, api := newTestBot(t, "TOK", fs)
+	api.pushUpdate(`{"update_id":1,"message":{"chat":{"id":42},"text":"AB12-CD34"}}`)
+
+	stop := runBot(t, b)
+	waitFor(t, "подтверждение привязки", func() bool {
+		_, sent, _, _ := api.snapshot()
+		for _, txt := range sentTexts(sent) {
+			if txt == "✅ Telegram привязан" {
+				return true
+			}
+		}
+		return false
+	})
+	if err := stop(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, sent, _, _ := api.snapshot()
+	for _, txt := range sentTexts(sent) {
+		if strings.Contains(txt, "отвязан") {
+			t.Errorf("уведомление об отвязке при привязке того же чата: %q", txt)
+		}
+	}
 }
