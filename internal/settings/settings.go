@@ -70,20 +70,7 @@ type T struct {
 	// LDAP — конфигурация внешнего каталога LDAP/Active Directory
 	// (ключ ldap): первый фактор проверяется bind-ом в каталоге,
 	// атрибуты и группы синхронизируются в локального пользователя.
-	LDAP struct {
-		Enabled      bool
-		URL          string // ldap://host:389 или ldaps://host:636
-		StartTLS     bool   // STARTTLS поверх ldap://
-		BindDN       string // сервисная учётка для поиска (пустая — анонимный поиск)
-		BindPassword string
-		BaseDN       string
-		UserFilter   string // {login} заменяется на экранированный логин
-		GroupBaseDN  string // пусто — base_dn
-		GroupFilter  string // {dn} заменяется на DN пользователя
-		Attrs        LDAPAttrs
-		AllowGroups  []string          // пусто — все найденные в каталоге
-		RoleMap      map[string]string // DN или CN группы → роль (admin/user)
-	}
+	LDAP LDAPSettings
 
 	TG struct {
 		BotToken string
@@ -108,6 +95,25 @@ type T struct {
 		MaxFail          int
 		DefaultPrefer    []channel.Channel
 	}
+}
+
+// LDAPSettings — конфигурация внешнего каталога LDAP/Active Directory
+// (ключ ldap): первый фактор проверяется bind-ом в каталоге, атрибуты и
+// группы синхронизируются в локального пользователя. Именованный тип
+// нужен пакету auth (LdapVerifier принимает значение снимка без доступа к T).
+type LDAPSettings struct {
+	Enabled      bool
+	URL          string // ldap://host:389 или ldaps://host:636
+	StartTLS     bool   // STARTTLS поверх ldap://
+	BindDN       string // сервисная учётка для поиска (пустая — анонимный поиск)
+	BindPassword string
+	BaseDN       string
+	UserFilter   string // {login} заменяется на экранированный логин
+	GroupBaseDN  string // пусто — base_dn
+	GroupFilter  string // {dn} заменяется на DN пользователя
+	Attrs        LDAPAttrs
+	AllowGroups  []string          // пусто — все найденные в каталоге
+	RoleMap      map[string]string // DN или CN группы → роль (admin/user)
 }
 
 // LDAPAttrs — имена LDAP-атрибутов, из которых берутся контакты
