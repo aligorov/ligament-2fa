@@ -24,7 +24,21 @@ MikroTik/RouterOS** (L2TP/PPTP/PPPoE/вход в роутер), **REST API** и
 - Обзор библиотек: [docs/research/2026-09-06-library-references.md](docs/research/2026-09-06-library-references.md)
 - Заимствованные паттерны: [docs/research/2026-09-06-opensource-borrowed-patterns.md](docs/research/2026-09-06-opensource-borrowed-patterns.md)
 
-## Быстрый старт (Docker)
+## Быстрый старт для клиента (готовый образ)
+
+Клиенту не нужны исходники — только `docker-compose.client.yml`:
+
+```sh
+mkdir ligament && cd ligament
+# положите сюда docker-compose.client.yml (из репозитория)
+TWOFA_PG_PASSWORD=свой-пароль-БД docker compose -f docker-compose.client.yml up -d
+docker compose -f docker-compose.client.yml logs twofa | grep "ADMIN PASSWORD"
+```
+
+Дальше: <http://localhost:8080> → вход админом → загрузка лицензии
+(`/admin → Лицензия`). Образ: `aligorov/ligament_2fa` (Docker Hub).
+
+## Быстрый старт (Docker, из исходников)
 
 ```sh
 cp .env.example .env         # укажите TWOFA_PG_PASSWORD

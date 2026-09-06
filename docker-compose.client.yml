@@ -1,0 +1,34 @@
+# КЛИЕНТСКИЙ compose: готовый образ из Docker Hub, исходники не нужны.
+#   docker compose -f docker-compose.client.yml up -d
+#   docker compose -f docker-compose.client.yml logs twofa | grep "ADMIN PASSWORD"
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: twofa
+      POSTGRES_PASSWORD: ${TWOFA_PG_PASSWORD:-changeme}
+      POSTGRES_DB: twofa
+    volumes:
+      - twofa_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U twofa -d twofa"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  twofa:
+    image: aligorov/ligament_2fa:v0.3.0
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TWOFA_DB_DSN: postgres://twofa:${TWOFA_PG_PASSWORD:-changeme}@db:5432/twofa
+    ports:
+      - "8080:8080"
+      - "1812:1812/udp"
+      - "1813:1813/udp"
+    restart: unless-stopped
+
+volumes:
+  twofa_pgdata:
