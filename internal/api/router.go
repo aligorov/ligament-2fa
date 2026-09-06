@@ -63,9 +63,9 @@ func adsActive(a web.AdsData) (active, needAdsCSP bool) {
 		any := a.LoginLeft != "" || a.LoginRight != "" || a.Sidebar != ""
 		return any, any // домены Яндекса для context.js
 	}
-	// direct: картинка-баннер требует img-src https:; чистая ссылка
-	// обходится строгой политикой.
-	return a.DirectURL != "", a.DirectURL != "" && a.DirectImage != ""
+	// direct: слот есть и без URL (карточка «Бесплатная версия»); CSP
+	// расширяется только при внешней картинке.
+	return true, a.DirectImage != ""
 }
 
 // adsFor — решатель показа рекламы: блоки РСЯ видны только на НЕ платной

@@ -585,7 +585,21 @@ ul.codes li code {
 @media (min-width: 1200px) { .ad-side { display: block; } }
 .sidebar .ad-slot { margin: 8px 10px; min-height: 200px; }
 
-.ad-direct a { display: block; text-decoration: none; color: inherit; }
-.ad-direct img { max-width: 100%; height: auto; border-radius: 10px; }
-.ad-direct-label { display: block; padding: 12px; border: 1px dashed var(--muted, #bbb);
-  border-radius: 10px; text-align: center; color: #888; font-size: 13px; }
+/* Брендированный рекламный слот Ligament. */
+.ad-card {
+  background: var(--card, #fff); border: 1px solid var(--line, #e3e3ef);
+  border-radius: 14px; padding: 14px; box-shadow: 0 6px 18px rgba(50, 48, 92, .06);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.ad-brand { display: flex; align-items: center; gap: 8px; }
+.ad-name { font-weight: 700; letter-spacing: .2px; }
+.ad-badge {
+  margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
+  color: #9aa; border: 1px solid var(--line, #e3e3ef); border-radius: 999px; padding: 2px 8px;
+}
+.ad-link { display: flex; flex-direction: column; gap: 8px; text-decoration: none; color: inherit; }
+.ad-link:hover .ad-title { color: var(--accent); }
+.ad-title { font-weight: 600; font-size: 15px; line-height: 1.35; transition: color .15s; }
+.ad-img { max-width: 100%; height: auto; border-radius: 10px; }
+.ad-go { font-size: 13px; color: var(--accent); font-weight: 600; }
+.ad-hint { font-size: 12.5px; color: #8a8aa0; line-height: 1.45; }

@@ -40,7 +40,7 @@
       {{end}}
     </nav>
     {{if and .Ads.Show .Ads.Sidebar}}<div class="ad-slot ad-side" id="adv-sidebar" data-rtb-block="{{.Ads.Sidebar}}"></div>{{end}}
-    {{if and .Ads.Show (eq .Ads.Provider "direct") .Ads.DirectURL}}{{template "ad_direct" (dict "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
+    {{if and .Ads.Show (eq .Ads.Provider "direct")}}{{template "ad_direct" (dict "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
     <div class="sidebar-foot">
       <div class="sidebar-user" title="{{.Username}}">{{.Username}}</div>
       <form action="/logout" method="post" class="logout-form">
@@ -66,14 +66,14 @@
 {{define "layout_center"}}
 <div class="center-wrap">
   {{if and .Ads.Show .Ads.LoginLeft}}<aside class="ad-slot ad-side" id="adv-login-left" data-rtb-block="{{.Ads.LoginLeft}}"></aside>{{end}}
-  {{if and .Ads.Show (eq .Ads.Provider "direct") .Ads.DirectURL}}{{template "ad_direct" (dict "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
+  {{if and .Ads.Show (eq .Ads.Provider "direct")}}{{template "ad_direct" (dict "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
   <main class="center-main">
     {{with .Flash}}<div class="flash ok"><span class="flash-icon">✅</span>{{.}}</div>{{end}}
     {{with .FlashErr}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
     {{template "content" .}}
   </main>
   {{if and .Ads.Show .Ads.LoginRight}}<aside class="ad-slot ad-side" id="adv-login-right" data-rtb-block="{{.Ads.LoginRight}}"></aside>{{end}}
-  {{if and .Ads.Show (eq .Ads.Provider "direct") .Ads.DirectURL}}{{template "ad_direct" (dict "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
+  {{if and .Ads.Show (eq .Ads.Provider "direct")}}{{template "ad_direct" (dict "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
   <footer class="center-footer">Ligament</footer>
 </div>
 {{template "ads_scripts" .}}
@@ -85,11 +85,23 @@
 {{/* ad_direct — слот direct-link сети: кликабельная ссылка/баннер,
      домен площадки не нужен. */}}
 {{define "ad_direct"}}
-<aside class="ad-slot ad-side ad-direct">
-  <a href="{{.URL}}" target="_blank" rel="noopener noreferrer nofollow">
-    {{if .Image}}<img src="{{.Image}}" alt="Реклама" loading="lazy">
-    {{else}}<span class="ad-direct-label">{{if .Label}}{{.Label}}{{else}}Реклама{{end}}</span>{{end}}
-  </a>
+<aside class="ad-slot ad-side">
+  <div class="ad-card">
+    <div class="ad-brand">
+      <span class="brand-mark">L</span><span class="ad-name">Ligament</span>
+      <span class="ad-badge">Реклама</span>
+    </div>
+    {{if .URL}}
+    <a class="ad-link" href="{{.URL}}" target="_blank" rel="noopener noreferrer nofollow">
+      {{if .Image}}<img class="ad-img" src="{{.Image}}" alt="Реклама" loading="lazy">
+      {{else}}<span class="ad-title">{{if .Label}}{{.Label}}{{else}}Партнёрское предложение{{end}}</span>{{end}}
+      <span class="ad-go">Перейти&nbsp;→</span>
+    </a>
+    {{else}}
+    <div class="ad-title">Бесплатная версия</div>
+    <div class="ad-hint">Блок рекламы отключается активацией лицензии</div>
+    {{end}}
+  </div>
 </aside>
 {{end}}
 
