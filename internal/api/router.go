@@ -52,6 +52,30 @@ func securityHeaders(adsActive func(*http.Request) (bool, bool)) func(http.Handl
 	}
 }
 
+// brandFor — белый лейбл: кастомный бренд действует ТОЛЬКО при активной
+// платной лицензии; free/trial всегда видят Ligament.
+func brandFor(lic *license.Manager, m *settings.M) func(*http.Request) web.BrandData {
+	return func(r *http.Request) web.BrandData {
+		if lic == nil || m == nil {
+			return web.BrandData{}
+		}
+		snap := m.Get()
+		if snap == nil {
+			return web.BrandData{}
+		}
+		st, err := lic.Effective(r.Context())
+		if err != nil || st.Mode != license.ModeLicensed {
+			return web.BrandData{}
+		}
+		return web.BrandData{
+			Name:        snap.Branding.Name,
+			Mark:        snap.Branding.Mark,
+			Logo:        snap.Branding.Logo,
+			Description: snap.Branding.Description,
+		}
+	}
+}
+
 // adsActive — на запросе рендерится хотя бы один рекламный слот (для
 // выбора CSP): РСЯ требует домены Яндекса, direct-баннер — https-картинки,
 // чистая direct-ссылка обходится строгой политикой.
@@ -178,6 +202,7 @@ func BuildRouter(d Deps) *Router {
 		pages.SetFirewall(d.FW)
 	}
 	pages.SetAds(ads)
+	pages.SetBrand(brandFor(d.Lic, d.M))
 
 	pub.Register(r)
 	sess.Register(r)

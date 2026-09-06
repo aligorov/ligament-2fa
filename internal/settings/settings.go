@@ -51,6 +51,15 @@ type T struct {
 		Domain string
 	}
 
+	// Branding — белый лейбл (ключ branding): применяется ТОЛЬКО при
+	// активной платной лицензии (Licensed); free/trial видят Ligament.
+	Branding struct {
+		Name        string `json:"name"`        // название продукта
+		Mark        string `json:"mark"`        // буква маркера (вместо «L»)
+		Logo        string `json:"logo"`        // URL или data:URI логотипа
+		Description string `json:"description"` // подпись на странице входа
+	}
+
 	// Ads — блоки рекламы РСЯ (ключ ads): показываются ТОЛЬКО когда
 	// лицензия не платная (free/trial); ID блоков выдаёт partner.yandex.ru.
 	Ads struct {
@@ -472,6 +481,11 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Listen.RadiusAcct = parseString(raw["listen.radius_acct"], def.Listen.RadiusAcct)
 
 	t.Server.Domain = strings.TrimRight(parseString(raw["server.domain"], def.Server.Domain), "/")
+	br := fields(raw["branding"])
+	t.Branding.Name = parseString(br["name"], def.Branding.Name)
+	t.Branding.Mark = parseString(br["mark"], def.Branding.Mark)
+	t.Branding.Logo = parseString(br["logo"], def.Branding.Logo)
+	t.Branding.Description = parseString(br["description"], def.Branding.Description)
 	ads := fields(raw["ads"])
 	t.Ads.Enabled = parseBool(ads["enabled"], def.Ads.Enabled)
 	t.Ads.Provider = parseString(ads["provider"], def.Ads.Provider)
@@ -872,6 +886,12 @@ func (t *T) masked() map[string]any {
 		},
 		"server": map[string]any{
 			"domain": t.Server.Domain,
+		},
+		"branding": map[string]any{
+			"name":        t.Branding.Name,
+			"mark":        t.Branding.Mark,
+			"logo":        t.Branding.Logo,
+			"description": t.Branding.Description,
 		},
 		"ads": map[string]any{
 			"enabled":  t.Ads.Enabled,

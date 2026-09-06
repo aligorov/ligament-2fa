@@ -107,6 +107,39 @@
 
 <section class="card">
   <div class="card-head">
+    <h2><span class="card-icon">🎨</span>Брендинг <span class="badge">платная лицензия</span></h2>
+    <p>Корпоративный бренд вместо Ligament. Действует ТОЛЬКО при активной
+    платной лицензии — на free/trial интерфейс остаётся стандартным.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="branding">
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Название продукта</span>
+        <input class="input" type="text" name="branding.name" placeholder="ООО Ромашка SSO" value="{{.S.Branding.Name}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Буква маркера (вместо L)</span>
+        <input class="input" type="text" name="branding.mark" maxlength="2" placeholder="R" value="{{.S.Branding.Mark}}">
+      </label>
+    </div>
+    <label class="field">
+      <span class="field-label">Логотип (URL или data:URI)</span>
+      <input class="input mono" type="text" name="branding.logo" placeholder="https://…/logo.png или data:image/png;base64,…" value="{{.S.Branding.Logo}}">
+      <span class="help">data:URI хранит картинку прямо в базе — работает без внешних хостов.</span>
+    </label>
+    <label class="field">
+      <span class="field-label">Описание на странице входа</span>
+      <input class="input" type="text" name="branding.description" placeholder="Вход в корпоративный портал Ромашка" value="{{.S.Branding.Description}}">
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
     <h2><span class="card-icon">📢</span>Реклама (РСЯ) <span class="badge ok">на лету</span></h2>
     <p>Блоки Рекламной сети Яндекса: слева/справа на странице входа и в
     сайдбаре после входа. Показываются ТОЛЬКО на бесплатной лицензии —

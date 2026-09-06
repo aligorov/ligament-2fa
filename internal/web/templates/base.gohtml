@@ -18,7 +18,11 @@
 {{define "layout_app"}}
 <div class="app">
   <aside class="sidebar">
-    <a class="brand" href="/me"><span class="brand-mark">L</span>Ligament</a>
+    <a class="brand" href="/me">
+      {{if .Brand.Logo}}<img class="brand-logo" src="{{.Brand.Logo}}" alt="{{if .Brand.Name}}{{.Brand.Name}}{{else}}Ligament{{end}}">
+      {{else if .Brand.Name}}<span class="brand-mark">{{if .Brand.Mark}}{{.Brand.Mark}}{{else}}{{slice .Brand.Name 0 1}}{{end}}</span>{{.Brand.Name}}
+      {{else}}<span class="brand-mark">L</span>Ligament{{end}}
+    </a>
     <nav class="nav">
       <div class="nav-section">Кабинет</div>
       <a class="nav-link{{if eq .Nav "me"}} active{{end}}" href="/me">Профиль</a>
@@ -56,7 +60,7 @@
       {{range .LicenseWarnings}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
       {{template "content" .}}
     </main>
-    <footer class="app-footer">Ligament</footer>
+    <footer class="app-footer">{{if .Brand.Name}}{{.Brand.Name}}{{else}}Ligament{{end}}</footer>
     {{template "ads_scripts" .}}
   </div>
 </div>
@@ -76,7 +80,7 @@
     {{if and .Ads.Show .Ads.LoginRight}}<aside class="ad-slot ad-side" id="adv-login-right" data-rtb-block="{{.Ads.LoginRight}}"></aside>{{end}}
     {{if and .Ads.Show (eq .Ads.Provider "direct")}}{{template "ad_direct" (dict "Class" "ad-side" "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
   </div>
-  <footer class="center-footer">Ligament</footer>
+  <footer class="center-footer">{{if .Brand.Name}}{{.Brand.Name}}{{else}}Ligament{{end}}</footer>
 </div>
 {{template "ads_scripts" .}}
 {{end}}

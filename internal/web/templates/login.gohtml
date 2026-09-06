@@ -1,10 +1,14 @@
 {{define "layout"}}{{template "layout_center" .}}{{end}}
 {{define "content"}}
 <div class="login-card">
-  <div class="login-brand"><span class="brand-mark">L</span>Ligament</div>
+  <div class="login-brand">
+      {{if .Brand.Logo}}<img class="brand-logo" src="{{.Brand.Logo}}" alt="logo">
+      {{else if .Brand.Name}}<span class="brand-mark">{{if .Brand.Mark}}{{.Brand.Mark}}{{else}}{{slice .Brand.Name 0 1}}{{end}}</span>{{.Brand.Name}}
+      {{else}}<span class="brand-mark">L</span>Ligament{{end}}
+    </div>
   <h1>Вход</h1>
-  <p class="page-sub">Имя пользователя, пароль и — если включён второй
-  фактор — код из приложения или сообщения.</p>
+  <p class="page-sub">{{if .Brand.Description}}{{.Brand.Description}}{{else}}Имя пользователя, пароль и — если включён второй
+  фактор — код из приложения или сообщения.{{end}}</p>
   {{with .Err}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
   {{if .NeedCode}}<div class="flash ok"><span class="flash-icon">🔐</span>Введите код второго фактора.</div>{{end}}
   <form action="/login" method="post" class="form">

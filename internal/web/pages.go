@@ -29,8 +29,18 @@ type AdsData struct {
 	DirectImage string
 }
 
+// BrandData — белый лейбл (только платная лицензия): пустые поля =
+// стандартный бренд Ligament.
+type BrandData struct {
+	Name        string
+	Mark        string
+	Logo        string
+	Description string
+}
+
 type BaseData struct {
 	Ads      AdsData
+	Brand    BrandData
 	Title    string
 	Username string // текущий пользователь (пусто до входа)
 	IsAdmin  bool

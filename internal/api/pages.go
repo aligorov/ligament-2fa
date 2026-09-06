@@ -59,8 +59,9 @@ type PagesAPI struct {
 	box   *secrets.Box
 	pv    auth.PasswordVerifier
 	m     *settings.M
-	fw    firewallInvalidator             // nil — кэш списков не сбрасывается
-	ads   func(*http.Request) web.AdsData // nil — реклама не показывается
+	fw    firewallInvalidator               // nil — кэш списков не сбрасывается
+	ads   func(*http.Request) web.AdsData   // nil — реклама не показывается
+	brand func(*http.Request) web.BrandData // nil — бренд Ligament
 }
 
 // firewallInvalidator — узкий интерфейс firewall.Guard (без цикла импортов).
@@ -72,6 +73,9 @@ func (p *PagesAPI) SetFirewall(f firewallInvalidator) { p.fw = f }
 // SetAds подключает решатель показа рекламы РСЯ (free/trial-лицензия +
 // включённые блоки; nil — реклама выключена).
 func (p *PagesAPI) SetAds(f func(*http.Request) web.AdsData) { p.ads = f }
+
+// SetBrand подключает решатель белого лейбла (только платная лицензия).
+func (p *PagesAPI) SetBrand(f func(*http.Request) web.BrandData) { p.brand = f }
 
 // NewPagesAPI собирает HTML-обвязку; rend — рендерер internal/web,
 // sess/admin — переиспользуемые API-компоненты.
@@ -211,6 +215,9 @@ func (p *PagesAPI) baseData(r *http.Request, title, nav string) web.BaseData {
 	b := web.BaseData{Title: title, Nav: nav}
 	if p.ads != nil {
 		b.Ads = p.ads(r)
+	}
+	if p.brand != nil {
+		b.Brand = p.brand(r)
 	}
 	if q := r.URL.Query(); q.Get("flash") != "" {
 		if q.Get("kind") == "err" {
@@ -1494,6 +1501,12 @@ var settingsForm = map[string][]settingsField{
 		{name: "radius.fail_window", key: "radius.fail_window"},
 		{name: "radius.push_wait", key: "radius.push_wait"},
 		{name: "radius.reply_attributes", key: "radius.reply_attributes", kind: 'j'},
+	},
+	"branding": {
+		{name: "branding.name", key: "branding"},
+		{name: "branding.mark", key: "branding"},
+		{name: "branding.logo", key: "branding"},
+		{name: "branding.description", key: "branding"},
 	},
 	"ads": {
 		{name: "ads.enabled", key: "ads", kind: 'b'},

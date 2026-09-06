@@ -605,3 +605,6 @@ ul.codes li code {
 .ad-img { max-width: 100%; height: auto; border-radius: 10px; }
 .ad-go { font-size: 13px; color: var(--accent); font-weight: 600; }
 .ad-hint { font-size: 12.5px; color: #8a8aa0; line-height: 1.45; }
+
+.brand-logo { height: 30px; width: auto; max-width: 160px; display: block; border-radius: 6px; }
+.login-brand .brand-logo { height: 34px; }
