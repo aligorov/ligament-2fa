@@ -48,11 +48,23 @@ type AdminAPI struct {
 	st  *store.Store
 	m   *settings.M
 	lic *license.Manager // nil — лицензирование не смонтировано (тесты)
+	// countAuditRows — подсчёт строк audit_log для лимита HTTP-бэкапа;
+	// отдельное поле, чтобы тест 413-ветки подменял счётчик без вставки
+	// полумиллиона строк.
+	countAuditRows func(ctx context.Context) (int64, error)
 }
 
 // NewAdminAPI собирает админ API.
 func NewAdminAPI(st *store.Store, m *settings.M, lic *license.Manager) *AdminAPI {
-	return &AdminAPI{st: st, m: m, lic: lic}
+	a := &AdminAPI{st: st, m: m, lic: lic}
+	a.countAuditRows = func(ctx context.Context) (int64, error) {
+		var n int64
+		if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM audit_log`).Scan(&n); err != nil {
+			return 0, err
+		}
+		return n, nil
+	}
+	return a
 }
 
 // Register монтирует админ маршруты в chi-роутер (все под RequireAdminToken).
@@ -73,6 +85,9 @@ func (a *AdminAPI) Register(r chi.Router) {
 		r.Get("/settings", a.handleSettingsGet)
 		r.Put("/settings", a.handleSettingsPut)
 		r.Post("/settings/regenerate", a.handleSettingsRegenerate)
+		r.Get("/settings/export", a.handleSettingsExport)
+		r.Put("/settings/import", a.handleSettingsImport)
+		r.Get("/backup", a.handleBackup)
 		a.registerLicenseRoutes(r)
 	})
 }
