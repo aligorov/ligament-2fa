@@ -159,6 +159,16 @@
   </div>
   <form action="/admin/settings" method="post" class="form">
     {{csrf .CSRF}}<input type="hidden" name="section" value="sms">
+    {{if .SMSPresetChoices}}
+    <label class="field">
+      <span class="field-label">Пресет шлюза</span>
+      <select class="input" data-sms-preset>
+        <option value="">— выбрать пресет —</option>
+        {{range .SMSPresetChoices}}<option value="{{.Name}}" data-config='{{.ConfigJSON}}' data-description="{{.Description}}">{{.Title}}</option>{{end}}
+      </select>
+      <span class="help" data-sms-preset-desc>Выберите шлюз — JSON ниже заполнится шаблоном; останется вписать свои учётные данные и сохранить секцию.</span>
+    </label>
+    {{end}}
     <label class="field">
       <span class="field-label">Шлюз (JSON)</span>
       <textarea class="textarea" name="sms.gateway" rows="8" placeholder="preset, method, url, headers, body, content_type, success">{{.SMSGatewayJSON}}</textarea>

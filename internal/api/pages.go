@@ -27,6 +27,7 @@ import (
 
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
+	"github.com/aligorov/twofa/internal/delivery"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -1197,15 +1198,38 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 		}
 	}
 	return web.AdminSettingsData{
-		BaseData:        p.baseData(r, "Настройки сервера", "admin-settings"),
-		S:               t,
-		RadiusSecretSet: t.RadiusSecret != "",
-		SMTPPasswordSet: t.SMTP.Password != "",
-		TGBotTokenSet:   t.TG.BotToken != "",
-		SMSGatewayJSON:  string(t.SMS),
-		SMSPresetsJSON:  string(t.SMSPresets),
-		ReplyAttrsJSON:  replyJSON,
+		BaseData:         p.baseData(r, "Настройки сервера", "admin-settings"),
+		S:                t,
+		RadiusSecretSet:  t.RadiusSecret != "",
+		SMTPPasswordSet:  t.SMTP.Password != "",
+		TGBotTokenSet:    t.TG.BotToken != "",
+		SMSGatewayJSON:   string(t.SMS),
+		SMSPresetsJSON:   string(t.SMSPresets),
+		SMSPresetChoices: smsPresetChoices(),
+		ReplyAttrsJSON:   replyJSON,
 	}
+}
+
+// smsPresetChoices — пресеты SMS-шлюзов для select на странице настроек:
+// delivery.Presets() → web-тип (web не зависит от delivery). ConfigJSON —
+// конфиг с пустыми кредами-заглушками; выбор пункта в UI подставляет его
+// в textarea sms.gateway (app.js), администратор вписывает свои креды.
+func smsPresetChoices() []web.SMSPresetChoice {
+	list := delivery.Presets()
+	out := make([]web.SMSPresetChoice, 0, len(list))
+	for _, p := range list {
+		b, err := json.Marshal(p.Config)
+		if err != nil {
+			continue // не может случиться: структура из строк и int
+		}
+		out = append(out, web.SMSPresetChoice{
+			Name:        p.Name,
+			Title:       p.Title,
+			Description: p.Description,
+			ConfigJSON:  string(b),
+		})
+	}
+	return out
 }
 
 // settingsField — одно поле формы /admin/settings: имя поля формы (то же,

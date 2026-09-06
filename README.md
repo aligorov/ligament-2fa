@@ -47,7 +47,9 @@ SMS-шлюз, Telegram) перестраивается по SIGHUP (смена �
 ```
 
 **SMS-шлюз** — любой HTTP-шлюз: метод, URL/тело с плейсхолдерами
-`{phone}/{text}`, заголовки и правило успеха. Пресеты: `smsc`, `twilio`.
+`{phone}/{text}`, заголовки и правило успеха. Готовые пресеты — в списке
+«Пресет шлюза» на странице настроек (выбор заполняет JSON — останется
+вписать креды); полный список — в разделе [SMS-шлюзы](#sms-шлюзы-пресеты).
 
 ```json
 {"preset":"smsc","headers":{"login":"user","psw":"pass"}}
@@ -81,6 +83,42 @@ Custom-шлюз (JSONPath-правило успеха и т.п. — см. спе
 
 `rp_id` — домен, с которого открывается web-UI (localhost для локальных
 тестов). Регистрация passkey — в кабинете /me → Passkeys.
+
+## SMS-шлюзы (пресеты)
+
+Девять готовых пресетов (Настройки → SMS-шлюз → «Пресет шлюза»). Данные
+сверены живыми запросами к шлюзам — [research-док](docs/research/2026-09-06-sms-gateways-ru.md).
+
+| Пресет | Креды (headers) | Телефон | Тест-режим | Цена ~ |
+|---|---|---|---|---|
+| `smsc` (SMSC.ru) | `login`, `psw` | любой, дефолт страны | `cost=1` (прайс без отправки) | 3.8–11 ₽ |
+| `smsru` (SMS.ru) | `api_id` | 11 цифр, с `7` | `test=1` | ~8.4 ₽ |
+| `smsaero` (SMS Aero) | `auth_base64`, `sender` | 11 цифр без `+` | имя «SMS Aero» | 1.95–3.3 ₽ |
+| `mainsms` (MainSMS) | `project`, `api_key` | E.164 (`+7…`) | `test=1` | от ~1.3 ₽ |
+| `bytehand` (ByteHand) | `id`, `key`, `sender` | `+7…` | нет | 7–9 ₽ |
+| `prostor` (Простор-СМС) | `login`, `password`, `sender` | `+7…` | 50 дней / 10 SMS | от 1.49 ₽ |
+| `unisender` (Unisender) | `api_key`, `sender` | `7…` (`+` опционален) | нет (`checkSms`) | 8–37 ₽ |
+| `smsgateway24` | `token`, `device_id` | `+7…` — **с плюсом** | trial 5 дней | $38/мес без лимита |
+| `twilio` (Twilio) | `sid`, `token`, `from` | E.164 | нет | по тарифу |
+
+Нюансы правил успеха: `smsc`, `smsgateway24` и `smsru` возвращают ошибки
+с HTTP 200 — успех проверяется по JSON-полю (`$.cnt=="1"`, `$.error=="0"`,
+`$.status=="OK"`); `bytehand` отвечает числовым статусом `0`; `smsaero` и
+`unisender` ошибками отвечают не-200; `twilio` на успех отвечает 201 —
+успехом считается любой 2xx.
+
+**SMS Aero — auth_base64.** Шлюз авторизуется заголовком
+`Authorization: Basic …`, где после `Basic ` — base64 от `email:API-ключ`.
+Вычислите один раз и положите в headers:
+
+```sh
+echo -n 'user@example.com:API_KEY' | base64
+```
+
+**Почему нет ePochta.** API v3 ePochta (Atompark) требует MD5-подпись
+`sum` от отсортированных параметров (включая текст SMS) на каждый запрос —
+шаблонный движок с подстановкой плейсхолдеров такое не умеет, пресет
+невозможен по построению.
 
 ## MikroTik (RouterOS)
 
@@ -193,7 +231,9 @@ internal/auth/   ядро аутентификации (челленджи, сп
 internal/radiusserver/  RADIUS auth/acct (layeh.com/radius)
 internal/store/  PostgreSQL (pgx) — пользователи, челленджи, аудит...
 internal/settings/ конфигурация в БД (defaults, hot-reload)
-internal/delivery/ email/SMS-отправка (пресеты smsc/twilio)
+internal/delivery/ email/SMS-отправка (9 пресетов шлюзов: smsc, sms.ru,
+                 smsaero, mainsms, bytehand, prostor, unisender,
+                 smsgateway24, twilio)
 internal/telegram/ бот: коды, push-подтверждения, привязка
 internal/webauthn/ passkeys (go-webauthn)
 internal/secrets/ argon2id, AES-GCM+AAD, генерация кодов

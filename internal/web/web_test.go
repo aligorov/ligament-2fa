@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -471,6 +472,73 @@ func TestStatic(t *testing.T) {
 		}
 		if rec.Body.Len() == 0 {
 			t.Errorf("GET /%s: пустой ответ", name)
+		}
+	}
+}
+
+// TestRenderAdminSettingsSMSPresets — карточка SMS на странице настроек
+// содержит выбор пресета шлюза: select с 9 пресетами (без name — поле не
+// отправляется, JS заполняет textarea sms.gateway), каждый option несёт
+// конфиг (data-config) и описание; контракт формы не меняется.
+func TestRenderAdminSettingsSMSPresets(t *testing.T) {
+	r := mustNew(t)
+	choices := []SMSPresetChoice{
+		{Name: "bytehand", Title: "ByteHand", Description: "Креды: id, key, sender.", ConfigJSON: `{"preset":"bytehand","method":"GET","url":"https://api.bytehand.com/v1/send?id={id}","headers":{"id":"","key":"","sender":""},"success":{"json_path":"$.status","equals":"0"}}`},
+		{Name: "mainsms", Title: "MainSMS", Description: "Креды: project и api_key.", ConfigJSON: `{"preset":"mainsms","method":"GET","url":"https://mainsms.ru/","headers":{"project":"","api_key":""},"success":{"json_path":"$.status","equals":"success"}}`},
+		{Name: "prostor", Title: "Простор-СМС", Description: "Креды: login, password и sender.", ConfigJSON: `{"preset":"prostor","method":"POST","url":"https://api.prostor-sms.ru/messages/v2/send.json","content_type":"application/json","headers":{"login":"","password":"","sender":""},"success":{"json_path":"$.status","equals":"ok"}}`},
+		{Name: "smsaero", Title: "SMS Aero", Description: "Креды: auth_base64 = base64(email:api_key).", ConfigJSON: `{"preset":"smsaero","method":"GET","url":"https://gate.smsaero.ru/v2/sms/send","headers":{"Authorization":"Basic {auth_base64}","auth_base64":"","sender":"SMS Aero"},"success":{"http_status":200}}`},
+		{Name: "smsc", Title: "SMSC.ru", Description: "Креды: login и psw.", ConfigJSON: `{"preset":"smsc","method":"GET","url":"https://smsc.ru/sys/send.php","headers":{"login":"","psw":""},"success":{"http_status":200,"json_path":"$.cnt","equals":"1"}}`},
+		{Name: "smsgateway24", Title: "SMSGateway24", Description: "Креды: token и device_id.", ConfigJSON: `{"preset":"smsgateway24","method":"GET","url":"https://smsgateway24.com/getdata/addsms","headers":{"token":"","device_id":""},"success":{"json_path":"$.error","equals":"0"}}`},
+		{Name: "smsru", Title: "SMS.ru", Description: "Кред: api_id.", ConfigJSON: `{"preset":"smsru","method":"GET","url":"https://sms.ru/sms/send","headers":{"api_id":""},"success":{"json_path":"$.status","equals":"OK"}}`},
+		{Name: "twilio", Title: "Twilio", Description: "Креды: sid, token и from.", ConfigJSON: `{"preset":"twilio","method":"POST","url":"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json","headers":{"sid":"","token":"","from":""},"success":{}}`},
+		{Name: "unisender", Title: "Unisender", Description: "Креды: api_key и sender.", ConfigJSON: `{"preset":"unisender","method":"GET","url":"https://api.unisender.com/ru/api/sendSms","headers":{"api_key":"","sender":""},"success":{"http_status":200}}`},
+	}
+	var sb strings.Builder
+	if err := r.Render(&sb, "admin_settings", AdminSettingsData{
+		BaseData: base("Настройки"), S: testSettings(),
+		SMSPresetChoices: choices,
+	}); err != nil {
+		t.Fatalf("Render(admin_settings): %v", err)
+	}
+	out := sb.String()
+
+	// Select пресетов + все 9 пунктов; конфиг виден браузеру (dataset)
+	// после разэкранирования HTML-сущностей атрибута.
+	unescaped := html.UnescapeString(out)
+	for _, ch := range choices {
+		if !strings.Contains(out, `<option value="`+ch.Name+`"`) {
+			t.Errorf("нет option пресета %q", ch.Name)
+		}
+		if !strings.Contains(unescaped, `data-config='`+ch.ConfigJSON+`'`) {
+			t.Errorf("у пресета %q нет data-config с JSON конфига", ch.Name)
+		}
+	}
+	// Select пресетов присутствует.
+	if !strings.Contains(out, `data-sms-preset`) {
+		t.Error("нет select выбора пресета (data-sms-preset)")
+	}
+	// Контракт формы не меняется: textarea sms.gateway остаётся.
+	if !strings.Contains(out, `name="sms.gateway"`) {
+		t.Error("textarea sms.gateway пропала (контракт формы)")
+	}
+	// У select НЕТ name — поле не отправляется на сервер.
+	if strings.Contains(out, "name=\"sms.preset\"") {
+		t.Error("select пресета не должен иметь name (не часть формы)")
+	}
+}
+
+// TestAppJSSMSPreset — app.js подключён к макету и знает о пресетах
+// SMS (заполняет textarea sms.gateway из data-config выбранной option).
+func TestAppJSSMSPreset(t *testing.T) {
+	rec := httptest.NewRecorder()
+	http.FileServer(Static()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /app.js: статус %d, ожидался 200", rec.Code)
+	}
+	js := rec.Body.String()
+	for _, w := range []string{"data-sms-preset", "sms.gateway", "data-config", "JSON.stringify"} {
+		if !strings.Contains(js, w) {
+			t.Errorf("app.js: нет %q (обработчик выбора пресета)", w)
 		}
 	}
 }

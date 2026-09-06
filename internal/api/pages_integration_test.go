@@ -272,6 +272,9 @@ func TestPagesAdminAccess(t *testing.T) {
 	rec = c2.get("/admin/settings")
 	wantStatus(t, rec, http.StatusOK)
 	wantBody(t, rec, "<h1>Настройки сервера</h1>", "•••• (задано)", `action="/admin/settings"`)
+	// Пресеты шлюзов: select наполнен реальными пресетами delivery.Presets
+	// (маппинг smsPresetChoices), каждый option несёт JSON конфига.
+	wantBody(t, rec, `data-sms-preset`, `value="smsaero"`, `value="smsgateway24"`, `data-config=`)
 }
 
 // TestPagesAdminSettingsPost: сохранение секции (мерж объектного ключа) и
