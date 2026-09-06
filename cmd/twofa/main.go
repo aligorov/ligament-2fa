@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -44,6 +45,37 @@ const telegramRestartBackoff = 30 * time.Second
 // обновлений: licensed-сборка новее maintenance_expires лицензии не
 // стартует (report §3.4); пустая — сборка без релизной даты, гейт выключен.
 var BuildDate string
+
+// VendorAdsJSON — предзаполненные настройки рекламы РСЯ вендорской сборки
+// (ключ ads целиком, JSON: enabled/blocks[login_left,login_right,sidebar]
+// и опционально oauth_token для статистики). Вшивается в ВЕНДОРСКИЙ билд:
+// -ldflags "-X main.VendorAdsJSON='{…}'" (Makefile, переменная ADS_CONFIG);
+// в публичном репозитории значение пусто — секретов нет. Применяется один
+// раз при первом старте, если реклама ещё не настраивалась.
+var VendorAdsJSON string
+
+// seedVendorAds засевает вендорские РСЯ-креды в настройках, когда ключ ads
+// ещё не трогали (enabled=false и все ID блоков пусты). Осознанный выбор
+// владельца инсталляции позже перезаписывает значения через админку.
+func seedVendorAds(ctx context.Context, m *settings.M) {
+	if VendorAdsJSON == "" || m == nil {
+		return
+	}
+	snap := m.Get()
+	if snap == nil || snap.Ads.Enabled || snap.Ads.Blocks.LoginLeft != "" ||
+		snap.Ads.Blocks.LoginRight != "" || snap.Ads.Blocks.Sidebar != "" {
+		return // уже настроено (или включено) — не трогаем
+	}
+	if !json.Valid([]byte(VendorAdsJSON)) {
+		slog.Warn("main: VendorAdsJSON не валиден — пропуск")
+		return
+	}
+	if err := m.Put(ctx, "ads", json.RawMessage(VendorAdsJSON)); err != nil {
+		slog.Warn("main: засев вендорских РСЯ-кредов не удался", "error", err)
+		return
+	}
+	slog.Info("main: реклама РСЯ преднастроена вендорской сборкой")
+}
 
 func main() {
 	dsnFlag := flag.String("dsn", "", "PostgreSQL DSN (приоритет над env TWOFA_DB_DSN)")
@@ -93,6 +125,8 @@ func main() {
 		slog.Error("main: настройки", "error", err)
 		os.Exit(1)
 	}
+	seedVendorAds(ctx, m)
+
 	box, err := secrets.NewBox(m.Get().MasterKeyB64)
 	if err != nil {
 		slog.Error("main: мастер-ключ", "error", err)

@@ -2,8 +2,16 @@
 
 # Клиентская сборка: только сервер twofa. Генерация лицензий (cmd/licgen) —
 # отдельный вложенный Go-модуль и в ./... / docker-образ НЕ входит.
+#
+# ADS_CONFIG — вендорское предзаполнение рекламы РСЯ (ключ ads: ID блоков
+# и опционально oauth_token статистики), вшивается в бинарник и засевается
+# в настройки при первом старте, пока реклама не настраивалась вручную:
+#   ADS_CONFIG='{"enabled":true,"blocks":{"login_left":"R-…",…}}' make build
+ADS_CONFIG ?= ""
+ADSLD := $(if $(ADS_CONFIG),-X main.VendorAdsJSON=$(ADS_CONFIG),)
+
 build:
-	go build -ldflags "-X main.BuildDate=$(shell date +%F)" -o twofa ./cmd/twofa
+	go build -ldflags "-X main.BuildDate=$(shell date +%F) $(ADSLD)" -o twofa ./cmd/twofa
 
 test:
 	go test ./...
@@ -12,7 +20,7 @@ lint:
 	go vet ./...
 
 docker:
-	docker build --build-arg BUILD_DATE=$(shell date +%F) -t twofa:latest .
+	docker build --build-arg BUILD_DATE=$(shell date +%F) 	  --build-arg ADS_CONFIG="$(ADS_CONFIG)" -t twofa:latest .
 
 # E2E-сценарий: testcontainer PostgreSQL + HTTP + RADIUS (нужен Docker).
 e2e:
