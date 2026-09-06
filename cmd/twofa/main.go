@@ -171,10 +171,6 @@ func main() {
 		}
 		return footer
 	}
-	if err := lic.Init(ctx); err != nil {
-		slog.Error("main: инициализация лицензии", "error", err)
-		os.Exit(1)
-	}
 	licStatus, err := lic.Effective(ctx)
 	if err != nil {
 		slog.Error("main: чтение состояния лицензии", "error", err)

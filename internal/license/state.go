@@ -39,10 +39,8 @@ const (
 
 // Ключи в таблице settings (значения — JSON-строки).
 const (
-	keyBlob      = "license.blob"
-	keyCRL       = "license.crl"
-	keyTrial     = "license.trial_started"
-	keyTrialUsed = "license.trial_used"       // демо израсходовано загрузкой лицензии; не удаляется никогда
+	keyBlob = "license.blob"
+	keyCRL  = "license.crl"
 	keyOverLimit = "license.over_limit_since" // фиксация первого превышения лимита создания
 	buildDate    = "2006-01-02"               // формат BuildDate (-ldflags -X main.BuildDate)
 )
@@ -95,17 +93,11 @@ func (m *Manager) Now() time.Time { return m.now() }
 // момент now. Битый blob — деградация в free (лицензирование — юридический
 // барьер, не причина для аварии сервера; report §3.8). trialUsed — демо
 // «израсходовано» покупкой лицензии: остаток дней не восстанавливается.
-func computeStatus(now time.Time, blob, crl string, trialStarted *time.Time, trialUsed bool) Status {
+// Демо-режим включается ТОЛЬКО подписанной вендором demo-лицензией
+// (plan=demo, expires_at ≤ 30 дней от issuance): без файла сервер живёт
+// в free. Снос базы демо не воскрешает — файл не подделать и не продлить.
+func computeStatus(now time.Time, blob, crl string) Status {
 	if blob == "" {
-		if trialStarted != nil && !trialUsed {
-			until := trialStarted.Add(TrialDuration)
-			if now.Before(until) {
-				return Status{
-					Mode:          ModeTrial,
-					TrialDaysLeft: daysLeft(now, until),
-				}
-			}
-		}
 		return Status{Mode: ModeFree, UserLimit: FreeUserLimit}
 	}
 
@@ -127,7 +119,22 @@ func computeStatus(now time.Time, blob, crl string, trialStarted *time.Time, tri
 	// Досрочный отзыв: CRL подписан вендором и адресован этой лицензии.
 	// Действует ТОЛЬКО на подписки — perpetual технически не отзывается
 	// (report §3.5, README): совпадающий lic_id игнорируем с предупреждением.
-	if lic.Plan == PlanSubscription && crl != "" {
+	// Демо: полный функционал до expires_at (grace нет — демо истекает
+	// жёстко); отзывается CRL наравне с подпиской.
+	if lic.Plan == PlanDemo {
+		meta.Plan = PlanDemo
+		if lic.ExpiresAt != nil && now.Before(*lic.ExpiresAt) {
+			meta.Mode = ModeTrial
+			meta.TrialDaysLeft = daysLeft(now, *lic.ExpiresAt)
+			return meta
+		}
+		meta.Mode = ModeFree
+		meta.UserLimit = FreeUserLimit
+		meta.Expired = true
+		return meta
+	}
+
+	if (lic.Plan == PlanSubscription || lic.Plan == PlanDemo) && crl != "" {
 		if rev, err := ParseRevocation(crl); err == nil && rev.LicID == lic.LicID {
 			return Status{
 				Mode: ModeFree, UserLimit: FreeUserLimit, Revoked: true,
@@ -188,52 +195,9 @@ func CheckBuildAllowed(dateStr string, st Status) error {
 
 // ---- персистентность (settings.license.*) ----
 
-// Init вызывается на старте сервера: без лицензии, без отмеченного старта
-// демо И без отметки «демо израсходовано» (license.trial_used — её ставит
-// Upload лицензии, не удаляет никто) — персистит trial_started. Поэтому
-// цикл «загрузка лицензии → удаление → рестарт» не воскрешает демо:
-// сервер возвращается в free, оставшиеся дни триала не восстанавливаются
-// (сброс — только с БД, report §3.2).
-func (m *Manager) Init(ctx context.Context) error {
-	blob, err := m.loadString(ctx, keyBlob)
-	if err != nil {
-		return err
-	}
-	if blob != "" {
-		return nil // лицензия есть — демо неактуально
-	}
-	started, err := m.loadTimeTolerant(ctx, keyTrial)
-	if err != nil {
-		return err
-	}
-	if started != nil {
-		return nil // уже отмечен
-	}
-	// Битое значение тоже «занимает» ключ: новое демо не стартуем и ничего
-	// не перезаписываем (предупреждение уже записал loadTimeTolerant).
-	if raw, err := m.loadString(ctx, keyTrial); err != nil {
-		return err
-	} else if raw != "" {
-		return nil
-	}
-	used, err := m.loadBool(ctx, keyTrialUsed)
-	if err != nil {
-		return err
-	}
-	if used {
-		return nil // демо уже израсходовано покупкой лицензии
-	}
-	now := m.now()
-	if err := m.saveTime(ctx, keyTrial, now); err != nil {
-		return err
-	}
-	slog.Info("license: старт демо-режима (30 дней, full-featured)", "until", now.Add(TrialDuration).Format(time.RFC3339))
-	return nil
-}
 
 // Effective загружает персистентное состояние и вычисляет статус. Битые
-// значения trial-ключей — предупреждение и трактовка как отсутствующих
-// (не авария сервера и не молчаливая перезапись; report §3.8).
+// значения — предупреждение и деградация (не авария сервера; §3.8).
 func (m *Manager) Effective(ctx context.Context) (Status, error) {
 	blob, err := m.loadString(ctx, keyBlob)
 	if err != nil {
@@ -243,29 +207,17 @@ func (m *Manager) Effective(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	trial, err := m.loadTimeTolerant(ctx, keyTrial)
-	if err != nil {
-		return Status{}, err
-	}
-	used, err := m.loadBool(ctx, keyTrialUsed)
-	if err != nil {
-		return Status{}, err
-	}
-	return computeStatus(m.now(), blob, crl, trial, used), nil
+	return computeStatus(m.now(), blob, crl), nil
 }
 
 // Upload проверяет и сохраняет лицензию. Отозванная (по текущему CRL)
-// подписка отклоняется — perpetual CRL-отзыву не подлежит (report §3.5).
-// Демо «израсходовано» покупкой: ставится неотзываемый маркер
-// license.trial_used (trial_started НЕ удаляется) — удаление лицензии
-// возвращает сервер в free, а не в демо; оставшиеся дни триала не
-// восстанавливаются.
+// подписка/демо отклоняется — perpetual CRL-отзыву не подлежит (§3.5).
 func (m *Manager) Upload(ctx context.Context, blob string) (Payload, error) {
 	lic, err := ParseLicense(blob)
 	if err != nil {
 		return lic, err
 	}
-	if lic.Plan == PlanSubscription {
+	if lic.Plan == PlanSubscription || lic.Plan == PlanDemo {
 		if crl, err := m.loadString(ctx, keyCRL); err == nil && crl != "" {
 			if rev, rerr := ParseRevocation(crl); rerr == nil && rev.LicID == lic.LicID {
 				return lic, ErrRevoked
@@ -274,15 +226,6 @@ func (m *Manager) Upload(ctx context.Context, blob string) (Payload, error) {
 	}
 	if err := m.saveString(ctx, keyBlob, blob); err != nil {
 		return lic, err
-	}
-	started, err := m.loadTimeTolerant(ctx, keyTrial)
-	if err != nil {
-		return lic, err
-	}
-	if started != nil {
-		if err := m.saveBool(ctx, keyTrialUsed, true); err != nil {
-			return lic, err
-		}
 	}
 	return lic, nil
 }

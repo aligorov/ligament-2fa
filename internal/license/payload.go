@@ -15,6 +15,7 @@ import (
 const (
 	PlanSubscription = "subscription" // X ₽/пользователь/год, expires_at ≤ 13 мес
 	PlanPerpetual    = "perpetual"    // бессрочная, обновления до maintenance_expires
+	PlanDemo         = "demo"         // демо-режим вендора: ≤ 30 дней, полный функционал
 )
 
 // Payload — содержимое лицензии. Подпись считается по каноническому JSON
