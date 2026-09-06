@@ -17,6 +17,7 @@ import (
 	"time"
 
 	ldap "github.com/go-ldap/ldap/v3"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
@@ -97,6 +98,12 @@ type ldapAuthResult struct {
 	dn, email, phone, displayName, role string
 }
 
+// ldapOpTimeout — безусловный потолок LDAP-операций (dial + сервисный
+// bind + поиски + пользовательский bind). Веб-вход передаёт r.Context()
+// без deadline — без потолка зависший каталог подвешивает goroutine
+// запроса. Переменная (а не константа) для подмены в тестах.
+var ldapOpTimeout = 30 * time.Second
+
 // Verify проверяет пароль bind-ом в каталоге и синхронизирует локальную
 // учётную запись (создание при первом входе, обновление атрибутов и роли).
 // Ошибки: store.ErrNotFound — пользователь не найден/не прошёл allow-list
@@ -109,6 +116,13 @@ func (v *LdapVerifier) Verify(ctx context.Context, username, password string) (*
 		// Бэкенд выключен — «пользователь не найден» (композит уйдёт в local).
 		return nil, store.ErrNotFound
 	}
+	// Безусловный потолок на весь обмен с каталогом (dial + bind + поиски +
+	// пользовательский bind): веб-вход передаёт r.Context() без deadline, и
+	// без потолка зависший каталог подвешивает goroutine запроса навсегда.
+	// Более ранний deadline родителя сохраняется — WithTimeout берёт
+	// минимум из двух границ.
+	ctx, cancel := context.WithTimeout(ctx, ldapOpTimeout)
+	defer cancel()
 	res, err := v.authenticate(ctx, t.LDAP, username, password)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -265,7 +279,39 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 	// Verify вернёт «фантома» с пустым ID); существующая — только при изменениях.
 	if create {
 		if err := v.st.UserCreate(ctx, u); err != nil {
-			return nil, fmt.Errorf("auth/ldap: авто-провижининг %q: %w", username, err)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+				return nil, fmt.Errorf("auth/ldap: авто-провижининг %q: %w", username, err)
+			}
+			// Гонка авто-провижининга: параллельный вход успел вставить строку
+			// между SELECT и INSERT (username UNIQUE). Перечитываем её и
+			// продолжаем как синк существующей записи — а не внутренней
+			// ошибкой, которая на входе отдаётся клиенту как 500.
+			raced, rerr := v.st.UserByUsername(ctx, username)
+			if rerr != nil {
+				return nil, fmt.Errorf("auth/ldap: авто-провижининг %q: повторное чтение: %w", username, rerr)
+			}
+			if raced.Source != store.SourceLDAP {
+				// Имя успел занять локальный пользователь — как в обычной ветке
+				// выше: двойной источник пароля запрещён.
+				slog.WarnContext(ctx, "auth/ldap: имя занято локальным пользователем, вход только по локальному паролю",
+					"username", username)
+				return nil, store.ErrNotFound
+			}
+			if !raced.Enabled {
+				return nil, ErrBadCredentials
+			}
+			u = raced
+			if u.Email != res.email || u.Phone != res.phone ||
+				u.DisplayName != res.displayName || u.Role != res.role {
+				u.Email, u.Phone, u.DisplayName, u.Role = res.email, res.phone, res.displayName, res.role
+				if err := v.st.UserUpdate(ctx, u); err != nil {
+					return nil, fmt.Errorf("auth/ldap: синхронизация %q: %w", username, err)
+				}
+			}
+			slog.InfoContext(ctx, "auth/ldap: гонка авто-провижининга разрешена синком существующей записи",
+				"username", username)
+			return u, nil
 		}
 		slog.InfoContext(ctx, "auth/ldap: пользователь создан авто-провижинингом",
 			"username", username, "role", u.Role)

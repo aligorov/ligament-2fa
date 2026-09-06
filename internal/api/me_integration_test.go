@@ -107,6 +107,39 @@ func TestMeTOTPFlow(t *testing.T) {
 	}
 }
 
+// TestMePasswordChangeLDAPBlocked (FIX-1): смена пароля LDAP-пользователя
+// блокируется СЕРВЕРОМ, а не только скрытой формой UI: пароль живёт в
+// каталоге, локальная замена записала бы непригодный хеш и отозвала
+// сессии → lockout. 400 ldap_managed, хеш не меняется, сессия жива.
+func TestMePasswordChangeLDAPBlocked(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	h, _ := newWebRouter(t, st, set, box, nil)
+	user := mkUser(t, ctx, st, "meldap", func(u *store.User) {
+		u.Source = store.SourceLDAP
+	})
+	hashBefore := user.PasswordHash
+	c := loginSession(t, h, user.Username)
+
+	rec := c.do(http.MethodPatch, "/api/v1/me/password",
+		map[string]string{"old": testPassword, "new": "new-ldap-pass-123"})
+	wantStatus(t, rec, http.StatusBadRequest)
+	if jsonBody(t, rec)["error"] != "ldap_managed" {
+		t.Fatalf("body = %s, want error=ldap_managed", rec.Body.String())
+	}
+
+	// Хеш не перезаписан «случайным непригодным», сессия не отозвана.
+	fresh, err := st.UserByUsername(ctx, user.Username)
+	if err != nil {
+		t.Fatalf("UserByUsername: %v", err)
+	}
+	if fresh.PasswordHash != hashBefore {
+		t.Fatal("password_hash изменён заблокированной сменой пароля")
+	}
+	rec = c.do(http.MethodGet, "/api/v1/me", nil)
+	wantStatus(t, rec, http.StatusOK)
+}
+
 // TestMeContacts: вход со вторым фактором TOTP, код подтверждения на старый
 // email (send-code), смена email с кодом; неверный код → 401; prefer PUT.
 func TestMeContacts(t *testing.T) {

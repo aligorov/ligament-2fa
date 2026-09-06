@@ -457,8 +457,16 @@ func (p *PagesAPI) handlePrefer(w http.ResponseWriter, r *http.Request) {
 
 // handlePassword — POST /me/password: смена пароля и отзыв всех сессий и
 // устройств (как PATCH /api/v1/me/password); после смены — выход на /login.
+// LDAP-пользователям операция запрещена сервером (форма в шаблоне скрыта,
+// но прямой POST должен упереться в страж — пароль меняется в каталоге).
 func (p *PagesAPI) handlePassword(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
+	if user.Source == store.SourceLDAP {
+		p.auditPage(r.Context(), user.Username, "password_change", clientIP(r), "fail",
+			map[string]any{"reason": "ldap_managed"})
+		redirectFlash(w, r, "/me", "Пароль LDAP-пользователя меняется в Active Directory.", false)
+		return
+	}
 	newPwd := r.PostFormValue("new_password")
 	if newPwd == "" || newPwd != r.PostFormValue("new_password2") {
 		redirectFlash(w, r, "/me", "Новые пароли не совпадают.", false)

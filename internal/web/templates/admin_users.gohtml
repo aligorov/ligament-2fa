@@ -115,7 +115,8 @@
       <option value="ldap"{{if and .Edit (eq .Edit.Source "ldap")}} selected{{end}}>ldap — каталог LDAP/AD</option>
     </select>
     <span class="help">ldap: пароль проверяется bind-ом в каталоге, при
-    первом входе учётка создаётся автоматически.</span>
+    первом входе учётка создаётся автоматически. При переводе LDAP→local
+    задайте новый пароль — прежний локальный хеш непригоден.</span>
   </label>
   <div class="field">
     <span class="field-label">Доступ</span>

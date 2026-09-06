@@ -686,6 +686,44 @@ func TestPagesAdminChallengesHidesWebauthnSession(t *testing.T) {
 	wantBody(t, rec, "pending")
 }
 
+// TestPagesPasswordChangeLDAPBlocked (FIX-1): HTML-смена пароля LDAP-юзера
+// блокируется сервером (форма в шаблоне скрыта, но прямой POST обязан
+// упереться в страж): флеш «меняется в Active Directory», хеш не меняется,
+// сессия не отзывается.
+func TestPagesPasswordChangeLDAPBlocked(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	user := mkUser(t, ctx, st, "htmldap", func(u *store.User) {
+		u.Source = store.SourceLDAP
+	})
+	hashBefore := user.PasswordHash
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.login(t, user.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	rec = c.postForm("/me/password", url.Values{
+		"old_password":  {testPassword},
+		"new_password":  {"new-ldap-pass-123"},
+		"new_password2": {"new-ldap-pass-123"},
+	}, true)
+	wantStatus(t, rec, http.StatusFound)
+	page := c.get(rec.Header().Get("Location"))
+	wantStatus(t, page, http.StatusOK)
+	wantBody(t, page, "Пароль LDAP-пользователя меняется в Active Directory")
+
+	fresh, err := st.UserByUsername(ctx, user.Username)
+	if err != nil {
+		t.Fatalf("UserByUsername: %v", err)
+	}
+	if fresh.PasswordHash != hashBefore {
+		t.Fatal("password_hash изменён заблокированной сменой пароля")
+	}
+	// Сессия жива: /me отвечает страницей, а не редиректом на /login.
+	rec = c.get("/me")
+	wantStatus(t, rec, http.StatusOK)
+}
+
 // TestPagesLogout: POST /logout с CSRF удаляет сессию (GET /me → /login).
 func TestPagesLogout(t *testing.T) {
 	st, set, box := setup(t)

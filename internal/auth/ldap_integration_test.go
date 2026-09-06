@@ -434,3 +434,150 @@ func TestLdapVerifyDisabledBackend(t *testing.T) {
 		t.Fatal("выключенный бэкенд не должен открывать соединение")
 	}
 }
+
+// blockingLdapConn — соединение «зависшего каталога»: каждая операция
+// висит до отмены контекста соединения и возвращает его ошибку.
+type blockingLdapConn struct{ ctx context.Context }
+
+func (b blockingLdapConn) Bind(string, string) error {
+	<-b.ctx.Done()
+	return b.ctx.Err()
+}
+
+func (b blockingLdapConn) Search(*ldap.SearchRequest) (*ldap.SearchResult, error) {
+	<-b.ctx.Done()
+	return nil, b.ctx.Err()
+}
+
+func (b blockingLdapConn) Close() error { return nil }
+
+// TestLdapVerifyAppliesDefaultTimeout (FIX-2): веб-вход передаёт
+// r.Context() БЕЗ deadline — Verify обязан навесить собственный потолок
+// на обмен с каталогом (dial + bind + поиски), иначе зависший каталог
+// подвешивает goroutine запроса навсегда. Более ранний deadline родителя
+// сохраняется (context.WithTimeout берёт минимум из двух).
+func TestLdapVerifyAppliesDefaultTimeout(t *testing.T) {
+	st, set, _ := setup(t)
+	ctx := t.Context()
+	enableLDAP(t, ctx, set, nil)
+
+	saved := ldapOpTimeout
+	ldapOpTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { ldapOpTimeout = saved })
+
+	var dialed context.Context
+	v := &LdapVerifier{st: st, set: set, dial: func(ctx context.Context, _ string, _ bool) (LdapConn, error) {
+		dialed = ctx
+		return blockingLdapConn{ctx: ctx}, nil
+	}}
+	verifyAsync := func(parent context.Context) error {
+		done := make(chan error, 1)
+		go func() {
+			_, err := v.Verify(parent, "ivanov", "pw")
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(3 * time.Second):
+			t.Fatal("Verify не вернулся — потолок LDAP-операций не применяется")
+			return nil
+		}
+	}
+
+	// Родитель без deadline: потолок навешивает сам Verify.
+	start := time.Now()
+	if err := verifyAsync(context.Background()); err == nil {
+		t.Fatal("ожидалась ошибка (каталог «завис» до отмены)")
+	}
+	if elapsed := time.Since(start); elapsed > ldapOpTimeout+2*time.Second {
+		t.Fatalf("Verify висел %v — потолок не применён", elapsed)
+	}
+	dl, ok := dialed.Deadline()
+	if !ok {
+		t.Fatal("dial получил ctx без deadline — таймаут не навешан")
+	}
+	// Deadline не дальше потолка (отрицательный остаток — уже истёк, это
+	// ожидаемо: Verify вернулся именно из-за него).
+	if d := time.Until(dl); d > ldapOpTimeout {
+		t.Fatalf("deadline dial-а = %v дальше потолка %v", d, ldapOpTimeout)
+	}
+
+	// Более короткий deadline родителя не удлиняется потолком.
+	parent, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	if err := verifyAsync(parent); err == nil {
+		t.Fatal("ожидалась ошибка по короткому родительскому deadline")
+	}
+	pdl, ok := dialed.Deadline()
+	if !ok {
+		t.Fatal("второй dial без deadline")
+	}
+	if d := time.Until(pdl); d > 60*time.Millisecond {
+		t.Fatalf("короткий родительский deadline перекрыт потолком: %v", d)
+	}
+}
+
+// TestLdapSyncUserUniqueViolationRace (FIX-3): гонка авто-провижининга —
+// параллельный вход вставил строку между SELECT и INSERT syncUser
+// (unique-нарушение 23505): вместо внутренней ошибки (500 на входе)
+// перечитываем строку и продолжаем как синк существующей записи.
+func TestLdapSyncUserUniqueViolationRace(t *testing.T) {
+	st, set, _ := setup(t)
+	ctx := t.Context()
+	v := &LdapVerifier{st: st, set: set, dial: newFakeDirectory().dial()}
+
+	// «Параллельный вход»: строка вставлена в НЕЗАВЕРШЕННОЙ транзакции —
+	// SELECT syncUser её ещё не видит (ErrNotFound → ветка create), а
+	// INSERT подвисает на unique-конфликте до commit и получает 23505.
+	tx, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(ctx, `INSERT INTO users (id, username, password_hash, role, enabled, source)
+		VALUES (gen_random_uuid(), 'raceuser', 'argon2-race-hash', 'user', true, 'ldap')`); err != nil {
+		t.Fatalf("сид-вставка «параллельного входа»: %v", err)
+	}
+
+	res := &ldapAuthResult{email: "race@example.com", displayName: "Гонщиков"}
+	type outcome struct {
+		u   *store.User
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		u, err := v.syncUser(ctx, "raceuser", res)
+		done <- outcome{u, err}
+	}()
+
+	time.Sleep(200 * time.Millisecond) // syncUser доходит до INSERT и висит на конфликте
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("гонка 23505: %v (ожидалось продолжение как синк без ошибки)", got.err)
+		}
+		if got.u.Username != "raceuser" || got.u.Source != store.SourceLDAP {
+			t.Fatalf("пользователь после гонки: %+v", got.u)
+		}
+		// «Чужая» строка до-синхронизирована атрибутами каталога; строка одна.
+		fresh, err := st.UserByUsername(ctx, "raceuser")
+		if err != nil {
+			t.Fatalf("UserByUsername: %v", err)
+		}
+		if fresh.Email != "race@example.com" || fresh.DisplayName != "Гонщиков" {
+			t.Fatalf("атрибуты после гонки не досинхронизированы: %+v", fresh)
+		}
+		var n int
+		if err := st.Pool().QueryRow(ctx,
+			`SELECT count(*) FROM users WHERE username = 'raceuser'`).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("строк raceuser = %d (err %v), want 1", n, err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("syncUser не вернулся после unique-конфликта")
+	}
+}
