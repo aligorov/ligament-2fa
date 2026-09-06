@@ -22,6 +22,7 @@ import (
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
+	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/radiusserver"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
@@ -33,6 +34,12 @@ import (
 
 // telegramRestartBackoff — пауза перед перезапуском упавшего бота.
 const telegramRestartBackoff = 30 * time.Second
+
+// BuildDate — дата сборки бинарника (YYYY-MM-DD), вшивается
+// -ldflags "-X main.BuildDate=$(date +%F)" (Makefile/Dockerfile). Гейт
+// обновлений: licensed-сборка новее maintenance_expires лицензии не
+// стартует (report §3.4); пустая — сборка без релизной даты, гейт выключен.
+var BuildDate string
 
 func main() {
 	dsnFlag := flag.String("dsn", "", "PostgreSQL DSN (приоритет над env TWOFA_DB_DSN)")
@@ -80,6 +87,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Лицензирование: первый старт отмечает начало 30-дневного демо
+	// (персист в БД, сбрасывается только с ней; загрузка лицензии ставит
+	// неотзываемый license.trial_used — после удаления лицензии демо не
+	// воскрешается); гейт обновлений не пускает
+	// сборку новее maintenance_expires лицензии (perpetual-версионный
+	// пиннинг, report §3.4). free/trial не ограничены.
+	lic := license.NewManager(st)
+	if err := lic.Init(ctx); err != nil {
+		slog.Error("main: инициализация лицензии", "error", err)
+		os.Exit(1)
+	}
+	licStatus, err := lic.Effective(ctx)
+	if err != nil {
+		slog.Error("main: чтение состояния лицензии", "error", err)
+		os.Exit(1)
+	}
+	if err := license.CheckBuildAllowed(BuildDate, licStatus); err != nil {
+		slog.Error("main: " + err.Error())
+		os.Exit(1)
+	}
+	slog.Info("main: лицензия", "mode", string(licStatus.Mode),
+		"user_limit", licStatus.UserLimit, "build_date", BuildDate)
+
 	// Каналы доставки кодов и Telegram-бот (он же PushNotifier).
 	// botToken — токен, из которого собран текущий бот (для повторного
 	// использования при неизменном токене после SIGHUP).
@@ -110,7 +140,7 @@ func main() {
 		os.Exit(1)
 	}
 	rt := api.BuildRouter(api.Deps{
-		Core: core, WA: wa, St: st, Box: box, PV: pv, M: m, Rend: rend,
+		Core: core, WA: wa, St: st, Box: box, PV: pv, M: m, Rend: rend, Lic: lic,
 	})
 	defer rt.Stop()
 

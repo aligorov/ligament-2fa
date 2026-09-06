@@ -33,6 +33,7 @@
       <a class="nav-link{{if eq .Nav "admin-audit"}} active{{end}}" href="/admin/audit">Аудит</a>
       <a class="nav-link{{if eq .Nav "admin-challenges"}} active{{end}}" href="/admin/challenges">Активные challenge</a>
       <a class="nav-link{{if eq .Nav "admin-settings"}} active{{end}}" href="/admin/settings">Настройки</a>
+      <a class="nav-link{{if eq .Nav "admin-license"}} active{{end}}" href="/admin/license">Лицензия</a>
       <a class="nav-link{{if eq .Nav "admin-api"}} active{{end}}" href="/api/docs">API</a>
       {{end}}
     </nav>
@@ -48,6 +49,7 @@
     <main class="content">
       {{with .Flash}}<div class="flash ok"><span class="flash-icon">✅</span>{{.}}</div>{{end}}
       {{with .FlashErr}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
+      {{range .LicenseWarnings}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
       {{template "content" .}}
     </main>
     <footer class="app-footer">Ligament</footer>

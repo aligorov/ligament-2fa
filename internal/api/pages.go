@@ -28,6 +28,7 @@ import (
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
+	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -103,6 +104,8 @@ func (p *PagesAPI) Register(r chi.Router) {
 	admin.Get("/admin/challenges", p.handleAdminChallenges)
 	admin.Get("/admin/settings", p.handleAdminSettings)
 	admin.Post("/admin/settings", p.handleAdminSettingsPost)
+	admin.Get("/admin/license", p.handleAdminLicense)
+	admin.Post("/admin/license", p.handleAdminLicensePost)
 }
 
 // NotFound — HTML-404 (монтируется в корневой роутер BuildRouter).
@@ -189,7 +192,65 @@ func (p *PagesAPI) baseData(r *http.Request, title, nav string) web.BaseData {
 	if csrf, ok := r.Context().Value(ctxKeyCSRF).(string); ok {
 		b.CSRF = csrf
 	}
+	b.LicenseWarnings = p.licenseWarnings(r)
 	return b
+}
+
+// licenseWarnings — баннер лицензии для АДМИНА на каждой странице
+// (report §3.3): достижение/превышение лимита, демо ≤7 дн., подписка
+// ≤14 дн. (включая grace), окно обновлений ≤30 дн., отзыв/истечение.
+func (p *PagesAPI) licenseWarnings(r *http.Request) []string {
+	u, ok := userFrom(r.Context())
+	if !ok || u.Role != "admin" || p.admin == nil || p.admin.licEmpty() {
+		return nil
+	}
+	st, err := p.admin.licenseStatus(r)
+	if err != nil {
+		slog.Warn("pages: статус лицензии для баннера", "error", err)
+		return nil
+	}
+	var msgs []string
+	if st.Revoked {
+		msgs = append(msgs, "Лицензия отозвана — сервер работает в бесплатном режиме (5 пользователей).")
+	}
+	if st.Expired {
+		msgs = append(msgs, "Подписка истекла — сервер работает в бесплатном режиме (5 пользователей).")
+	}
+	// Превышение лимита — в ЛЮБОМ режиме (free после удаления лицензии или
+	// истечения демо с >5 активными; licensed с урезанным лимитом).
+	if st.UserLimit > 0 && st.UsersActive > st.UserLimit {
+		if st.Mode == license.ModeFree {
+			msgs = append(msgs, fmt.Sprintf(
+				"Превышен лимит бесплатного режима (%d): создание пользователей заблокировано.",
+				st.UserLimit))
+		} else {
+			msgs = append(msgs, fmt.Sprintf(
+				"Превышен лимит лицензии (%d): создание пользователей заблокировано.",
+				st.UserLimit))
+		}
+	} else if st.Mode == license.ModeLicensed && st.UserLimit > 0 && st.AtLimit {
+		msgs = append(msgs, fmt.Sprintf(
+			"Достигнут лимит лицензии: %d/%d активных пользователей — обновите лицензию или отключите других.",
+			st.UsersActive, st.UserLimit))
+	}
+	if st.Mode == license.ModeTrial && st.TrialDaysLeft <= 7 {
+		msgs = append(msgs, fmt.Sprintf("Демо-режим: осталось %d дн. — загрузите лицензию.", st.TrialDaysLeft))
+	}
+	if st.Mode == license.ModeLicensed && st.Plan == license.PlanSubscription {
+		switch {
+		case st.Grace:
+			msgs = append(msgs, "Подписка истекла, действует grace-окно (5 дн.) — продлите лицензию.")
+		case st.DaysLeft <= 14:
+			msgs = append(msgs, fmt.Sprintf("Срок подписки истекает через %d дн. — продлите лицензию.", st.DaysLeft))
+		}
+	}
+	if st.Mode == license.ModeLicensed && !st.UpdatesUntil.IsZero() &&
+		time.Until(st.UpdatesUntil) <= 30*24*time.Hour {
+		msgs = append(msgs, fmt.Sprintf(
+			"Обновления доступны до %s — продлите maintenance, чтобы ставить новые версии.",
+			st.UpdatesUntil.Format("02.01.2006")))
+	}
+	return msgs
 }
 
 // render исполняет страницу шаблонизатором; ошибка рендера логируется
@@ -971,6 +1032,8 @@ func radiusReplyFromForm(raw string) (map[string]string, bool) {
 }
 
 // handleAdminUserCreate — POST /admin/users (форма «Новый пользователь»).
+// Создание активного пользователя сверх лимита лицензии — флеш-ошибка
+// (параллель 403 JSON API; report §3.3).
 func (p *PagesAPI) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
 	u := &store.User{}
 	pwd := p.userFormFields(r, u)
@@ -979,6 +1042,17 @@ func (p *PagesAPI) handleAdminUserCreate(w http.ResponseWriter, r *http.Request)
 	if u.Username == "" || (pwd == "" && u.Source != store.SourceLDAP) {
 		redirectFlash(w, r, "/admin/users", "Имя пользователя и пароль обязательны.", false)
 		return
+	}
+	if u.Enabled {
+		if exceeded, st := p.admin.licenseExceeded(r); exceeded {
+			p.admin.audit(r.Context(), "license_limit", map[string]any{
+				"via": "html", "limit": st.UserLimit, "active_users": st.UsersActive,
+			})
+			redirectFlash(w, r, "/admin/users", fmt.Sprintf(
+				"Превышен лимит лицензии %d — обновите лицензию или отключите других пользователей.",
+				st.UserLimit), false)
+			return
+		}
 	}
 	reply, ok := radiusReplyFromForm(r.PostFormValue("radius_reply"))
 	if !ok {
@@ -1062,10 +1136,24 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 
 	switch r.PostFormValue("do") {
 	case "save":
+		wasEnabled := u.Enabled // до перезаписи формой (userFormFields)
 		pwd := p.userFormFields(r, u)
 		if u.Username == "" {
 			redirectFlash(w, r, back, "Имя пользователя не может быть пустым.", false)
 			return
+		}
+		// Включение ранее отключённого пользователя = +1 активный: лимит
+		// лицензии действует и здесь (выключение не ограничивается).
+		if !wasEnabled {
+			if exceeded, st := p.admin.licenseExceeded(r); exceeded {
+				p.admin.audit(ctx, "license_limit", map[string]any{
+					"via": "html", "limit": st.UserLimit, "active_users": st.UsersActive,
+				})
+				redirectFlash(w, r, back, fmt.Sprintf(
+					"Превышен лимит лицензии %d — обновите лицензию или отключите других пользователей.",
+					st.UserLimit), false)
+				return
+			}
 		}
 		if pwd != "" {
 			u.PasswordHash = secrets.HashPassword(pwd)
@@ -1537,4 +1625,101 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 	}
 	p.admin.audit(ctx, "settings_update", map[string]any{"keys": changed, "via": "html"})
 	redirectFlash(w, r, "/admin/settings", "Настройки сохранены.", true)
+}
+
+// ---- админ: лицензия ----
+
+// handleAdminLicense — GET /admin/license: статус-карточка (режим, клиент,
+// lic_id, X/Y пользователей, демо/подписка/обновления до) + формы загрузки
+// лицензии и CRL-отзыва (report §3.7).
+func (p *PagesAPI) handleAdminLicense(w http.ResponseWriter, r *http.Request) {
+	d := web.AdminLicenseData{BaseData: p.baseData(r, "Лицензия", "admin-license")}
+	st, err := p.admin.licenseStatus(r)
+	if err != nil {
+		flash500(w, r, "/admin/license", err)
+		return
+	}
+	d.Status = st
+	if st.UserLimit <= 0 {
+		d.LimitText = "не ограничено"
+	} else {
+		d.LimitText = fmt.Sprintf("%d/%d", st.UsersActive, st.UserLimit)
+	}
+	if !st.UpdatesUntil.IsZero() {
+		d.UpdatesUntil = st.UpdatesUntil.Format("02.01.2006")
+	}
+	d.ModeText = map[license.Mode]string{
+		license.ModeFree:     "Free — без лицензии",
+		license.ModeTrial:    "Демо (30 дней, полный функционал)",
+		license.ModeLicensed: "Лицензия",
+	}[st.Mode]
+	p.render(w, http.StatusOK, "admin_license", d)
+}
+
+// handleAdminLicensePost — POST /admin/license: do=upload|crl|remove.
+// Ошибки проверки блоба — флешем на ту же страницу.
+func (p *PagesAPI) handleAdminLicensePost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		redirectFlash(w, r, "/admin/license", "Некорректная форма.", false)
+		return
+	}
+	ctx := r.Context()
+	switch r.PostFormValue("do") {
+	case "upload":
+		blob := strings.TrimSpace(r.PostFormValue("blob"))
+		if blob == "" {
+			redirectFlash(w, r, "/admin/license", "Вставьте license-файл (содержимое -----BEGIN LIGAMENT LICENSE-----).", false)
+			return
+		}
+		lic, err := p.admin.lic.Upload(ctx, blob)
+		if err != nil {
+			redirectFlash(w, r, "/admin/license", licenseErrText(err), false)
+			return
+		}
+		p.admin.audit(ctx, "license_upload", map[string]any{
+			"via": "html", "lic_id": lic.LicID, "plan": lic.Plan, "customer": lic.Customer,
+		})
+		redirectFlash(w, r, "/admin/license",
+			"Лицензия загружена: "+lic.Customer+" ("+lic.Plan+").", true)
+
+	case "crl":
+		blob := strings.TrimSpace(r.PostFormValue("crl"))
+		if blob == "" {
+			redirectFlash(w, r, "/admin/license", "Вставьте CRL-файл (-----BEGIN LIGAMENT REVOCATION-----).", false)
+			return
+		}
+		rev, err := p.admin.lic.UploadCRL(ctx, blob)
+		if err != nil {
+			redirectFlash(w, r, "/admin/license", licenseErrText(err), false)
+			return
+		}
+		p.admin.audit(ctx, "license_crl_upload", map[string]any{"via": "html", "lic_id": rev.LicID})
+		redirectFlash(w, r, "/admin/license", "CRL-отзыв принят: "+rev.LicID+".", true)
+
+	case "remove":
+		if err := p.admin.lic.Remove(ctx); err != nil {
+			flash500(w, r, "/admin/license", err)
+			return
+		}
+		p.admin.audit(ctx, "license_remove", map[string]any{"via": "html"})
+		redirectFlash(w, r, "/admin/license", "Лицензия удалена — сервер работает в бесплатном режиме (5 пользователей).", true)
+
+	default:
+		redirectFlash(w, r, "/admin/license", "Неизвестное действие.", false)
+	}
+}
+
+// licenseErrText — русские тексты ошибок загрузки блоба.
+func licenseErrText(err error) string {
+	switch {
+	case errors.Is(err, license.ErrMalformed):
+		return "Некорректный формат license-файла."
+	case errors.Is(err, license.ErrBadSignature), errors.Is(err, license.ErrUnknownKid):
+		return "Подпись лицензии не прошла проверку (неверный файл или ключ)."
+	case errors.Is(err, license.ErrRevoked):
+		return "Лицензия отозвана (CRL) — загрузите новую."
+	default:
+		slog.Error("pages: загрузка лицензии", "error", err)
+		return "Внутренняя ошибка, попробуйте позже."
+	}
 }

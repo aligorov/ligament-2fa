@@ -497,7 +497,7 @@ func TestAdminMergedValueDBErrors(t *testing.T) {
 	st, set, box := setup(t)
 	_ = box
 	ctx := context.Background()
-	a := NewAdminAPI(st, set)
+	a := NewAdminAPI(st, set, nil)
 
 	// ErrNoRows: строка ключа удалена — текущего значения нет, входное
 	// возвращается без мержа.
@@ -524,7 +524,7 @@ func TestAdminMergedValueDBErrors(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	dead.Close()
-	if _, err := (NewAdminAPI(dead, set)).mergedValue(ctx, "totp", json.RawMessage(`{}`)); err == nil {
+	if _, err := (NewAdminAPI(dead, set, nil)).mergedValue(ctx, "totp", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("mergedValue проглотил ошибку БД (закрытый пул)")
 	}
 }

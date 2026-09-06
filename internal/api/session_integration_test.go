@@ -41,7 +41,7 @@ func newWebRouter(t *testing.T, st *store.Store, set *settings.M, box *secrets.B
 	sess := NewSessionAPI(core, st, pv, set)
 	t.Cleanup(sess.Stop)
 	me := NewMeAPI(core, wa, st, box, pv, set)
-	admin := NewAdminAPI(st, set)
+	admin := NewAdminAPI(st, set, nil)
 	r := chi.NewRouter()
 	pub.Register(r)
 	sess.Register(r)

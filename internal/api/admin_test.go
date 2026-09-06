@@ -138,3 +138,46 @@ func TestToAdminUserNoSecrets(t *testing.T) {
 		t.Fatalf("prefer_channels = %v", out.PreferChannels)
 	}
 }
+
+// TestLicenseRoutesNilManager: лицензионные роуты регистрируются всегда;
+// nil-менеджер (частичная композиция тестов) не паникует — GET даёт
+// минимальный free-статус, мутации отвечают 503 licensing_disabled.
+func TestLicenseRoutesNilManager(t *testing.T) {
+	a := NewAdminAPI(nil, nil, nil)
+
+	rec := httptest.NewRecorder()
+	a.handleLicenseGet(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET: код = %d, хочу 200", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("GET: разбор тела %s: %v", rec.Body.String(), err)
+	}
+	if body["mode"] != "free" || body["user_limit"] != float64(5) {
+		t.Fatalf("GET nil-менеджер: %v, хочу mode=free user_limit=5", body)
+	}
+
+	for _, tc := range []struct {
+		name string
+		call func(http.ResponseWriter, *http.Request)
+		body string
+	}{
+		{"PUT", a.handleLicensePut, `{"blob":"-----BEGIN LIGAMENT LICENSE-----"}`},
+		{"DELETE", a.handleLicenseDelete, ""},
+		{"CRL", a.handleLicenseCRLPut, `{"blob":"-----BEGIN LIGAMENT REVOCATION-----"}`},
+	} {
+		var r *http.Request
+		if tc.body == "" {
+			r = httptest.NewRequest(http.MethodPut, "/", nil)
+		} else {
+			r = httptest.NewRequest(http.MethodPut, "/", strings.NewReader(tc.body))
+			r.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		tc.call(rec, r) // не должно паниковать
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s nil-менеджер: код = %d (%s), хочу 503", tc.name, rec.Code, rec.Body.String())
+		}
+	}
+}

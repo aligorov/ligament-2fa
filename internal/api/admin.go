@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -44,13 +45,14 @@ var regenerableKeys = map[string]struct{}{
 
 // AdminAPI — зависимости и маршруты /api/v1/admin/*.
 type AdminAPI struct {
-	st *store.Store
-	m  *settings.M
+	st  *store.Store
+	m   *settings.M
+	lic *license.Manager // nil — лицензирование не смонтировано (тесты)
 }
 
 // NewAdminAPI собирает админ API.
-func NewAdminAPI(st *store.Store, m *settings.M) *AdminAPI {
-	return &AdminAPI{st: st, m: m}
+func NewAdminAPI(st *store.Store, m *settings.M, lic *license.Manager) *AdminAPI {
+	return &AdminAPI{st: st, m: m, lic: lic}
 }
 
 // Register монтирует админ маршруты в chi-роутер (все под RequireAdminToken).
@@ -71,6 +73,7 @@ func (a *AdminAPI) Register(r chi.Router) {
 		r.Get("/settings", a.handleSettingsGet)
 		r.Put("/settings", a.handleSettingsPut)
 		r.Post("/settings/regenerate", a.handleSettingsRegenerate)
+		a.registerLicenseRoutes(r)
 	})
 }
 
@@ -205,7 +208,9 @@ type adminUserCreateReq struct {
 }
 
 // handleUserCreate — POST /api/v1/admin/users {username,password,...}.
-// Пароль хешируется argon2id; занятое имя → 409.
+// Пароль хешируется argon2id; занятое имя → 409. Создание сверх лимита
+// лицензии (активные пользователи) → 403 license_limit (report §3.3:
+// блокируется только СОЗДАНИЕ, вход существующим — никогда).
 func (a *AdminAPI) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	var req adminUserCreateReq
 	if !decodeJSON(w, r, &req) {
@@ -213,6 +218,10 @@ func (a *AdminAPI) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Username == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if exceeded, st := a.licenseExceeded(r); exceeded {
+		a.denyLicenseLimit(w, r, st)
 		return
 	}
 	u := &store.User{
@@ -272,7 +281,9 @@ type adminUserPatchReq struct {
 }
 
 // handleUserPatch — PATCH /api/v1/admin/users/{id}: точечная смена полей
-// (nil-поля не трогаются); смена пароля хешируется argon2id.
+// (nil-поля не трогаются); смена пароля хешируется argon2id. Включение
+// (enabled=false→true) сверх лимита лицензии → 403 license_limit — это
+// «создание» активного пользователя; выключение не ограничивается.
 func (a *AdminAPI) handleUserPatch(w http.ResponseWriter, r *http.Request) {
 	id := userByIDParam(w, r)
 	if id == uuid.Nil {
@@ -285,6 +296,12 @@ func (a *AdminAPI) handleUserPatch(w http.ResponseWriter, r *http.Request) {
 	u := a.loadUser(w, r, id)
 	if u == nil {
 		return
+	}
+	if req.Enabled != nil && *req.Enabled && !u.Enabled {
+		if exceeded, st := a.licenseExceeded(r); exceeded {
+			a.denyLicenseLimit(w, r, st)
+			return
+		}
 	}
 	if req.Username != nil {
 		if *req.Username == "" {
