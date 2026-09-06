@@ -515,7 +515,10 @@ func TestSendDeliversCode(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("sent = %d, want 1", len(sent))
 	}
-	if sent[0]["chat_id"] != float64(42) || sent[0]["text"] != "Код подтверждения twofa: 654321" {
+	// Текст — дефолтный шаблон messages.telegram_code_text (тест-бот без
+	// менеджера настроек → fallback-константа), код подставлен.
+	wantText := "🔑 Код подтверждения: 654321\nДействителен ?. Никому не сообщайте код."
+	if sent[0]["chat_id"] != float64(42) || sent[0]["text"] != wantText {
 		t.Errorf("sendMessage = %v", sent[0])
 	}
 	if b.Name() != channel.Telegram {

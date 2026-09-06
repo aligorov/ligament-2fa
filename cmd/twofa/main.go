@@ -347,7 +347,8 @@ func rebuildSenders(st *store.Store, m *settings.M, existing *telegram.Bot, exis
 
 	if t.SMTP.Host != "" {
 		senders[channel.Email] = delivery.NewEmail(t.SMTP.Host, t.SMTP.Port, t.SMTP.StartTLS,
-			t.SMTP.User, t.SMTP.Password, t.SMTP.From, t.SMTP.Subject, t.SMTP.Timeout)
+			t.SMTP.User, t.SMTP.Password, t.SMTP.From, t.SMTP.Subject,
+			t.Messages.EmailBody, t.MessageVars(), t.SMTP.Timeout)
 	}
 	if gw, err := t.SMSGateway(); err != nil {
 		slog.Warn("main: sms.gateway не разобран — SMS выключен", "error", err)
@@ -365,6 +366,8 @@ func rebuildSenders(st *store.Store, m *settings.M, existing *telegram.Bot, exis
 				JSONPath:     gw.Success.JSONPath,
 				Equals:       gw.Success.Equals,
 			},
+			TextTpl: t.Messages.SMSText,
+			Vars:    t.MessageVars(),
 		}, nil)
 	}
 	switch {

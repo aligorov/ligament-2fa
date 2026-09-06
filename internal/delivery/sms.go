@@ -31,6 +31,13 @@ type GatewayConfig struct {
 	ContentType string            `json:"content_type"`
 	Headers     map[string]string `json:"headers"`
 	Success     SuccessRule       `json:"success"`
+	// TextTpl — шаблон текста SMS (messages.sms_text; пусто =
+	// BodyTemplate). Не сериализуется в JSON настроек шлюза (json:"-"):
+	// текст живёт в отдельном ключе настроек и прокидывается сендеру
+	// при сборке в main.
+	TextTpl string `json:"-"`
+	// Vars — общие переменные шаблона ({ttl}, {domain}).
+	Vars map[string]string `json:"-"`
 }
 
 // SuccessRule проверяет ответ шлюза: должны выполниться ВСЕ непустые
@@ -65,12 +72,13 @@ func (s *SMSSender) Name() channel.Channel { return channel.SMS }
 
 // Send выполняет запрос к шлюзу и проверяет ответ по SuccessRule.
 // Плейсхолдеры {phone} и {text} (номер и текст сообщения, построенный
-// из BodyTemplate) подставляются в URL через url.QueryEscape, в значения
-// заголовков — как есть, а в тело — как есть ЛИБО, при ContentType
-// application/json, с экранированием JSON-строки (jsonEscape): кавычки,
-// обратные слэши и переводы строк не ломают JSON-тело (prostor и т.п.).
+// рендером шаблона messages.sms_text) подставляются в URL через
+// url.QueryEscape, в значения заголовков — как есть, а в тело — как есть
+// ЛИБО, при ContentType application/json, с экранированием JSON-строки
+// (jsonEscape): кавычки, обратные слэши и переводы строк не ломают
+// JSON-тело (prostor и т.п.).
 func (s *SMSSender) Send(ctx context.Context, to, code string) error {
-	text := strings.ReplaceAll(BodyTemplate, "{code}", code)
+	text := RenderTemplate(s.gw.TextTpl, code, s.gw.Vars)
 	method := s.gw.Method
 	if method == "" {
 		method = http.MethodGet

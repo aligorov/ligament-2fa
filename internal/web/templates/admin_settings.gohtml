@@ -107,6 +107,49 @@
 
 <section class="card">
   <div class="card-head">
+    <h2><span class="card-icon">🌐</span>Домен и шаблоны сообщений <span class="badge warn">SIGHUP</span></h2>
+    <p>Публичный адрес сервера и тексты сообщений с кодами; применяются после SIGHUP или перезапуска.</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="messages">
+    <label class="field">
+      <span class="field-label">Домен сервера (базовый URL)</span>
+      <input class="input mono" type="text" name="server.domain" placeholder="https://2fa.example.com" value="{{.S.Server.Domain}}">
+      <span class="help">Подставляется в шаблоны как {domain} (без слэша на конце).</span>
+    </label>
+    <label class="field">
+      <span class="field-label">Тело письма (email)</span>
+      <textarea class="textarea" name="messages.email_body" rows="5">{{.S.Messages.EmailBody}}</textarea>
+    </label>
+    <label class="field">
+      <span class="field-label">Текст SMS</span>
+      <input class="input" type="text" name="messages.sms_text" value="{{.S.Messages.SMSText}}">
+      <span class="help">Одна строка: некоторые шлюзы режут длинные SMS и переводы строк.</span>
+    </label>
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Telegram: сообщение с кодом</span>
+        <textarea class="textarea" name="messages.telegram_code_text" rows="4">{{.S.Messages.TelegramCode}}</textarea>
+      </label>
+      <label class="field">
+        <span class="field-label">Telegram: push-подтверждение входа</span>
+        <textarea class="textarea" name="messages.telegram_push_text" rows="4">{{.S.Messages.TelegramPush}}</textarea>
+      </label>
+    </div>
+    <p class="help">Плейсхолдеры: <span class="mono">{code}</span> — код,
+    <span class="mono">{ttl}</span> — срок жизни кода,
+    <span class="mono">{domain}</span> — домен сервера;
+    в push-шаблоне дополнительно <span class="mono">{username}</span>,
+    <span class="mono">{ip}</span>, <span class="mono">{ua}</span>,
+    <span class="mono">{time}</span>. Тема письма — в секции SMTP.</p>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
     <h2><span class="card-icon">✉️</span>SMTP <span class="badge warn">SIGHUP</span></h2>
     <p>Отправка кодов по email; применяется после SIGHUP или перезапуска.</p>
   </div>

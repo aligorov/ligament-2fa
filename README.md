@@ -43,9 +43,26 @@ docker compose logs twofa 2>&1 | grep "ADMIN PASSWORD"
 
 Все ключи — JSON; секретные значения показываются маской, редактируются
 точечно. Политики и параметры TOTP применяются на лету; доставка (SMTP,
-SMS-шлюз, Telegram) перестраивается по SIGHUP (смена токена Telegram-бота —
-перезапуск); `listen.*` и `webauthn.rp_id`/`webauthn.origins` — только
-после рестарта процесса.
+SMS-шлюз, Telegram, шаблоны сообщений) перестраивается по SIGHUP (смена
+токена Telegram-бота — перезапуск); `listen.*` и
+`webauthn.rp_id`/`webauthn.origins` — только после рестарта процесса.
+
+**Домен и шаблоны сообщений** — секция «🌐 Домен и шаблоны сообщений»
+(ключи `server.domain` и `messages`): базовый URL сервера и тексты
+сообщений с кодами. Шаблоны предзаполнены; плейсхолдеры — `{code}` (код),
+`{ttl}` (срок жизни), `{domain}` (домен сервера), в push-шаблоне
+дополнительно `{username}`, `{ip}`, `{ua}`, `{time}`. Тема письма —
+`smtp.subject`. Очищенное поле формы = «не менять»; вернуть встроенный
+дефолт можно, вставив его текст (см. `internal/settings/settings.go`,
+`Default*`).
+
+```json
+{"email_body":"Ваш код подтверждения: {code}\n\nКод действителен {ttl}.","sms_text":"Код подтверждения: {code} (действ. {ttl})","telegram_code_text":"🔑 Код подтверждения: {code}","telegram_push_text":"🔑 Подтверждение входа\nПользователь: {username}\nIP: {ip}"}
+```
+
+```json
+"server.domain": "https://2fa.example.com"
+```
 
 **SMTP (email-коды):**
 
@@ -456,23 +473,47 @@ CRL с совпадающим `lic_id` perpetual-лицензии игнорир
 
 ### licgen (генератор вендора)
 
-`cmd/licgen` в этом же репозитории — публичность безопасна: без приватного
-ключа вендора генератор бесполезен.
+`cmd/licgen` — **отдельный вложенный Go-модуль** (`cmd/licgen/go.mod`):
+корневые `go build ./...` / `go vet ./...` / `go test ./...` его не
+собирают, в docker-контекст он не попадает (`.dockerignore`) — в
+клиентскую сборку генерация лицензий не входит физически. Публичность
+кода безопасна и без этого: без приватного ключа вендора генератор
+бесполезен.
 
 ```sh
+# сборка вендорского генератора (make-цель)
+make licgen          # → cmd/licgen/licgen
+
 # пара ключей: приватный PKCS8 PEM (хранить офлайн!), публичный PEM + hex
-go run ./cmd/licgen -genkey
+./cmd/licgen/licgen -genkey
 
 # подписка на 12 мес, 50 пользователей
-go run ./cmd/licgen -key vendor.pem -kid 2026-09 \
+./cmd/licgen/licgen -key vendor.pem -kid 2026-09 \
     -customer "ООО Ромашка" -plan subscription -users 50 -months 12 -out lic.pem
 
 # perpetual с 12 мес обновлений
-go run ./cmd/licgen -key vendor.pem -kid 2026-09 \
+./cmd/licgen/licgen -key vendor.pem -kid 2026-09 \
     -customer "ООО Ромашка" -plan perpetual -users 100 -maintenance-months 12
 
 # CRL-отзыв
-go run ./cmd/licgen -key vendor.pem -kid 2026-09 -crl -revoke <lic_id>
+./cmd/licgen/licgen -key vendor.pem -kid 2026-09 -crl -revoke <lic_id>
+```
+
+### Сборка: клиентская и вендорская
+
+Клиенту поставляется только сервер:
+
+```sh
+make build    # → ./twofa (клиентский бинарник, licgen в него не входит)
+make docker   # → docker-образ: distroless + единственный бинарник /twofa
+```
+
+Вендорская сборка добавляет `make licgen`. Проверить, что в артефакте
+клиента нет генератора, можно так:
+
+```sh
+go list ./... | grep licgen   # пусто — licgen вне корневого модуля
+docker run --rm --entrypoint / twofa:latest ls /   # в образе только /twofa
 ```
 
 ### Ключи выпуска

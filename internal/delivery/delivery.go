@@ -5,6 +5,7 @@ package delivery
 
 import (
 	"context"
+	"strings"
 
 	"github.com/aligorov/twofa/internal/channel"
 )
@@ -17,7 +18,19 @@ type Sender interface {
 	Send(ctx context.Context, to, code string) error
 }
 
-// BodyTemplate — шаблон текста сообщения: плейсхолдер {code} заменяется
-// на одноразовый код. Общий для email и SMS; настройки могут ссылаться
-// на эту константу.
+// BodyTemplate — встроенный дефолт текста сообщения, если настройка
+// messages.* пуста: плейсхолдер {code} заменяется на одноразовый код.
 const BodyTemplate = "Ваш код подтверждения: {code}"
+
+// RenderTemplate рендерит шаблон сообщения: сперва переменные vars
+// ({ttl}, {domain}, …), затем {code} — код не может подменить переменную.
+// Пустой шаблон заменяется дефолтом BodyTemplate.
+func RenderTemplate(tpl string, code string, vars map[string]string) string {
+	if strings.TrimSpace(tpl) == "" {
+		tpl = BodyTemplate
+	}
+	for k, v := range vars {
+		tpl = strings.ReplaceAll(tpl, "{"+k+"}", v)
+	}
+	return strings.ReplaceAll(tpl, "{code}", code)
+}

@@ -292,8 +292,15 @@ func (b *Bot) handleCallback(ctx context.Context, queryID string, chatID, msgID 
 // SendPush отправляет в чат запрос push-подтверждения входа с кнопками
 // "✅ Подтвердить" / "❌ Это не я"; callback_data — approve:<id> / deny:<id>.
 func (b *Bot) SendPush(ctx context.Context, chatID int64, who, ip, ua string, challengeID uuid.UUID) error {
-	text := fmt.Sprintf("🔑 Подтверждение входа\nПользователь: %s\nIP: %s\nУстройство: %s\nВремя: %s",
-		who, ip, ua, time.Now().Format("15:04:05"))
+	pushTpl := snap0(b.set).Messages.TelegramPush
+	if strings.TrimSpace(pushTpl) == "" {
+		pushTpl = settings.DefaultTelegramPush // тесты без менеджера настроек
+	}
+	vars := map[string]string{
+		"username": who, "ip": ip, "ua": ua,
+		"time": time.Now().Format("15:04:05"),
+	}
+	text := delivery.RenderTemplate(pushTpl, "", vars)
 	kb := &InlineKeyboard{InlineKeyboard: [][]InlineButton{
 		{{Text: "✅ Подтвердить", CallbackData: "approve:" + challengeID.String()}},
 		{{Text: "❌ Это не я", CallbackData: "deny:" + challengeID.String()}},
@@ -304,13 +311,32 @@ func (b *Bot) SendPush(ctx context.Context, chatID int64, who, ip, ua string, ch
 // Name реализует delivery.Sender.
 func (b *Bot) Name() channel.Channel { return channel.Telegram }
 
-// Send реализует delivery.Sender: to — chat id строкой; текст фиксирован.
+// Send реализует delivery.Sender: to — chat id строкой; текст —
+// messages.telegram_code_text (пусто — встроенный дефолт), рендер с
+// общими переменными шаблона ({ttl}, {domain}).
 func (b *Bot) Send(ctx context.Context, to, code string) error {
 	chatID, err := strconv.ParseInt(strings.TrimSpace(to), 10, 64)
 	if err != nil {
 		return fmt.Errorf("telegram: chat id %q: %w", to, err)
 	}
-	return b.send(ctx, chatID, "Код подтверждения twofa: "+code, nil)
+	snap := snap0(b.set)
+	codeTpl := snap.Messages.TelegramCode
+	if strings.TrimSpace(codeTpl) == "" {
+		codeTpl = settings.DefaultTelegramCode // тесты без менеджера настроек
+	}
+	text := delivery.RenderTemplate(codeTpl, code, snap.MessageVars())
+	return b.send(ctx, chatID, text, nil)
+}
+
+// snap0 — снимок настроек или пустой (нет менеджера — тесты бота).
+func snap0(m settingsDeps) *settings.T {
+	if m == nil {
+		return &settings.T{}
+	}
+	if t := m.Get(); t != nil {
+		return t
+	}
+	return &settings.T{}
 }
 
 // send троттлит чат (≤1 сообщение/с) и отправляет сообщение. Пауза троттлинга

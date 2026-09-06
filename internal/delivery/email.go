@@ -22,7 +22,11 @@ type EmailSender struct {
 	pass     string
 	from     string
 	subject  string
-	timeout  time.Duration
+	// bodyTpl — шаблон тела письма (messages.email_body; пусто =
+	// BodyTemplate); vars — общие переменные шаблона ({ttl}, {domain}).
+	bodyTpl string
+	vars    map[string]string
+	timeout time.Duration
 
 	// sendFn выполняет SMTP-транзакцию; по умолчанию smtp.SendMail.
 	// Отдельное поле — чтобы тесты подменяли его рекордером.
@@ -37,7 +41,7 @@ var _ Sender = (*EmailSender)(nil)
 // флаг startTLS отмечает такие конфигурации), а smtp.PlainAuth
 // отказывается передавать учётные данные без TLS.
 // timeout ограничивает отправку (0 — по умолчанию 10 с).
-func NewEmail(host string, port int, startTLS bool, user, pass, from, subject string, timeout time.Duration) Sender {
+func NewEmail(host string, port int, startTLS bool, user, pass, from, subject, bodyTpl string, vars map[string]string, timeout time.Duration) Sender {
 	return &EmailSender{
 		host:     host,
 		port:     port,
@@ -46,6 +50,8 @@ func NewEmail(host string, port int, startTLS bool, user, pass, from, subject st
 		pass:     pass,
 		from:     from,
 		subject:  subject,
+		bodyTpl:  bodyTpl,
+		vars:     vars,
 		timeout:  timeout,
 		sendFn:   smtp.SendMail,
 	}
@@ -89,14 +95,12 @@ func (e *EmailSender) Send(ctx context.Context, to, code string) error {
 
 // buildMessage собирает MIME-письмо (RFC 5322, CRLF): заголовки
 // From/To/Subject/Date/MIME-Version/Content-Type/Content-Transfer-Encoding.
-// В теме плейсхолдер {code} заменяется на код, после чего тема
-// кодируется кодированным словом RFC 2047 (Q-encoding) — код оказывается
-// внутри закодированного слова; тело — по BodyTemplate.
+// В теме и теле плейсхолдеры заменяются рендером шаблона ({code} и общие
+// переменные), после чего тема кодируется кодированным словом RFC 2047
+// (Q-encoding) — код оказывается внутри закодированного слова.
 func (e *EmailSender) buildMessage(to, code string) []byte {
-	// Кодирование ПОСЛЕ подстановки {code}: цифры кода попадают внутрь
-	// закодированного слова.
-	subject := mime.QEncoding.Encode("UTF-8", sanitizeHeader(strings.ReplaceAll(e.subject, "{code}", code)))
-	body := strings.ReplaceAll(BodyTemplate, "{code}", code)
+	subject := mime.QEncoding.Encode("UTF-8", sanitizeHeader(RenderTemplate(e.subject, code, e.vars)))
+	body := RenderTemplate(e.bodyTpl, code, e.vars)
 	var b strings.Builder
 	b.WriteString("From: " + sanitizeHeader(e.from) + "\r\n")
 	b.WriteString("To: " + sanitizeHeader(to) + "\r\n")

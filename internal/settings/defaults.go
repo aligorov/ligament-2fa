@@ -10,9 +10,16 @@ import (
 // defaults — статические дефолты известных ключей настроек (спека §8/§10).
 // Значения — JSON, записываемый в settings.value при отсутствии ключа.
 var defaults = map[string]json.RawMessage{
-	"listen.http":              json.RawMessage(`":8080"`),
-	"listen.radius_auth":       json.RawMessage(`":1812"`),
-	"listen.radius_acct":       json.RawMessage(`":1813"`),
+	"listen.http":        json.RawMessage(`":8080"`),
+	"listen.radius_auth": json.RawMessage(`":1812"`),
+	"listen.radius_acct": json.RawMessage(`":1813"`),
+	"server.domain":      json.RawMessage(`""`),
+	"messages": mustJSON(map[string]string{
+		"email_body":         DefaultEmailBody,
+		"sms_text":           DefaultSMSText,
+		"telegram_code_text": DefaultTelegramCode,
+		"telegram_push_text": DefaultTelegramPush,
+	}),
 	"radius.code_lengths":      json.RawMessage(`[6,8]`),
 	"radius.max_fail_per_user": json.RawMessage(`10`),
 	"radius.fail_window":       json.RawMessage(`"5m"`),
@@ -49,6 +56,16 @@ var knownKeys = func() map[string]struct{} {
 	}
 	return set
 }()
+
+// mustJSON кодирует значение в JSON-дефолт настроек (для составных
+// дефолтов, собираемых из констант).
+func mustJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic("settings: дефолт не кодируется в JSON: " + err.Error())
+	}
+	return json.RawMessage(b)
+}
 
 // isKnownKey сообщает, известен ли ключ настроек.
 func isKnownKey(k string) bool {

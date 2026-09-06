@@ -38,6 +38,18 @@ func TestBuildTDefaults(t *testing.T) {
 	if snap.WebAuthn.RPID != "" || snap.WebAuthn.RPName != "twofa" || len(snap.WebAuthn.Origins) != 0 {
 		t.Errorf("webauthn = %+v", snap.WebAuthn)
 	}
+	// Шаблоны сообщений заполнены по умолчанию и содержат {code}.
+	if !strings.Contains(snap.Messages.EmailBody, "{code}") ||
+		!strings.Contains(snap.Messages.SMSText, "{code}") ||
+		!strings.Contains(snap.Messages.TelegramCode, "{code}") {
+		t.Errorf("messages без {code}: %+v", snap.Messages)
+	}
+	if strings.Contains(snap.Messages.TelegramPush, "{code}") {
+		t.Errorf("push-шаблон не должен содержать {code}: %q", snap.Messages.TelegramPush)
+	}
+	if snap.Server.Domain != "" {
+		t.Errorf("server.domain = %q, want пусто", snap.Server.Domain)
+	}
 	if snap.Policy.CodeTTL != 5*time.Minute || snap.Policy.ResendCooldown != 60*time.Second ||
 		snap.Policy.PushCooldown != 30*time.Second || snap.Policy.TrustedDeviceTTL != 720*time.Hour ||
 		snap.Policy.SessionTTL != 12*time.Hour || snap.Policy.FailWindow != 5*time.Minute || snap.Policy.BanTime != 15*time.Minute {
@@ -63,6 +75,8 @@ func TestBuildTValid(t *testing.T) {
 		"listen.http":              json.RawMessage(`":9999"`),
 		"listen.radius_auth":       json.RawMessage(`":2812"`),
 		"listen.radius_acct":       json.RawMessage(`":2813"`),
+		"server.domain":            json.RawMessage(`"https://2fa.example.com/"`),
+		"messages":                 json.RawMessage(`{"email_body":"Код {code} на {domain}","sms_text":"S:{code}","telegram_code_text":"T:{code} {ttl}","telegram_push_text":"вход {username}"}`),
 		"master_key":               json.RawMessage(`"bWFzdGVy"`),
 		"admin_token":              json.RawMessage(`"tok"`),
 		"radius.secret":            json.RawMessage(`"sec"`),
@@ -84,6 +98,20 @@ func TestBuildTValid(t *testing.T) {
 
 	if snap.Listen.HTTP != ":9999" || snap.Listen.RadiusAuth != ":2812" || snap.Listen.RadiusAcct != ":2813" {
 		t.Errorf("listen = %+v", snap.Listen)
+	}
+	if snap.Server.Domain != "https://2fa.example.com" {
+		t.Errorf("server.domain = %q (хвостовой слэш срезан?)", snap.Server.Domain)
+	}
+	if snap.Messages.EmailBody != "Код {code} на {domain}" || snap.Messages.SMSText != "S:{code}" ||
+		snap.Messages.TelegramCode != "T:{code} {ttl}" || snap.Messages.TelegramPush != "вход {username}" {
+		t.Errorf("messages = %+v", snap.Messages)
+	}
+	vars := snap.MessageVars()
+	if vars["domain"] != "https://2fa.example.com" {
+		t.Errorf("MessageVars.domain = %q", vars["domain"])
+	}
+	if vars["ttl"] != "1 мин" { // policy.code_ttl ниже переопределён на 1m
+		t.Errorf("MessageVars.ttl = %q, want 1 мин", vars["ttl"])
 	}
 	if snap.MasterKeyB64 != "bWFzdGVy" || snap.AdminToken != "tok" || snap.RadiusSecret != "sec" {
 		t.Errorf("секреты = %q/%q/%q", snap.MasterKeyB64, snap.AdminToken, snap.RadiusSecret)
@@ -630,6 +658,7 @@ func TestDefaultsCoverKnownKeys(t *testing.T) {
 	}
 	want := []string{
 		"listen.http", "listen.radius_auth", "listen.radius_acct",
+		"server.domain", "messages",
 		"master_key", "admin_token",
 		"radius.secret", "radius.code_lengths", "radius.max_fail_per_user",
 		"radius.fail_window", "radius.push_wait", "radius.reply_attributes",

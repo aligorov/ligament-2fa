@@ -27,6 +27,15 @@ const maskValue = "••••"
 // T — снимок настроек. Читается конкурентно HTTP-хендлерами и RADIUS-циклом,
 // поэтому после создания трактуется как иммутабельный: обновление снимка
 // всегда строит новый T (Manager.Reload), старый не мутируется.
+// Default-шаблоны сообщений — один источник для дефолтов настроек
+// (ключ messages), fallback-ов сендеров и тестов.
+const (
+	DefaultEmailBody    = "Ваш код подтверждения: {code}\n\nКод действителен {ttl}.\nЗапросили не вы — смените пароль: {domain}/me/password"
+	DefaultSMSText      = "Код подтверждения: {code} (действ. {ttl})"
+	DefaultTelegramCode = "🔑 Код подтверждения: {code}\nДействителен {ttl}. Никому не сообщайте код."
+	DefaultTelegramPush = "🔑 Подтверждение входа\nПользователь: {username}\nIP: {ip}\nУстройство: {ua}\nВремя: {time}"
+)
+
 type T struct {
 	Listen struct {
 		HTTP       string
@@ -34,6 +43,23 @@ type T struct {
 		RadiusAcct string
 	}
 	MasterKeyB64, AdminToken, RadiusSecret string
+
+	// Server — публичные параметры инсталляции.
+	Server struct {
+		// Domain — базовый URL сервера (https://2fa.example.com, без
+		// слэша на конце): подставляется в шаблоны сообщений {domain}.
+		Domain string
+	}
+
+	// Messages — шаблоны текстов сообщений (ключ messages):
+	// плейсхолдеры {code} {ttl} {domain} {username} {ip} {ua} {time};
+	// пустой шаблон = встроенный дефолт. Тема письма — smtp.subject.
+	Messages struct {
+		EmailBody    string `json:"email_body"`
+		SMSText      string `json:"sms_text"`
+		TelegramCode string `json:"telegram_code_text"`
+		TelegramPush string `json:"telegram_push_text"`
+	}
 
 	Radius struct {
 		CodeLengths     []int
@@ -168,6 +194,10 @@ func defaultT() *T {
 	t.Listen.HTTP = ":8080"
 	t.Listen.RadiusAuth = ":1812"
 	t.Listen.RadiusAcct = ":1813"
+	t.Messages.EmailBody = DefaultEmailBody
+	t.Messages.SMSText = DefaultSMSText
+	t.Messages.TelegramCode = DefaultTelegramCode
+	t.Messages.TelegramPush = DefaultTelegramPush
 	t.Radius.CodeLengths = []int{6, 8}
 	t.Radius.MaxFailPerUser = 10
 	t.Radius.FailWindow = 5 * time.Minute
@@ -371,6 +401,29 @@ func rawJSON(raw, def json.RawMessage) json.RawMessage {
 
 // buildT собирает снимок из raw-значений ключей настроек; отсутствующие
 // и битые значения откатываются к дефолтам defaultT (с записью в лог).
+// MessageVars — общие переменные шаблонов сообщений (кроме {code} и
+// контекстных {username}/{ip}/{ua}/{time}): срок жизни кода человекочитаемо
+// и домен сервера без хвостового слэша.
+func (t *T) MessageVars() map[string]string {
+	return map[string]string{
+		"ttl":    humanTTL(t.Policy.CodeTTL),
+		"domain": strings.TrimRight(t.Server.Domain, "/"),
+	}
+}
+
+// humanTTL — длительность жизни кода для текста сообщения: «5 мин»,
+// «1 ч», «90 мин».
+func humanTTL(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return "?"
+	case d%time.Hour == 0:
+		return fmt.Sprintf("%d ч", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d мин", int(d.Minutes()))
+	}
+}
+
 func buildT(raw map[string]json.RawMessage) *T {
 	def := defaultT()
 	t := &T{}
@@ -378,6 +431,13 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Listen.HTTP = parseString(raw["listen.http"], def.Listen.HTTP)
 	t.Listen.RadiusAuth = parseString(raw["listen.radius_auth"], def.Listen.RadiusAuth)
 	t.Listen.RadiusAcct = parseString(raw["listen.radius_acct"], def.Listen.RadiusAcct)
+
+	t.Server.Domain = strings.TrimRight(parseString(raw["server.domain"], def.Server.Domain), "/")
+	msg := fields(raw["messages"])
+	t.Messages.EmailBody = parseString(msg["email_body"], def.Messages.EmailBody)
+	t.Messages.SMSText = parseString(msg["sms_text"], def.Messages.SMSText)
+	t.Messages.TelegramCode = parseString(msg["telegram_code_text"], def.Messages.TelegramCode)
+	t.Messages.TelegramPush = parseString(msg["telegram_push_text"], def.Messages.TelegramPush)
 
 	t.MasterKeyB64 = parseString(raw["master_key"], def.MasterKeyB64)
 	t.AdminToken = parseString(raw["admin_token"], def.AdminToken)
@@ -744,6 +804,15 @@ func (t *T) masked() map[string]any {
 			"http":        t.Listen.HTTP,
 			"radius_auth": t.Listen.RadiusAuth,
 			"radius_acct": t.Listen.RadiusAcct,
+		},
+		"server": map[string]any{
+			"domain": t.Server.Domain,
+		},
+		"messages": map[string]any{
+			"email_body":         t.Messages.EmailBody,
+			"sms_text":           t.Messages.SMSText,
+			"telegram_code_text": t.Messages.TelegramCode,
+			"telegram_push_text": t.Messages.TelegramPush,
 		},
 		"master_key":  secretMask(t.MasterKeyB64),
 		"admin_token": secretMask(t.AdminToken),

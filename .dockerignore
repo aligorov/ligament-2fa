@@ -1,0 +1,8 @@
+# Клиентский docker-образ: только сервер. Вендорский инструмент
+# генерации лицензий в контекст сборки не попадает (см. cmd/licgen/go.mod).
+cmd/licgen
+.git
+.gitignore
+README.md
+docs
+twofa

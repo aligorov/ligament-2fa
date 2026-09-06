@@ -24,7 +24,7 @@ type mailRecord struct {
 // newTestEmail создаёт EmailSender с рекордером вместо smtp.SendMail.
 func newTestEmail(subject string, timeout time.Duration) (*EmailSender, *mailRecord) {
 	s := NewEmail("smtp.example.com", 587, true, "user", "pass",
-		"noreply@example.com", subject, timeout).(*EmailSender)
+		"noreply@example.com", subject, "", nil, timeout).(*EmailSender)
 	rec := &mailRecord{}
 	s.sendFn = func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
 		*rec = mailRecord{addr: addr, auth: a, from: from, to: to, msg: msg}
@@ -111,7 +111,7 @@ func TestEmailName(t *testing.T) {
 
 func TestEmailNoAuthWithoutUser(t *testing.T) {
 	s := NewEmail("smtp.example.com", 25, false, "", "",
-		"noreply@example.com", "Код", time.Minute).(*EmailSender)
+		"noreply@example.com", "Код", "", nil, time.Minute).(*EmailSender)
 	rec := &mailRecord{}
 	s.sendFn = func(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
 		*rec = mailRecord{addr: addr, auth: a, from: from, to: to, msg: msg}

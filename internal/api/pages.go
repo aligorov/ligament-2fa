@@ -1441,9 +1441,15 @@ var settingsForm = map[string][]settingsField{
 		{name: "radius.push_wait", key: "radius.push_wait"},
 		{name: "radius.reply_attributes", key: "radius.reply_attributes", kind: 'j'},
 	},
+	"messages": {
+		{name: "server.domain", key: "server.domain"},
+		{name: "messages.email_body", key: "messages"},
+		{name: "messages.sms_text", key: "messages"},
+		{name: "messages.telegram_code_text", key: "messages"},
+		{name: "messages.telegram_push_text", key: "messages"},
+	},
 	"smtp": {
-		{name: "smtp.host", key: "smtp"},
-		{name: "smtp.port", key: "smtp", kind: 'i'},
+		{name: "smtp.host", key: "smtp"},		{name: "smtp.port", key: "smtp", kind: 'i'},
 		{name: "smtp.user", key: "smtp"},
 		{name: "smtp.password", key: "smtp"},
 		{name: "smtp.from", key: "smtp"},
