@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aligorov/twofa/internal/channel"
 )
@@ -705,5 +706,40 @@ func TestPresetConfigJSONRoundTrip(t *testing.T) {
 				t.Errorf("round-trip: got %+v, want %+v", back, p.Config)
 			}
 		})
+	}
+}
+
+// TestSMSTransportErrorRedacted (SEC-003): сетевая ошибка шлюза несёт полный
+// URL (креды и текст SMS в query) — текст ошибки не должен их раскрывать;
+// хост и метод остаются для диагностики.
+func TestSMSTransportErrorRedacted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	host := strings.TrimPrefix(srv.URL, "http://")
+	srv.Close()
+
+	gw := GatewayConfig{
+		Method: "GET",
+		URL:    srv.URL + "/send?login={login}&psw={psw}&phones={phone}&mes={text}",
+		Headers: map[string]string{
+			"login": "SECRET-LOGIN",
+			"psw":   "SECRET-PASSWORD",
+		},
+	}
+	sender := NewSMS(gw, &http.Client{Timeout: 2 * time.Second})
+	err := sender.Send(context.Background(), "+79990001122", "654321")
+	if err == nil {
+		t.Fatal("Send на закрытый шлюз не вернул ошибку")
+	}
+	msg := err.Error()
+	for _, secret := range []string{"SECRET-LOGIN", "SECRET-PASSWORD", "+79990001122", "654321", "/send?"} {
+		if strings.Contains(msg, secret) {
+			t.Fatalf("ошибка раскрывает %q: %q", secret, msg)
+		}
+	}
+	if !strings.Contains(msg, host) {
+		t.Fatalf("ошибка не содержит хост для диагностики: %q (want %s)", msg, host)
+	}
+	if !strings.Contains(msg, "GET") {
+		t.Fatalf("ошибка не содержит метод: %q", msg)
 	}
 }

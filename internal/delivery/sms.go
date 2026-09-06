@@ -3,10 +3,12 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -118,7 +120,7 @@ func (s *SMSSender) Send(ctx context.Context, to, code string) error {
 
 	resp, err := s.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("delivery: sms: шлюз: %w", err)
+		return redactTransportError(method, req.URL, err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -132,6 +134,28 @@ func (s *SMSSender) Send(ctx context.Context, to, code string) error {
 		return fmt.Errorf("delivery: sms: ответ шлюза не прошёл проверку: %w (ответ: %s)", err, snippet(string(respBody)))
 	}
 	return nil
+}
+
+// urlInErrorRE — http(s)-URL внутри текста ошибки: *url.Error несёт полный
+// URL запроса к шлюзу (в нём — креды и текст SMS в query).
+var urlInErrorRE = regexp.MustCompile(`https?://[^\s"']+`)
+
+// redactTransportError sanitizes ошибку транспорта hc.Do: сырой *url.Error
+// содержит полный URL шлюза — с логином/паролем и кодом подтверждения в
+// query. Остаётся метод, хост и класс причины; URL'ы в тексте причины
+// вырезаются регуляркой (защита от вложенных ошибок с адресом).
+func redactTransportError(method string, reqURL *url.URL, err error) error {
+	host := ""
+	if reqURL != nil {
+		host = reqURL.Host
+	}
+	cause := err
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		cause = ue.Err
+	}
+	msg := urlInErrorRE.ReplaceAllString(cause.Error(), "[url]")
+	return fmt.Errorf("delivery: sms: %s %s: %s", method, host, msg)
 }
 
 // escMode — способ подстановки значений плейсхолдеров.
