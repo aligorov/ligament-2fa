@@ -11,6 +11,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/aligorov/twofa/internal/api"
 	"github.com/aligorov/twofa/internal/auth"
+	"github.com/aligorov/twofa/internal/backup"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
 	"github.com/aligorov/twofa/internal/license"
@@ -44,6 +46,8 @@ var BuildDate string
 func main() {
 	dsnFlag := flag.String("dsn", "", "PostgreSQL DSN (приоритет над env TWOFA_DB_DSN)")
 	addrFlag := flag.String("addr", "", "адрес HTTP-слушателя (переопределяет listen.http)")
+	backupFlag := flag.String("backup", "", "логический дамп БД в SQL: путь файла или «-» (stdout); восстановление — psql (README «Бэкап и перенос»)")
+	backupAuditFlag := flag.Bool("backup-audit", true, "включать audit_log в дамп -backup (false — переносить без журнала событий)")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
@@ -55,6 +59,16 @@ func main() {
 	if dsn == "" {
 		slog.Error("main: не задан DSN — укажите флаг -dsn или переменную TWOFA_DB_DSN")
 		os.Exit(1)
+	}
+
+	// Режим бэкапа: полный логический дамп и выход (сервер не поднимается).
+	// Дамп psql-совместим и не содержит master_key — см. README.
+	if *backupFlag != "" {
+		if err := runBackup(dsn, *backupFlag, *backupAuditFlag); err != nil {
+			slog.Error("main: бэкап", "error", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -248,6 +262,50 @@ func main() {
 	}
 	rt.Stop()
 	slog.Info("main: сервер остановлен")
+}
+
+// runBackup выполняет логический дамп БД (twofa -backup): opens store,
+// генерирует SQL-скрипт backup.Dump и пишет его в файл out («-» — stdout).
+// Файл создаётся с правами 0600: дамп содержит шифротексты TOTP, сессии и
+// секреты настроек. Сервер при этом не запускается.
+func runBackup(dsn, out string, includeAudit bool) error {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("подключение к БД: %w", err)
+	}
+	defer st.Close()
+
+	dump, err := backup.Dump(ctx, st.Pool(), backup.Options{IncludeAudit: includeAudit})
+	if err != nil {
+		return err
+	}
+
+	w, closeFn, err := openBackupOutput(out)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+	if _, err := w.Write(dump); err != nil {
+		return fmt.Errorf("запись дампа в %s: %w", out, err)
+	}
+	slog.Info("main: бэкап готов", "out", out, "bytes", len(dump), "audit", includeAudit)
+	return nil
+}
+
+// openBackupOutput открывает приёмник дампа: «-» — стандартный вывод, иначе
+// файл с правами 0600 (дамп секретен). Возвращает writer и функцию закрытия.
+func openBackupOutput(out string) (io.Writer, func(), error) {
+	if out == "-" {
+		return os.Stdout, func() {}, nil
+	}
+	f, err := os.OpenFile(out, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("открыть файл дампа %s: %w", out, err)
+	}
+	return f, func() { _ = f.Close() }, nil
 }
 
 // bootstrapAdmin создаёт первого администратора на пустой базе: пароль
