@@ -65,15 +65,17 @@
 {{/* layout_center — центрированная карточка (login, ошибки). */}}
 {{define "layout_center"}}
 <div class="center-wrap">
-  {{if and .Ads.Show .Ads.LoginLeft}}<aside class="ad-slot ad-side" id="adv-login-left" data-rtb-block="{{.Ads.LoginLeft}}"></aside>{{end}}
-  {{if and .Ads.Show (eq .Ads.Provider "direct")}}{{template "ad_direct" (dict "Class" "ad-side" "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
-  <main class="center-main">
-    {{with .Flash}}<div class="flash ok"><span class="flash-icon">✅</span>{{.}}</div>{{end}}
-    {{with .FlashErr}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
-    {{template "content" .}}
-  </main>
-  {{if and .Ads.Show .Ads.LoginRight}}<aside class="ad-slot ad-side" id="adv-login-right" data-rtb-block="{{.Ads.LoginRight}}"></aside>{{end}}
-  {{if and .Ads.Show (eq .Ads.Provider "direct")}}{{template "ad_direct" (dict "Class" "ad-side" "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
+  <div class="center-row">
+    {{if and .Ads.Show .Ads.LoginLeft}}<aside class="ad-slot ad-side" id="adv-login-left" data-rtb-block="{{.Ads.LoginLeft}}"></aside>{{end}}
+    {{if and .Ads.Show (eq .Ads.Provider "direct")}}{{template "ad_direct" (dict "Class" "ad-side" "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
+    <main class="center-main">
+      {{with .Flash}}<div class="flash ok"><span class="flash-icon">✅</span>{{.}}</div>{{end}}
+      {{with .FlashErr}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
+      {{template "content" .}}
+    </main>
+    {{if and .Ads.Show .Ads.LoginRight}}<aside class="ad-slot ad-side" id="adv-login-right" data-rtb-block="{{.Ads.LoginRight}}"></aside>{{end}}
+    {{if and .Ads.Show (eq .Ads.Provider "direct")}}{{template "ad_direct" (dict "Class" "ad-side" "URL" .Ads.DirectURL "Label" .Ads.DirectLabel "Image" .Ads.DirectImage)}}{{end}}
+  </div>
   <footer class="center-footer">Ligament</footer>
 </div>
 {{template "ads_scripts" .}}

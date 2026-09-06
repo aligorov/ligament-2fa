@@ -578,7 +578,7 @@ ul.codes li code {
    1200px, сайдбар-слот — всегда под навигацией. */
 .ad-slot { max-width: 100%; }
 .ad-slot[data-rtb-block] { min-height: 250px; }  /* RTB требует места */
-.center-wrap { display: flex; align-items: center; gap: 24px; justify-content: center; }
+.center-row { display: flex; align-items: center; justify-content: center; gap: 24px; width: 100%; flex: 1; }
 .ad-side {
   flex: 0 0 300px; width: 300px; max-width: 300px;
   display: none;
