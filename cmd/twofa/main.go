@@ -88,7 +88,11 @@ func main() {
 	if bot != nil {
 		push = bot
 	}
-	pv := auth.NewLocalVerifier(st)
+	// Первый фактор: локальный argon2id + внешний каталог LDAP/AD
+	// (CompositeVerifier). Конфигурация LDAP читается из снимка настроек
+	// при каждой проверке — SIGHUP применяется без пересборки.
+	pvLocal := auth.NewLocalVerifier(st)
+	pv := auth.NewCompositeVerifier(st, pvLocal, auth.NewLdapVerifier(st, m))
 	core := auth.NewCore(st, m, box, senders, pv, push)
 
 	// WebAuthn необязателен: без webauthn.rp_id сервер работает, роуты
@@ -124,8 +128,9 @@ func main() {
 
 	// SIGHUP — горячая перезагрузка настроек. Политики и параметры TOTP
 	// подхватываются снимком; слой доставки (SMTP/SMS/Telegram-бот)
-	// пересобирается заново и подменяется в ядре; listen.* и webauthn.rp_id
-	// применяются после рестарта процесса.
+	// пересобирается заново и подменяется в ядре; настройки LDAP читаются
+	// верификатором из свежего снимка при каждом входе; listen.* и
+	// webauthn.rp_id применяются после рестарта процесса.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
