@@ -576,17 +576,19 @@ ul.codes li code {
 
 /* Рекламные слоты РСЯ (только бесплатная лицензия). Боковые — от
    1200px, сайдбар-слот — всегда под навигацией. */
-.ad-slot { min-height: 250px; }
+.ad-slot { max-width: 100%; }
+.ad-slot[data-rtb-block] { min-height: 250px; }  /* RTB требует места */
 .center-wrap { display: flex; align-items: center; gap: 24px; justify-content: center; }
 .ad-side {
   flex: 0 0 300px; width: 300px; max-width: 300px;
   display: none;
 }
 @media (min-width: 1200px) { .ad-side { display: block; } }
-.sidebar .ad-slot { margin: 8px 10px; min-height: 200px; }
+.sidebar .ad-slot { margin: 6px 10px 2px; }
 
 /* Брендированный рекламный слот Ligament. */
 .ad-card {
+  box-sizing: border-box; max-width: 100%;
   background: var(--card, #fff); border: 1px solid var(--line, #e3e3ef);
   border-radius: 14px; padding: 14px; box-shadow: 0 6px 18px rgba(50, 48, 92, .06);
   display: flex; flex-direction: column; gap: 10px;
