@@ -3,40 +3,65 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>{{.Title}} · 2FA</title>
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/webauthn.js" defer></script>
+<script src="/static/app.js" defer></script>
 </head>
 <body>
-<header class="top">
-  <span class="brand">2FA-сервер</span>
-  {{if .Username}}
-  <nav>
-    <a href="/me">Профиль</a>
-    <a href="/me/totp">TOTP</a>
-    <a href="/me/backup">Резервные коды</a>
-    <a href="/me/telegram">Telegram</a>
-    <a href="/me/passkeys">Passkeys</a>
-    <a href="/me/devices">Устройства</a>
-    {{if .IsAdmin}}
-    <a href="/admin/users">Пользователи</a>
-    <a href="/admin/audit">Аудит</a>
-    <a href="/admin/challenges">Challenge</a>
-    <a href="/admin/settings">Настройки</a>
-    {{end}}
-  </nav>
-  <form action="/logout" method="post" class="inline">
-    <span class="user">{{.Username}}</span>
-    {{csrf .CSRF}}
-    <button type="submit" class="secondary">Выйти</button>
-  </form>
-  {{end}}
-</header>
-<main>
-{{with .Flash}}<div class="flash ok">{{.}}</div>{{end}}
-{{with .FlashErr}}<div class="flash err">{{.}}</div>{{end}}
-{{template "content" .}}
-</main>
-<footer>twofa</footer>
+{{template "layout" .}}
 </body>
 </html>
+
+{{/* layout_app — каркас приложения: боковое меню + контент. */}}
+{{define "layout_app"}}
+<div class="app">
+  <aside class="sidebar">
+    <a class="brand" href="/me"><span class="brand-mark">2FA</span>twofa</a>
+    <nav class="nav">
+      <div class="nav-section">Кабинет</div>
+      <a class="nav-link{{if eq .Nav "me"}} active{{end}}" href="/me">Профиль</a>
+      <a class="nav-link{{if eq .Nav "totp"}} active{{end}}" href="/me/totp">Приложение TOTP</a>
+      <a class="nav-link{{if eq .Nav "backup"}} active{{end}}" href="/me/backup">Резервные коды</a>
+      <a class="nav-link{{if eq .Nav "telegram"}} active{{end}}" href="/me/telegram">Telegram</a>
+      <a class="nav-link{{if eq .Nav "passkeys"}} active{{end}}" href="/me/passkeys">Passkeys</a>
+      <a class="nav-link{{if eq .Nav "devices"}} active{{end}}" href="/me/devices">Устройства</a>
+      {{if .IsAdmin}}
+      <div class="nav-section">Админ</div>
+      <a class="nav-link{{if eq .Nav "admin-users"}} active{{end}}" href="/admin/users">Пользователи</a>
+      <a class="nav-link{{if eq .Nav "admin-audit"}} active{{end}}" href="/admin/audit">Аудит</a>
+      <a class="nav-link{{if eq .Nav "admin-challenges"}} active{{end}}" href="/admin/challenges">Активные challenge</a>
+      <a class="nav-link{{if eq .Nav "admin-settings"}} active{{end}}" href="/admin/settings">Настройки</a>
+      {{end}}
+    </nav>
+    <div class="sidebar-foot">
+      <div class="sidebar-user" title="{{.Username}}">{{.Username}}</div>
+      <form action="/logout" method="post" class="logout-form">
+        {{csrf .CSRF}}
+        <button type="submit" class="btn ghost sm">Выйти</button>
+      </form>
+    </div>
+  </aside>
+  <div class="app-main">
+    <main class="content">
+      {{with .Flash}}<div class="flash ok"><span class="flash-icon">✅</span>{{.}}</div>{{end}}
+      {{with .FlashErr}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
+      {{template "content" .}}
+    </main>
+    <footer class="app-footer">twofa</footer>
+  </div>
+</div>
+{{end}}
+
+{{/* layout_center — центрированная карточка (login, ошибки). */}}
+{{define "layout_center"}}
+<div class="center-wrap">
+  <main class="center-main">
+    {{with .Flash}}<div class="flash ok"><span class="flash-icon">✅</span>{{.}}</div>{{end}}
+    {{with .FlashErr}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
+    {{template "content" .}}
+  </main>
+  <footer class="center-footer">twofa</footer>
+</div>
+{{end}}

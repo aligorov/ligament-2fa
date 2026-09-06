@@ -11,11 +11,16 @@ import (
 )
 
 // BaseData — общие данные макета base.gohtml. Username пуст на /login —
-// тогда заголовок не показывает меню и кнопку выхода.
+// тогда приложение не показывает боковое меню и кнопку выхода.
 type BaseData struct {
 	Title    string
 	Username string // текущий пользователь (пусто до входа)
 	IsAdmin  bool
+	// Nav — идентификатор активного пункта бокового меню: "me", "totp",
+	// "backup", "telegram", "passkeys", "devices", "admin-users",
+	// "admin-audit", "admin-challenges", "admin-settings"; пусто для
+	// страниц без меню (login, error).
+	Nav      string
 	CSRF     string // CSRF-токен сессии; пусто для анонимных форм
 	Flash    string // флеш-успех (после редиректа)
 	FlashErr string // флеш-ошибка (после редиректа)

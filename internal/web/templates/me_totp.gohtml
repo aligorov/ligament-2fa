@@ -1,43 +1,88 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
-<h1>TOTP-приложение</h1>
-<p class="muted">Google Authenticator, Aegis, 1Password и другие приложения
-с шестизначными кодами.</p>
+<header class="page-head">
+  <h1>Приложение TOTP</h1>
+  <p class="page-sub">Google Authenticator, Aegis, 1Password и другие приложения
+  с шестизначными кодами.</p>
+</header>
 
 {{if .Confirmed}}
-<div class="flash ok">TOTP привязан.</div>
-<p>Отвязка требует код из приложения или резервный код.</p>
-<form action="/me/totp/delete" method="post">
-  {{csrf .CSRF}}
-  <label>Код
-    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
-  </label>
-  <button type="submit" class="danger">Отвязать TOTP</button>
-</form>
+<section class="card">
+  <div class="card-head">
+    <h2>TOTP привязан</h2>
+    <p>Отвязка требует код из приложения или резервный код.</p>
+  </div>
+  <form action="/me/totp/delete" method="post" class="form">
+    {{csrf .CSRF}}
+    <label class="field">
+      <span class="field-label">Код</span>
+      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+      <span class="help">Текущий код из приложения-аутентификатора.</span>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn danger">Отвязать TOTP</button>
+    </div>
+  </form>
+</section>
 
 {{else if .OtpauthURL}}
-<h2>Шаг 1. Отсканируйте QR-код</h2>
-<img class="qr" src="{{qrPNG .OtpauthURL}}" alt="QR-код TOTP" width="200" height="200">
-<p>Не сканируется? Введите ключ вручную:</p>
-<p><code class="otpauth">{{.OtpauthURL}}</code></p>
-<h2>Шаг 2. Введите код из приложения</h2>
-<form action="/me/totp/confirm" method="post">
-  {{csrf .CSRF}}
-  <label>Код из приложения
-    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus>
-  </label>
-  <button type="submit">Подтвердить</button>
-</form>
-<form action="/me/totp/enroll" method="post" class="startover">
-  {{csrf .CSRF}}
-  <button type="submit" class="secondary">Выдать новый секрет заново</button>
-</form>
+<section class="card step">
+  <div class="card-head">
+    <h2>Шаг 1. Отсканируйте QR-код</h2>
+    <p>Откройте приложение-аутентификатор и добавьте аккаунт по QR-коду.</p>
+  </div>
+  <div class="qr-wrap">
+    <img class="qr" src="{{qrPNG .OtpauthURL}}" alt="QR-код TOTP" width="220" height="220">
+  </div>
+  <div class="copy-row">
+    <code class="otpauth">{{.OtpauthURL}}</code>
+    <button type="button" class="btn ghost sm" data-copy>Скопировать</button>
+  </div>
+  <p class="help">Не сканируется? Скопируйте ссылку и вставьте в приложение вручную.</p>
+</section>
+
+<section class="card step">
+  <div class="card-head">
+    <h2>Шаг 2. Введите код из приложения</h2>
+    <p>Код подтверждает, что приложение сохранило секрет верно.</p>
+  </div>
+  <form action="/me/totp/confirm" method="post" class="form">
+    {{csrf .CSRF}}
+    <label class="field">
+      <span class="field-label">Код из приложения</span>
+      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Подтвердить</button>
+    </div>
+  </form>
+</section>
+
+<section class="card step">
+  <div class="card-head">
+    <h2>Шаг 3. Сохраните резервные коды</h2>
+    <p>Сразу после подтверждения сервер покажет резервные коды — они
+    отображаются только один раз.</p>
+  </div>
+  <form action="/me/totp/enroll" method="post" class="form-inline">
+    {{csrf .CSRF}}
+    <button type="submit" class="btn secondary sm">Выдать новый секрет заново</button>
+  </form>
+</section>
 
 {{else}}
-<p>TOTP не привязан. Нажмите кнопку — сервер выдаст секрет, который нужно
-отсканировать приложением и подтвердить кодом.</p>
-<form action="/me/totp/enroll" method="post">
-  {{csrf .CSRF}}
-  <button type="submit">Привязать приложение</button>
-</form>
+<section class="card">
+  <div class="card-head">
+    <h2>TOTP не привязан</h2>
+    <p>Нажмите кнопку — сервер выдаст секрет, который нужно отсканировать
+    приложением и подтвердить кодом.</p>
+  </div>
+  <form action="/me/totp/enroll" method="post" class="form">
+    {{csrf .CSRF}}
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Привязать приложение</button>
+    </div>
+  </form>
+</section>
 {{end}}
 {{end}}

@@ -1,32 +1,57 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
-<h1>Telegram</h1>
-<p class="muted">Коды и push-подтверждения в чат-боте сервера.</p>
+<header class="page-head">
+  <h1>Telegram</h1>
+  <p class="page-sub">Коды и push-подтверждения в чат-боте сервера.</p>
+</header>
 
 {{if .Linked}}
-<div class="flash ok">Telegram привязан{{with .ChatID}} (chat {{.}}){{end}}.</div>
-<form action="/me/telegram/delete" method="post">
-  {{csrf .CSRF}}
-  <label>Код подтверждения
-    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
-  </label>
-  <button type="submit" class="danger">Отвязать Telegram</button>
-</form>
+<section class="card">
+  <div class="card-head">
+    <h2>Telegram привязан{{with .ChatID}} · chat {{.}}{{end}}</h2>
+    <p>Отвязка требует код из приложения или резервный код.</p>
+  </div>
+  <form action="/me/telegram/delete" method="post" class="form">
+    {{csrf .CSRF}}
+    <label class="field">
+      <span class="field-label">Код подтверждения</span>
+      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn danger">Отвязать Telegram</button>
+    </div>
+  </form>
+</section>
 
 {{else}}
-{{if .LinkCode}}
-<div class="flash ok">Код привязки получен. Отправьте его боту — бот указан
-в настройках сервера.</div>
-<p class="linkcode">{{.LinkCode}}</p>
-<p class="muted">Код действует ограниченное время. Если он истёк —
-запросите новый.</p>
-{{end}}
-<form action="/me/telegram/link" method="post">
-  {{csrf .CSRF}}
+<section class="card">
   {{if .LinkCode}}
-  <button type="submit" class="secondary">Получить новый код</button>
+  <div class="card-head">
+    <h2>Код привязки получен</h2>
+    <p>Отправьте его боту — бот указан в настройках сервера.</p>
+  </div>
+  <div class="linkcode-wrap"><span class="linkcode">{{.LinkCode}}</span></div>
+  <div class="copy-row">
+    <code class="muted">Код действует ограниченное время.</code>
+    <button type="button" class="btn ghost sm" data-copy>Скопировать</button>
+  </div>
+  <form action="/me/telegram/link" method="post" class="form-inline">
+    {{csrf .CSRF}}
+    <button type="submit" class="btn secondary">Получить новый код</button>
+  </form>
   {{else}}
-  <button type="submit">Получить код привязки</button>
+  <div class="card-head">
+    <h2>Привязка бота</h2>
+    <p>Запросите код и отправьте его чат-боту сервера — после этого коды и
+    push-подтверждения будут приходить в Telegram.</p>
+  </div>
+  <form action="/me/telegram/link" method="post" class="form">
+    {{csrf .CSRF}}
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Получить код привязки</button>
+    </div>
+  </form>
   {{end}}
-</form>
+</section>
 {{end}}
 {{end}}

@@ -107,7 +107,7 @@ func (p *PagesAPI) Register(r chi.Router) {
 // NotFound — HTML-404 (монтируется в корневой роутер BuildRouter).
 func (p *PagesAPI) NotFound(w http.ResponseWriter, r *http.Request) {
 	p.render(w, http.StatusNotFound, "error", web.ErrorData{
-		BaseData: p.baseData(r, "Не найдено"),
+		BaseData: p.baseData(r, "Не найдено", ""),
 		Code:     http.StatusNotFound,
 		Message:  "Страница не найдена.",
 	})
@@ -169,10 +169,11 @@ func (p *PagesAPI) requireAdmin(next http.Handler) http.Handler {
 
 // ---- общие помощники ----
 
-// baseData собирает общие данные макета: заголовок, текущий пользователь,
-// CSRF сессии и флеш из query (?flash=...&kind=ok|err — после редиректа).
-func (p *PagesAPI) baseData(r *http.Request, title string) web.BaseData {
-	b := web.BaseData{Title: title}
+// baseData собирает общие данные макета: заголовок, идентификатор активного
+// пункта бокового меню (nav), текущий пользователь, CSRF сессии и флеш из
+// query (?flash=...&kind=ok|err — после редиректа).
+func (p *PagesAPI) baseData(r *http.Request, title, nav string) web.BaseData {
+	b := web.BaseData{Title: title, Nav: nav}
 	if q := r.URL.Query(); q.Get("flash") != "" {
 		if q.Get("kind") == "err" {
 			b.FlashErr = q.Get("flash")
@@ -249,14 +250,14 @@ func (p *PagesAPI) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 // handleLoginPage — GET /login: форма входа.
 func (p *PagesAPI) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	p.render(w, http.StatusOK, "login", web.LoginData{BaseData: p.baseData(r, "Вход")})
+	p.render(w, http.StatusOK, "login", web.LoginData{BaseData: p.baseData(r, "Вход", "")})
 }
 
 // renderLoginErr — рендер формы входа с ошибкой (401) либо подсказкой
 // «введите код» (200): решение о шаге 2FA принимает сервер.
 func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status int, prefill, msg string, needCode bool) {
 	p.render(w, status, "login", web.LoginData{
-		BaseData: p.baseData(r, "Вход"),
+		BaseData: p.baseData(r, "Вход", ""),
 		Err:      msg,
 		Prefill:  prefill,
 		NeedCode: needCode,
@@ -354,7 +355,7 @@ func (p *PagesAPI) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (p *PagesAPI) handleMe(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
 	ctx := r.Context()
-	d := web.MeProfileData{BaseData: p.baseData(r, "Профиль"), User: *user}
+	d := web.MeProfileData{BaseData: p.baseData(r, "Профиль", "me"), User: *user}
 	if _, _, _, confirmed, _, err := p.st.TOTPGet(ctx, user.ID); err == nil {
 		d.TOTPConfirmed = confirmed
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -493,7 +494,7 @@ func (p *PagesAPI) handlePassword(w http.ResponseWriter, r *http.Request) {
 func (p *PagesAPI) handleTOTPPage(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
 	ctx := r.Context()
-	d := web.MeTOTPData{BaseData: p.baseData(r, "TOTP")}
+	d := web.MeTOTPData{BaseData: p.baseData(r, "TOTP-приложение", "totp")}
 	enc, digits, period, confirmed, _, err := p.st.TOTPGet(ctx, user.ID)
 	switch {
 	case err == nil && confirmed:
@@ -645,7 +646,7 @@ func (p *PagesAPI) handleTOTPDelete(w http.ResponseWriter, r *http.Request) {
 // handleBackupPage — GET /me/backup: остаток кодов.
 func (p *PagesAPI) handleBackupPage(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
-	d := web.MeBackupData{BaseData: p.baseData(r, "Резервные коды")}
+	d := web.MeBackupData{BaseData: p.baseData(r, "Резервные коды", "backup")}
 	if n, err := backupRemaining(r.Context(), p.st, user.ID); err == nil {
 		d.Remaining = n
 	}
@@ -679,7 +680,7 @@ func (p *PagesAPI) handleBackupRegen(w http.ResponseWriter, r *http.Request) {
 
 // renderBackupCodes — страница me_backup с НОВЫМИ кодами (ровно один раз).
 func (p *PagesAPI) renderBackupCodes(w http.ResponseWriter, r *http.Request, codes []string) {
-	d := web.MeBackupData{BaseData: p.baseData(r, "Резервные коды"), Generated: true, Codes: codes}
+	d := web.MeBackupData{BaseData: p.baseData(r, "Резервные коды", "backup"), Generated: true, Codes: codes}
 	if user, ok := userFrom(r.Context()); ok {
 		if n, err := backupRemaining(r.Context(), p.st, user.ID); err == nil {
 			d.Remaining = n
@@ -694,7 +695,7 @@ func (p *PagesAPI) renderBackupCodes(w http.ResponseWriter, r *http.Request, cod
 func (p *PagesAPI) handleTelegramPage(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
 	p.render(w, http.StatusOK, "me_telegram", web.MeTelegramData{
-		BaseData: p.baseData(r, "Telegram"),
+		BaseData: p.baseData(r, "Telegram", "telegram"),
 		Linked:   user.TelegramChatID != nil,
 		ChatID:   user.TelegramChatID,
 	})
@@ -719,7 +720,7 @@ func (p *PagesAPI) handleTelegramLink(w http.ResponseWriter, r *http.Request) {
 	}
 	p.auditPage(r.Context(), user.Username, "tg_link_start", clientIP(r), "ok", nil)
 	p.render(w, http.StatusOK, "me_telegram", web.MeTelegramData{
-		BaseData: p.baseData(r, "Telegram"),
+		BaseData: p.baseData(r, "Telegram", "telegram"),
 		LinkCode: code,
 	})
 }
@@ -760,7 +761,7 @@ func (p *PagesAPI) handlePasskeysPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.render(w, http.StatusOK, "me_passkeys", web.MePasskeysData{
-		BaseData: p.baseData(r, "Passkeys"), Creds: creds,
+		BaseData: p.baseData(r, "Passkeys", "passkeys"), Creds: creds,
 	})
 }
 
@@ -805,7 +806,7 @@ func (p *PagesAPI) handleWARegisterBegin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	p.render(w, http.StatusOK, "me_passkeys", web.MePasskeysData{
-		BaseData:    p.baseData(r, "Passkeys"),
+		BaseData:    p.baseData(r, "Passkeys", "passkeys"),
 		Creds:       creds,
 		Handle:      handle,
 		RegName:     name,
@@ -849,7 +850,7 @@ func (p *PagesAPI) handleDevicesPage(w http.ResponseWriter, r *http.Request) {
 		devices[i] = *d
 	}
 	p.render(w, http.StatusOK, "me_devices", web.MeDevicesData{
-		BaseData: p.baseData(r, "Устройства"),
+		BaseData: p.baseData(r, "Устройства", "devices"),
 		Devices:  devices,
 	})
 }
@@ -890,7 +891,7 @@ func (p *PagesAPI) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
-		BaseData: p.baseData(r, "Пользователи"),
+		BaseData: p.baseData(r, "Пользователи", "admin-users"),
 		Users:    derefUsers(users),
 	})
 }
@@ -995,7 +996,7 @@ func (p *PagesAPI) handleAdminUserEdit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
-		BaseData:      p.baseData(r, "Пользователи"),
+		BaseData:      p.baseData(r, "Пользователи", "admin-users"),
 		Users:         derefUsers(users),
 		Edit:          u,
 		EditReplyJSON: replyJSON,
@@ -1066,7 +1067,7 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
-			BaseData:    p.baseData(r, "Пользователи"),
+			BaseData:    p.baseData(r, "Пользователи", "admin-users"),
 			Users:       derefUsers(users),
 			BackupCodes: codes,
 		})
@@ -1121,7 +1122,7 @@ func (p *PagesAPI) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 		out[i] = *row
 	}
 	p.render(w, http.StatusOK, "admin_audit", web.AdminAuditData{
-		BaseData: p.baseData(r, "Аудит"),
+		BaseData: p.baseData(r, "Журнал аудита", "admin-audit"),
 		Rows:     out,
 	})
 }
@@ -1146,7 +1147,7 @@ func (p *PagesAPI) handleAdminChallenges(w http.ResponseWriter, r *http.Request)
 	}
 	defer rows.Close()
 
-	d := web.AdminChallengesData{BaseData: p.baseData(r, "Challenge"), Usernames: map[uuid.UUID]string{}}
+	d := web.AdminChallengesData{BaseData: p.baseData(r, "Активные challenge", "admin-challenges"), Usernames: map[uuid.UUID]string{}}
 	seen := map[uuid.UUID]struct{}{}
 	for rows.Next() {
 		var (
@@ -1196,7 +1197,7 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 		}
 	}
 	return web.AdminSettingsData{
-		BaseData:        p.baseData(r, "Настройки"),
+		BaseData:        p.baseData(r, "Настройки сервера", "admin-settings"),
 		S:               t,
 		RadiusSecretSet: t.RadiusSecret != "",
 		SMTPPasswordSet: t.SMTP.Password != "",

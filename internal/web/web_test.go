@@ -280,7 +280,9 @@ func TestRenderPages(t *testing.T) {
 			if !strings.Contains(out, `src="/static/webauthn.js"`) {
 				t.Errorf("Render(%s): нет подключения webauthn.js", tc.tmpl)
 			}
-			if tc.tmpl != "login" && !strings.Contains(out, `name="csrf_token"`) {
+			// CSRF несут страницы с мутациями (logout и формы); login и
+			// error — карточки без форм сессии.
+			if tc.tmpl != "login" && tc.tmpl != "error" && !strings.Contains(out, `name="csrf_token"`) {
 				t.Errorf("Render(%s): нет CSRF-поля", tc.tmpl)
 			}
 		})
@@ -315,6 +317,125 @@ func TestRenderAdminLogoutAndFlash(t *testing.T) {
 	for _, w := range []string{`action="/logout"`, "Выйти", "Контакты сохранены", `value="csrf-token-123"`} {
 		if !strings.Contains(out, w) {
 			t.Errorf("нет %q", w)
+		}
+	}
+}
+
+// wantNavItems — пункты бокового меню: подпись → href.
+var wantNavItems = map[string]string{
+	"Профиль":            "/me",
+	"Приложение TOTP":    "/me/totp",
+	"Резервные коды":     "/me/backup",
+	"Telegram":           "/me/telegram",
+	"Passkeys":           "/me/passkeys",
+	"Устройства":         "/me/devices",
+	"Пользователи":       "/admin/users",
+	"Аудит":              "/admin/audit",
+	"Активные challenge": "/admin/challenges",
+	"Настройки":          "/admin/settings",
+}
+
+// wantAdminNavItems — пункты, видимые только админу.
+var wantAdminNavItems = []string{"/admin/users", "/admin/audit", "/admin/challenges", "/admin/settings"}
+
+// TestRenderSidebar: боковое меню авторизованной страницы содержит все
+// пункты (админу — включая раздел «Админ»), не-админу админ-пункты скрыты.
+func TestRenderSidebar(t *testing.T) {
+	r := mustNew(t)
+
+	bd := base("Профиль")
+	var sb strings.Builder
+	if err := r.Render(&sb, "me_profile", MeProfileData{BaseData: bd, User: testUser()}); err != nil {
+		t.Fatalf("Render(me_profile): %v", err)
+	}
+	adminOut := sb.String()
+	for label, href := range wantNavItems {
+		if !strings.Contains(adminOut, `href="`+href+`"`) {
+			t.Errorf("сайдбар админа: нет пункта %q (%s)", label, href)
+		}
+	}
+	for _, w := range []string{"Кабинет", "Админ", "twofa"} {
+		if !strings.Contains(adminOut, w) {
+			t.Errorf("сайдбар админа: нет %q", w)
+		}
+	}
+
+	bd = BaseData{Title: "Профиль", Username: "vasya", IsAdmin: false, CSRF: testCSRF}
+	sb.Reset()
+	if err := r.Render(&sb, "me_profile", MeProfileData{BaseData: bd, User: testUser()}); err != nil {
+		t.Fatalf("Render(me_profile): %v", err)
+	}
+	userOut := sb.String()
+	for _, href := range wantAdminNavItems {
+		if strings.Contains(userOut, `href="`+href+`"`) {
+			t.Errorf("сайдбар не-админа: не должен содержать %q", href)
+		}
+	}
+	if !strings.Contains(userOut, `href="/me/totp"`) {
+		t.Error("сайдбар не-админа: нет пункта кабинета /me/totp")
+	}
+}
+
+// TestRenderNavActive: Nav подсвечивает ровно один пункт меню классом
+// nav-link active.
+func TestRenderNavActive(t *testing.T) {
+	r := mustNew(t)
+	cases := []struct{ nav, href string }{
+		{"me", "/me"},
+		{"totp", "/me/totp"},
+		{"backup", "/me/backup"},
+		{"telegram", "/me/telegram"},
+		{"passkeys", "/me/passkeys"},
+		{"devices", "/me/devices"},
+		{"admin-users", "/admin/users"},
+		{"admin-audit", "/admin/audit"},
+		{"admin-challenges", "/admin/challenges"},
+		{"admin-settings", "/admin/settings"},
+	}
+	for _, tc := range cases {
+		bd := base("Профиль")
+		bd.Nav = tc.nav
+		var sb strings.Builder
+		if err := r.Render(&sb, "me_profile", MeProfileData{BaseData: bd, User: testUser()}); err != nil {
+			t.Fatalf("Render(me_profile): %v", err)
+		}
+		out := sb.String()
+		if !strings.Contains(out, `class="nav-link active" href="`+tc.href+`"`) {
+			t.Errorf("Nav=%q: пункт %s не подсвечен", tc.nav, tc.href)
+		}
+		// Активен ровно один пункт.
+		if n := strings.Count(out, `class="nav-link active"`); n != 1 {
+			t.Errorf("Nav=%q: активных пунктов %d, ожидался 1", tc.nav, n)
+		}
+	}
+
+	// Пустой Nav (страницы без меню) — ничего не подсвечено.
+	var sb strings.Builder
+	if err := r.Render(&sb, "me_profile", MeProfileData{BaseData: base("Профиль"), User: testUser()}); err != nil {
+		t.Fatalf("Render(me_profile): %v", err)
+	}
+	if strings.Contains(sb.String(), `class="nav-link active"`) {
+		t.Error("пустой Nav не должен подсвечивать пункты")
+	}
+}
+
+// TestStyleCSSDesignSystem: в style.css есть автоматическая тёмная тема
+// (prefers-color-scheme) и мобильная точка перелома (max-width: 900px).
+func TestStyleCSSDesignSystem(t *testing.T) {
+	rec := httptest.NewRecorder()
+	http.FileServer(Static()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/style.css", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /style.css: статус %d, ожидался 200", rec.Code)
+	}
+	css := rec.Body.String()
+	for _, w := range []string{
+		"prefers-color-scheme: dark",
+		"--accent",
+		"(max-width: 900px)",
+		"prefers-color-scheme",
+	} {
+		if !strings.Contains(css, w) {
+			t.Errorf("style.css: нет %q", w)
 		}
 	}
 }

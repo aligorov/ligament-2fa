@@ -1,23 +1,42 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
-<h1>Резервные коды</h1>
-<p class="muted">Одноразовые коды на случай, когда основной канал недоступен.
-Неиспользованных кодов осталось: <strong>{{.Remaining}}</strong>.</p>
+<header class="page-head">
+  <h1>Резервные коды</h1>
+  <p class="page-sub">Одноразовые коды на случай, когда основной канал
+  недоступен. Неиспользованных кодов осталось: <strong>{{.Remaining}}</strong>.</p>
+</header>
 
 {{if .Generated}}
-<div class="flash warn">Сохраните эти коды — они показываются только один раз!</div>
-<ul class="codes">
-  {{range .Codes}}<li><code>{{.}}</code></li>{{end}}
-</ul>
+<section class="card">
+  <div class="card-head">
+    <h2>Новая партия кодов</h2>
+    <p>Каждый код работает один раз — вместо обычного кода при входе.</p>
+  </div>
+  <div class="flash warn"><span class="flash-icon">⚠️</span>Сохраните эти коды —
+  они показываются только один раз!</div>
+  <ul class="codes">
+    {{range .Codes}}<li><code>{{.}}</code></li>{{end}}
+  </ul>
+  <p class="help">Запишите коды или сохраните в менеджер паролей: после
+  закрытия страницы восстановить их нельзя.</p>
+</section>
 {{end}}
 
-<h2>Перегенерировать</h2>
-<p class="muted">Старые коды аннулируются. Требуется код из приложения или
-резервный код.</p>
-<form action="/me/backup/regenerate" method="post">
-  {{csrf .CSRF}}
-  <label>Код подтверждения
-    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
-  </label>
-  <button type="submit">Перегенерировать коды</button>
-</form>
+<section class="card">
+  <div class="card-head">
+    <h2>Перегенерировать</h2>
+    <p>Старые коды аннулируются. Требуется код из приложения или резервный
+    код.</p>
+  </div>
+  <form action="/me/backup/regenerate" method="post" class="form">
+    {{csrf .CSRF}}
+    <label class="field">
+      <span class="field-label">Код подтверждения</span>
+      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Перегенерировать коды</button>
+    </div>
+  </form>
+</section>
 {{end}}

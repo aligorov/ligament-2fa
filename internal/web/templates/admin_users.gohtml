@@ -1,95 +1,143 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
-<h1>Пользователи</h1>
-
-<table>
-  <tr>
-    <th>Имя</th><th>Роль</th><th>Включён</th><th>Каналы</th><th>RADIUS Push</th><th>Действия</th>
-  </tr>
-  {{range .Users}}
-  <tr{{if not .Enabled}} class="disabled"{{end}}>
-    <td>{{.Username}}</td>
-    <td><span class="badge {{if eq .Role "admin"}}ok{{end}}">{{.Role}}</span></td>
-    <td>{{if .Enabled}}<span class="badge ok">да</span>{{else}}<span class="badge off">нет</span>{{end}}</td>
-    <td>{{range .PreferChannels}}<span class="badge">{{.}}</span> {{end}}</td>
-    <td>{{if .RadiusPush}}да{{else}}нет{{end}}</td>
-    <td class="row-actions">
-      <a href="/admin/users/{{.ID}}">Редактировать</a>
-      <form action="/admin/users/{{.ID}}" method="post">{{csrf $.CSRF}}<input type="hidden" name="do" value="reset-totp">
-        <button type="submit" class="secondary" title="Сбросить TOTP и перегенерировать резервные коды">Сброс TOTP</button>
-      </form>
-      <form action="/admin/users/{{.ID}}" method="post">{{csrf $.CSRF}}<input type="hidden" name="do" value="reset-webauthn">
-        <button type="submit" class="secondary">Сброс passkeys</button>
-      </form>
-      <form action="/admin/users/{{.ID}}" method="post">{{csrf $.CSRF}}<input type="hidden" name="do" value="unlink-telegram">
-        <button type="submit" class="secondary">Отвязать Telegram</button>
-      </form>
-      <form action="/admin/users/{{.ID}}" method="post">{{csrf $.CSRF}}<input type="hidden" name="do" value="revoke-devices">
-        <button type="submit" class="secondary">Отозвать устройства</button>
-      </form>
-      <form action="/admin/users/{{.ID}}" method="post">{{csrf $.CSRF}}<input type="hidden" name="do" value="delete">
-        <button type="submit" class="danger" onclick="return confirm('Удалить пользователя {{.Username}}?')">Удалить</button>
-      </form>
-    </td>
-  </tr>
-  {{end}}
-</table>
-
-{{if .Edit}}
-<h2>Редактирование: {{.Edit.Username}}</h2>
-<form action="/admin/users/{{.Edit.ID}}" method="post" class="wide">
-  {{csrf .CSRF}}
-  <input type="hidden" name="do" value="save">
-  {{template "userFields" .}}
-</form>
-{{else}}
-<h2>Новый пользователь</h2>
-<form action="/admin/users" method="post" class="wide">
-  {{csrf .CSRF}}
-  {{template "userFields" .}}
-</form>
-{{end}}
+<header class="page-head">
+  <h1>Пользователи</h1>
+  <p class="page-sub">Все учётные записи сервера: роли, каналы кодов и
+  чувствительные действия.</p>
+</header>
 
 {{if .BackupCodes}}
-<div class="card">
-  <h3>Новые резервные коды</h3>
-  <p class="flash err">Показываются только один раз — сохраните!</p>
-  <pre>{{range .BackupCodes}}{{.}}<br>{{end}}</pre>
-</div>
+<section class="card">
+  <div class="card-head">
+    <h2>Новые резервные коды</h2>
+    <p>Выданы после сброса TOTP — передайте их пользователю безопасным
+    способом.</p>
+  </div>
+  <div class="flash err"><span class="flash-icon">⚠️</span>Показываются только один раз — сохраните!</div>
+  <ul class="codes">
+    {{range .BackupCodes}}<li><code>{{.}}</code></li>{{end}}
+  </ul>
+</section>
+{{end}}
+
+<section class="card">
+  <div class="card-head">
+    <h2>Список</h2>
+    <p>Действия применяются сразу; удаление необратимо.</p>
+  </div>
+  <div class="table-wrap">
+    <table class="table">
+      <tr>
+        <th>Имя</th><th>Роль</th><th>Включён</th><th>Каналы</th><th>RADIUS Push</th><th>Действия</th>
+      </tr>
+      {{range .Users}}
+      <tr{{if not .Enabled}} class="row-off"{{end}}>
+        <td class="cell-strong">{{.Username}}</td>
+        <td><span class="badge {{if eq .Role "admin"}}ok{{else}}neutral{{end}}">{{.Role}}</span></td>
+        <td>{{if .Enabled}}<span class="badge ok">да</span>{{else}}<span class="badge err">нет</span>{{end}}</td>
+        <td>{{range .PreferChannels}}<span class="badge neutral">{{.}}</span> {{end}}</td>
+        <td>{{if .RadiusPush}}<span class="badge ok">да</span>{{else}}<span class="badge neutral">нет</span>{{end}}</td>
+        <td class="row-actions">
+          <a class="btn secondary sm" href="/admin/users/{{.ID}}">Редактировать</a>
+          <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="reset-totp">
+            <button type="submit" class="btn secondary sm" title="Сбросить TOTP и перегенерировать резервные коды">Сброс TOTP</button>
+          </form>
+          <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="reset-webauthn">
+            <button type="submit" class="btn secondary sm">Сброс passkeys</button>
+          </form>
+          <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="unlink-telegram">
+            <button type="submit" class="btn secondary sm">Отвязать Telegram</button>
+          </form>
+          <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="revoke-devices">
+            <button type="submit" class="btn secondary sm">Отозвать устройства</button>
+          </form>
+          <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="delete">
+            <button type="submit" class="btn danger sm" onclick="return confirm('Удалить пользователя {{.Username}}?')">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+</section>
+
+{{if .Edit}}
+<section class="card">
+  <div class="card-head">
+    <h2>Редактирование: {{.Edit.Username}}</h2>
+    <p>Пустой пароль — оставить текущий.</p>
+  </div>
+  <form action="/admin/users/{{.Edit.ID}}" method="post" class="form wide">
+    {{csrf .CSRF}}
+    <input type="hidden" name="do" value="save">
+    {{template "userFields" .}}
+  </form>
+</section>
+{{else}}
+<section class="card">
+  <div class="card-head">
+    <h2>Новый пользователь</h2>
+    <p>Имя и пароль обязательны; остальное можно изменить позже.</p>
+  </div>
+  <form action="/admin/users" method="post" class="form wide">
+    {{csrf .CSRF}}
+    {{template "userFields" .}}
+  </form>
+</section>
 {{end}}
 {{end}}
 
 {{define "userFields"}}
-<div class="grid">
-  <label>Имя пользователя
-    <input type="text" name="username" value="{{if .Edit}}{{.Edit.Username}}{{end}}" required>
+<div class="field-row">
+  <label class="field">
+    <span class="field-label">Имя пользователя</span>
+    <input class="input" type="text" name="username" value="{{if .Edit}}{{.Edit.Username}}{{end}}" required>
   </label>
-  <label>Пароль <span class="muted">(пусто — не менять)</span>
-    <input type="password" name="password" autocomplete="new-password">
+  <label class="field">
+    <span class="field-label">Пароль <span class="muted">(пусто — не менять)</span></span>
+    <input class="input" type="password" name="password" autocomplete="new-password">
   </label>
-  <label>Роль
-    <select name="role">
+</div>
+<div class="field-row">
+  <label class="field">
+    <span class="field-label">Роль</span>
+    <select class="select" name="role">
       <option value="user"{{if and .Edit (eq .Edit.Role "user")}} selected{{end}}>user</option>
       <option value="admin"{{if and .Edit (eq .Edit.Role "admin")}} selected{{end}}>admin</option>
     </select>
+    <span class="help">admin видит раздел «Админ» и управляет настройками.</span>
   </label>
-  <label class="check"><input type="checkbox" name="enabled" value="1"{{if or (not .Edit) .Edit.Enabled}} checked{{end}}> Включён</label>
-  <label>Email
-    <input type="email" name="email" value="{{if .Edit}}{{.Edit.Email}}{{end}}">
+  <div class="field">
+    <span class="field-label">Доступ</span>
+    <label class="check"><input type="checkbox" name="enabled" value="1"{{if or (not .Edit) .Edit.Enabled}} checked{{end}}> <span>Включён</span></label>
+    <span class="help">Отключённый не может войти, его сессии моментально
+    отзываются.</span>
+  </div>
+</div>
+<div class="field-row">
+  <label class="field">
+    <span class="field-label">Email</span>
+    <input class="input" type="email" name="email" value="{{if .Edit}}{{.Edit.Email}}{{end}}">
   </label>
-  <label>Телефон
-    <input type="tel" name="phone" value="{{if .Edit}}{{.Edit.Phone}}{{end}}">
+  <label class="field">
+    <span class="field-label">Телефон</span>
+    <input class="input" type="tel" name="phone" value="{{if .Edit}}{{.Edit.Phone}}{{end}}" placeholder="+79990001122">
   </label>
 </div>
-<fieldset>
+<fieldset class="check-group">
   <legend>Каналы второго фактора</legend>
-  <label class="check"><input type="checkbox" name="prefer_channels" value="totp"{{if and .Edit (hasChan .Edit.PreferChannels "totp")}} checked{{end}}> TOTP</label>
-  <label class="check"><input type="checkbox" name="prefer_channels" value="telegram"{{if and .Edit (hasChan .Edit.PreferChannels "telegram")}} checked{{end}}> Telegram</label>
-  <label class="check"><input type="checkbox" name="prefer_channels" value="email"{{if and .Edit (hasChan .Edit.PreferChannels "email")}} checked{{end}}> Email</label>
-  <label class="check"><input type="checkbox" name="prefer_channels" value="sms"{{if and .Edit (hasChan .Edit.PreferChannels "sms")}} checked{{end}}> SMS</label>
+  <label class="check"><input type="checkbox" name="prefer_channels" value="totp"{{if and .Edit (hasChan .Edit.PreferChannels "totp")}} checked{{end}}> <span>TOTP</span></label>
+  <label class="check"><input type="checkbox" name="prefer_channels" value="telegram"{{if and .Edit (hasChan .Edit.PreferChannels "telegram")}} checked{{end}}> <span>Telegram</span></label>
+  <label class="check"><input type="checkbox" name="prefer_channels" value="email"{{if and .Edit (hasChan .Edit.PreferChannels "email")}} checked{{end}}> <span>Email</span></label>
+  <label class="check"><input type="checkbox" name="prefer_channels" value="sms"{{if and .Edit (hasChan .Edit.PreferChannels "sms")}} checked{{end}}> <span>SMS</span></label>
 </fieldset>
-<label class="check"><input type="checkbox" name="radius_push" value="1"{{if and .Edit .Edit.RadiusPush}} checked{{end}}> RADIUS Push (Telegram-подтверждение вместо кода)</label>
-<label>RADIUS Reply (JSON, атрибуты Access-Accept для этого пользователя)
-  <textarea name="radius_reply" rows="4" placeholder='{"Mikrotik-Group": "vpn"}'>{{if .Edit}}{{.EditReplyJSON}}{{end}}</textarea>
+<label class="check"><input type="checkbox" name="radius_push" value="1"{{if and .Edit .Edit.RadiusPush}} checked{{end}}> <span>RADIUS Push — Telegram-подтверждение вместо кода</span></label>
+<label class="field">
+  <span class="field-label">RADIUS Reply <span class="muted">(JSON)</span></span>
+  <textarea class="textarea" name="radius_reply" rows="4" placeholder='{"Mikrotik-Group": "vpn"}'>{{if .Edit}}{{.EditReplyJSON}}{{end}}</textarea>
+  <span class="help">Атрибуты Access-Accept для этого пользователя.</span>
 </label>
-<button type="submit">Сохранить</button>
+<div class="form-actions">
+  <button type="submit" class="btn primary">Сохранить</button>
+</div>
 {{end}}

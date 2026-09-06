@@ -1,5 +1,9 @@
+{{define "layout"}}{{template "layout_center" .}}{{end}}
 {{define "content"}}
-<h1>Ошибка {{.Code}}</h1>
-<div class="flash err">{{.Message}}</div>
-<p><a href="/">На главную</a></p>
+<div class="error-card">
+  <div class="error-code">{{.Code}}</div>
+  <h1>Ошибка {{.Code}}</h1>
+  <div class="flash err"><span class="flash-icon">⚠️</span>{{.Message}}</div>
+  <p class="form-actions center"><a class="btn secondary" href="/">На главную</a></p>
+</div>
 {{end}}
