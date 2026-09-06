@@ -55,14 +55,13 @@ var trustedKeys = map[string]ed25519.PublicKey{
 	"dev-1": mustPubKey("335571483eb7a56d0ea0eb4afab5b74b7df3d9239d8862cc1066a987d63919ca"),
 }
 
-// SetTrustedKeys подменяет набор доверенных ключей (интеграционные тесты
-// генерируют свою пару); resetTrustedKeys восстанавливает зашитый набор.
-func SetTrustedKeys(keys map[string]ed25519.PublicKey) { trustedKeys = keys }
-
-func resetTrustedKeys() {
-	trustedKeys = map[string]ed25519.PublicKey{
-		"dev-1": mustPubKey("335571483eb7a56d0ea0eb4afab5b74b7df3d9239d8862cc1066a987d63919ca"),
-	}
+// SetTrustedKeys подменяет набор доверенных ключей и возвращает функцию
+// восстановления прежнего набора (интеграционные тесты генерируют свою
+// пару: restore := SetTrustedKeys(...); t.Cleanup(restore)).
+func SetTrustedKeys(keys map[string]ed25519.PublicKey) func() {
+	prev := trustedKeys
+	trustedKeys = keys
+	return func() { trustedKeys = prev }
 }
 
 // Sign подписывает payload приватным ключом вендора и собирает blob.

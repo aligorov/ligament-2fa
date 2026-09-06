@@ -26,8 +26,8 @@ func signTestKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 func withTestKeys(t *testing.T, kid string) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv := signTestKey(t)
-	SetTrustedKeys(map[string]ed25519.PublicKey{kid: pub})
-	t.Cleanup(func() { resetTrustedKeys() })
+	restore := SetTrustedKeys(map[string]ed25519.PublicKey{kid: pub})
+	t.Cleanup(restore)
 	return pub, priv
 }
 

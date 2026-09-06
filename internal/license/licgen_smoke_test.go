@@ -41,8 +41,8 @@ func TestLicgenOutputParses(t *testing.T) {
 		t.Fatalf("licgen вывел не license-blob: %q", blob[:min(60, len(blob))])
 	}
 
-	SetTrustedKeys(map[string]ed25519.PublicKey{"smoke-1": pub})
-	t.Cleanup(resetTrustedKeys)
+	restore := SetTrustedKeys(map[string]ed25519.PublicKey{"smoke-1": pub})
+	t.Cleanup(restore)
 	p, err := ParseLicense(blob)
 	if err != nil {
 		t.Fatalf("ParseLicense(licgen blob): %v", err)
