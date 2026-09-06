@@ -147,6 +147,7 @@ func main() {
 		wa = nil
 	}
 	waRPID := m.Get().WebAuthn.RPID
+	waOrigins := fmt.Sprint(m.Get().WebAuthn.Origins)
 
 	rend, err := web.New()
 	if err != nil {
@@ -174,7 +175,7 @@ func main() {
 	// подхватываются снимком; слой доставки (SMTP/SMS/Telegram-бот)
 	// пересобирается заново и подменяется в ядре; настройки LDAP читаются
 	// верификатором из свежего снимка при каждом входе; listen.* и
-	// webauthn.rp_id применяются после рестарта процесса.
+	// webauthn.rp_id/origins применяются после рестарта процесса.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
@@ -196,8 +197,8 @@ func main() {
 					push = bot
 				}
 				core.SetSenders(senders, push)
-				if rpid := m.Get().WebAuthn.RPID; rpid != waRPID {
-					slog.Warn("main: webauthn.rp_id изменён — применяется после перезапуска (смена отвязывает существующие passkeys)")
+				if c := m.Get().WebAuthn; c.RPID != waRPID || fmt.Sprint(c.Origins) != waOrigins {
+					slog.Warn("main: webauthn.rp_id/origins изменён — применяется после перезапуска (смена rp_id отвязывает существующие passkeys)")
 				}
 				slog.Info("main: настройки перечитаны (SIGHUP); доставка пересобрана; listen.* — после рестарта")
 				cancel()

@@ -19,14 +19,14 @@ import (
 // TestNewWebAuthnEmptyRPID: пустой RPID отклоняется самим сервисом
 // (go-webauthn.New его не требует, но церемонии без домена невозможны).
 func TestNewWebAuthnEmptyRPID(t *testing.T) {
-	if _, err := newWebAuthn("twofa", ""); err == nil {
+	if _, err := newWebAuthn("twofa", "", nil); err == nil {
 		t.Fatal("пустой RPID: ожидалась ошибка, получен nil")
 	}
 }
 
 // TestNewWebAuthnOrigins: displayName по умолчанию и оба варианта origin.
 func TestNewWebAuthnOrigins(t *testing.T) {
-	w, err := newWebAuthn("", "2fa.example.com")
+	w, err := newWebAuthn("", "2fa.example.com", nil)
 	if err != nil {
 		t.Fatalf("newWebAuthn: %v", err)
 	}
@@ -44,8 +44,47 @@ func TestNewWebAuthnOrigins(t *testing.T) {
 
 // TestNewWebAuthnBadRPID: недоменное RPID отклоняет protocol.ValidateRPID.
 func TestNewWebAuthnBadRPID(t *testing.T) {
-	if _, err := newWebAuthn("twofa", "not a domain"); err == nil {
+	if _, err := newWebAuthn("twofa", "not a domain", nil); err == nil {
 		t.Fatal("битый RPID: ожидалась ошибка, получен nil")
+	}
+}
+
+// TestResolveOrigins: явный webauthn.origins заменяет выведенные из RPID
+// (нестандартный порт localhost:8080), нормализует хвостовой слэш и
+// отклоняет не-origin значения (нет схемы/хоста, есть путь).
+func TestResolveOrigins(t *testing.T) {
+	// Пусто — вывод обоих схем из RPID (поведение по умолчанию).
+	got, err := resolveOrigins("2fa.example.com", nil)
+	if err != nil {
+		t.Fatalf("resolveOrigins(nil): %v", err)
+	}
+	if want := []string{"https://2fa.example.com", "http://2fa.example.com"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("derived = %v, want %v", got, want)
+	}
+
+	// Явный список с портом — используется как есть.
+	got, err = resolveOrigins("localhost", []string{"http://localhost:8080"})
+	if err != nil {
+		t.Fatalf("resolveOrigins(explicit): %v", err)
+	}
+	if want := []string{"http://localhost:8080"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("explicit = %v, want %v", got, want)
+	}
+
+	// Хвостовой слэш срезается, пробелы вокруг — тоже.
+	got, err = resolveOrigins("localhost", []string{" https://localhost:8443/ "})
+	if err != nil {
+		t.Fatalf("resolveOrigins(normalize): %v", err)
+	}
+	if want := []string{"https://localhost:8443"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("normalized = %v, want %v", got, want)
+	}
+
+	// Некорректные: без схемы, без хоста, с путём.
+	for _, bad := range []string{"localhost:8080", "https://", "ftp://x", "https://x/login", ""} {
+		if _, err := resolveOrigins("localhost", []string{bad}); err == nil {
+			t.Errorf("origin %q: ожидалась ошибка, получен nil", bad)
+		}
 	}
 }
 
@@ -75,7 +114,7 @@ func TestSessionChallengeID(t *testing.T) {
 // newTestSvc — сервис с валидным RP без хранилища (для мапперов).
 func newTestSvc(t *testing.T) *Svc {
 	t.Helper()
-	w, err := newWebAuthn("twofa", "2fa.example.com")
+	w, err := newWebAuthn("twofa", "2fa.example.com", nil)
 	if err != nil {
 		t.Fatalf("newWebAuthn: %v", err)
 	}

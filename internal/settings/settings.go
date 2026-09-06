@@ -79,6 +79,9 @@ type T struct {
 	WebAuthn struct {
 		RPID   string
 		RPName string
+		// Origins — явный список origin (scheme://host[:port]); пусто =
+		// выводить из RPID оба варианта схемы на стандартных портах.
+		Origins []string
 	}
 
 	Policy struct {
@@ -175,6 +178,7 @@ func defaultT() *T {
 	t.TOTP.Period = 30
 	t.TOTP.Skew = 1
 	t.WebAuthn.RPName = "twofa"
+	t.WebAuthn.Origins = []string{}
 	t.LDAP.UserFilter = `(&(objectClass=user)(sAMAccountName={login}))`
 	t.LDAP.GroupFilter = `(&(objectClass=group)(member={dn}))`
 	t.LDAP.Attrs.Email = "mail"
@@ -413,6 +417,7 @@ func buildT(raw map[string]json.RawMessage) *T {
 	wa := fields(raw["webauthn"])
 	t.WebAuthn.RPID = parseString(wa["rp_id"], def.WebAuthn.RPID)
 	t.WebAuthn.RPName = parseString(wa["rp_name"], def.WebAuthn.RPName)
+	t.WebAuthn.Origins = parseStrings(wa["origins"], def.WebAuthn.Origins)
 
 	ld := fields(raw["ldap"])
 	t.LDAP.Enabled = parseBool(ld["enabled"], def.LDAP.Enabled)
@@ -776,6 +781,7 @@ func (t *T) masked() map[string]any {
 		"webauthn": map[string]any{
 			"rp_id":   t.WebAuthn.RPID,
 			"rp_name": t.WebAuthn.RPName,
+			"origins": t.WebAuthn.Origins,
 		},
 		"ldap": map[string]any{
 			"enabled":       t.LDAP.Enabled,

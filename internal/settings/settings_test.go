@@ -2,6 +2,7 @@ package settings
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func TestBuildTDefaults(t *testing.T) {
 	if snap.TOTP.Issuer != "twofa" || snap.TOTP.Digits != 6 || snap.TOTP.Period != 30 || snap.TOTP.Skew != 1 {
 		t.Errorf("totp = %+v", snap.TOTP)
 	}
-	if snap.WebAuthn.RPID != "" || snap.WebAuthn.RPName != "twofa" {
+	if snap.WebAuthn.RPID != "" || snap.WebAuthn.RPName != "twofa" || len(snap.WebAuthn.Origins) != 0 {
 		t.Errorf("webauthn = %+v", snap.WebAuthn)
 	}
 	if snap.Policy.CodeTTL != 5*time.Minute || snap.Policy.ResendCooldown != 60*time.Second ||
@@ -75,7 +76,7 @@ func TestBuildTValid(t *testing.T) {
 		"sms.presets":              json.RawMessage(`{"smsc":{"x":1}}`),
 		"totp":                     json.RawMessage(`{"issuer":"iss","digits":8,"period":60,"skew":2}`),
 		"telegram":                 json.RawMessage(`{"bot_token":"bt"}`),
-		"webauthn":                 json.RawMessage(`{"rp_id":"2fa.example.com","rp_name":"name"}`),
+		"webauthn":                 json.RawMessage(`{"rp_id":"2fa.example.com","rp_name":"name","origins":["https://2fa.example.com","http://localhost:8080"]}`),
 		"policy":                   json.RawMessage(`{"code_ttl":"1m","code_length":8,"max_attempts":2,"resend_cooldown":"11s","default_prefer_channels":["sms"],"push_cooldown":"12s","push_per_hour":1,"trusted_device_ttl":"2h","max_fail":1,"fail_window":"13s","ban_time":"14s"}`),
 		"web.session_ttl":          json.RawMessage(`"1h"`),
 	}
@@ -108,6 +109,10 @@ func TestBuildTValid(t *testing.T) {
 	}
 	if snap.WebAuthn.RPID != "2fa.example.com" || snap.WebAuthn.RPName != "name" {
 		t.Errorf("webauthn = %+v", snap.WebAuthn)
+	}
+	wantOrigins := []string{"https://2fa.example.com", "http://localhost:8080"}
+	if !reflect.DeepEqual(snap.WebAuthn.Origins, wantOrigins) {
+		t.Errorf("webauthn.origins = %v, want %v", snap.WebAuthn.Origins, wantOrigins)
 	}
 	if snap.Policy.CodeTTL != time.Minute || snap.Policy.CodeLength != 8 || snap.Policy.MaxAttempts != 2 ||
 		snap.Policy.ResendCooldown != 11*time.Second || snap.Policy.PushCooldown != 12*time.Second ||

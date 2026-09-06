@@ -1467,6 +1467,7 @@ var settingsForm = map[string][]settingsField{
 	"webauthn": {
 		{name: "webauthn.rp_id", key: "webauthn"},
 		{name: "webauthn.rp_name", key: "webauthn"},
+		{name: "webauthn.origins", key: "webauthn", kind: 'j'},
 	},
 	"ldap": {
 		{name: "ldap.enabled", key: "ldap", kind: 'b'},

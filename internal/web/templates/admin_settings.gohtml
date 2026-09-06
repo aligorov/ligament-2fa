@@ -253,8 +253,17 @@
         <input class="input" type="text" name="webauthn.rp_name" value="{{.S.WebAuthn.RPName}}">
       </label>
     </div>
+    <label class="field">
+      <span class="field-label">Origins (JSON-массив)</span>
+      <input class="input mono" type="text" name="webauthn.origins" placeholder='["http://localhost:8080"]' value='{{if .S.WebAuthn.Origins}}{{jsonPretty .S.WebAuthn.Origins}}{{else}}[]{{end}}'>
+      <span class="help">Пусто ([]) — origins выводятся из RP ID: https://… и
+      http://… на стандартных портах. Если web-UI открыт на нестандартном
+      порту (например http://localhost:8080), перечислите точные origins —
+      иначе браузер отклонит привязку passkey из-за несовпадения origin.</span>
+    </label>
     <p class="help">Смена RP ID отвязывает существующие passkeys — миграция
-    описана в README.</p>
+    описана в README. Изменения секции применяются после перезапуска
+    сервера.</p>
     <div class="form-actions">
       <button type="submit" class="btn primary">Сохранить секцию</button>
     </div>

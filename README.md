@@ -44,7 +44,8 @@ docker compose logs twofa 2>&1 | grep "ADMIN PASSWORD"
 Все ключи — JSON; секретные значения показываются маской, редактируются
 точечно. Политики и параметры TOTP применяются на лету; доставка (SMTP,
 SMS-шлюз, Telegram) перестраивается по SIGHUP (смена токена Telegram-бота —
-перезапуск); `listen.*` и `webauthn.rp_id` — только после рестарта процесса.
+перезапуск); `listen.*` и `webauthn.rp_id`/`webauthn.origins` — только
+после рестарта процесса.
 
 **SMTP (email-коды):**
 
@@ -91,11 +92,22 @@ Custom-шлюз (JSONPath-правило успеха и т.п. — см. спе
 **WebAuthn/passkeys:** ключ `webauthn`:
 
 ```json
-{"rp_id":"2fa.example.com","rp_name":"My 2FA"}
+{"rp_id":"2fa.example.com","rp_name":"My 2FA","origins":[]}
 ```
 
 `rp_id` — домен, с которого открывается web-UI (localhost для локальных
-тестов). Регистрация passkey — в кабинете /me → Passkeys.
+тестов). `origins` — точные origin браузера (`scheme://host[:port]`); пусто —
+выводятся `https://<rp_id>` и `http://<rp_id>` на стандартных портах. Если
+web-UI открыт на нестандартном порту, укажите origins явно, иначе браузер
+отклонит привязку passkey из-за несовпадения origin:
+
+```json
+{"rp_id":"localhost","rp_name":"Ligament","origins":["http://localhost:8080"]}
+```
+
+Регистрация passkey — в кабинете /me → Passkeys. Изменения `rp_id`/`origins`
+применяются после рестарта процесса (смена `rp_id` отвязывает существующие
+passkeys).
 
 ## LDAP / Active Directory
 

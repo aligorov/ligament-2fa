@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -55,9 +56,10 @@ type Svc struct {
 	m  *settings.M
 }
 
-// New строит сервис из настроек webauthn.rp_id / webauthn.rp_name.
-// RPID обязателен (голый домен RP); origins выводятся в обоих вариантах
-// схемы — https для продакшена и http для локальной разработки.
+// New строит сервис из настроек webauthn.rp_id / webauthn.rp_name /
+// webauthn.origins. RPID обязателен (голый домен RP); origins при
+// отсутствии настройки выводятся в обоих вариантах схемы на стандартных
+// портах — https для продакшена и http для локальной разработки.
 func New(st *store.Store, m *settings.M) (*Svc, error) {
 	if m == nil {
 		return nil, errors.New("webauthn: менеджер настроек не задан")
@@ -72,7 +74,7 @@ func New(st *store.Store, m *settings.M) (*Svc, error) {
 	if st == nil {
 		return nil, errors.New("webauthn: хранилище не задано")
 	}
-	w, err := newWebAuthn(snap.WebAuthn.RPName, snap.WebAuthn.RPID)
+	w, err := newWebAuthn(snap.WebAuthn.RPName, snap.WebAuthn.RPID, snap.WebAuthn.Origins)
 	if err != nil {
 		return nil, err
 	}
@@ -80,18 +82,44 @@ func New(st *store.Store, m *settings.M) (*Svc, error) {
 }
 
 // newWebAuthn валидирует параметры RP и создаёт экземпляр go-webauthn.
-func newWebAuthn(displayName, rpid string) (*gowebauthn.WebAuthn, error) {
+// explicit — webauthn.origins: непустой список заменяет выведенные из
+// RPID origins (нужен для нестандартных портов, например
+// http://localhost:8080, и нескольких доменов одного RPID).
+func newWebAuthn(displayName, rpid string, explicit []string) (*gowebauthn.WebAuthn, error) {
 	if rpid == "" {
 		return nil, errors.New("webauthn: RPID не задан")
 	}
 	if displayName == "" {
 		displayName = defaultRPName
 	}
+	origins, err := resolveOrigins(rpid, explicit)
+	if err != nil {
+		return nil, err
+	}
 	return gowebauthn.New(&gowebauthn.Config{
 		RPDisplayName: displayName,
 		RPID:          rpid,
-		RPOrigins:     rpOrigins(rpid),
+		RPOrigins:     origins,
 	})
+}
+
+// resolveOrigins — итоговые RPOrigins: явный webauthn.origins (каждый
+// origin валидируется как scheme://host[:port] без пути) либо https- и
+// http-вариант RPID на стандартных портах.
+func resolveOrigins(rpid string, explicit []string) ([]string, error) {
+	if len(explicit) == 0 {
+		return rpOrigins(rpid), nil
+	}
+	out := make([]string, 0, len(explicit))
+	for _, o := range explicit {
+		u, err := url.Parse(strings.TrimSpace(o))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+			(u.Path != "" && u.Path != "/") {
+			return nil, fmt.Errorf("webauthn: некорректный origin %q — нужен scheme://host[:port] без пути, например http://localhost:8080", o)
+		}
+		out = append(out, u.Scheme+"://"+u.Host)
+	}
+	return out, nil
 }
 
 // rpOrigins — https- и http-варианты origin (scheme+host, без пути и слэша).
