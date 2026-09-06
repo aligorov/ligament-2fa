@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -144,6 +146,31 @@ func main() {
 	// сборку новее maintenance_expires лицензии (perpetual-версионный
 	// пиннинг, report §3.4). free/trial не ограничены.
 	lic := license.NewManager(st)
+
+	// Рекламная подпись email/Telegram: только free/trial и при
+	// заполненном ads.message_footer; {url} — случайная ссылка пула.
+	adLine := func() string {
+		snap := m.Get()
+		if snap == nil || !snap.Ads.Enabled || snap.Ads.MessageFooter == "" {
+			return ""
+		}
+		if lic != nil {
+			ctxQ, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if st, err := lic.Effective(ctxQ); err == nil && st.Mode == license.ModeLicensed {
+				return ""
+			}
+		}
+		footer := snap.Ads.MessageFooter
+		pool := snap.Ads.Direct.URLs
+		if len(pool) == 0 && snap.Ads.Direct.URL != "" {
+			pool = []string{snap.Ads.Direct.URL}
+		}
+		if len(pool) > 0 {
+			footer = strings.ReplaceAll(footer, "{url}", pool[rand.Intn(len(pool))])
+		}
+		return footer
+	}
 	if err := lic.Init(ctx); err != nil {
 		slog.Error("main: инициализация лицензии", "error", err)
 		os.Exit(1)
@@ -163,7 +190,7 @@ func main() {
 	// Каналы доставки кодов и Telegram-бот (он же PushNotifier).
 	// botToken — токен, из которого собран текущий бот (для повторного
 	// использования при неизменном токене после SIGHUP).
-	senders, bot, botToken := rebuildSenders(st, m, nil, "")
+	senders, bot, botToken := rebuildSenders(st, m, nil, "", adLine)
 	var push auth.PushNotifier
 	if bot != nil {
 		push = bot
@@ -238,7 +265,7 @@ func main() {
 					cancel()
 					continue
 				}
-				senders, bot, botToken = rebuildSenders(st, m, bot, botToken)
+				senders, bot, botToken = rebuildSenders(st, m, bot, botToken, adLine)
 				var push auth.PushNotifier
 				if bot != nil {
 					push = bot
@@ -388,14 +415,14 @@ func bootstrapAdmin(ctx context.Context, st *store.Store) error {
 // перезапуска (long polling живёт в своей горутине). Возвращает карту
 // отправителей, бота и токен, из которого бот собран. Ненастроенные каналы
 // просто отсутствуют в карте — Core их пропускает при выборе.
-func rebuildSenders(st *store.Store, m *settings.M, existing *telegram.Bot, existingToken string) (map[channel.Channel]delivery.Sender, *telegram.Bot, string) {
+func rebuildSenders(st *store.Store, m *settings.M, existing *telegram.Bot, existingToken string, adLine func() string) (map[channel.Channel]delivery.Sender, *telegram.Bot, string) {
 	t := m.Get()
 	senders := make(map[channel.Channel]delivery.Sender)
 
 	if t.SMTP.Host != "" {
 		senders[channel.Email] = delivery.NewEmail(t.SMTP.Host, t.SMTP.Port, t.SMTP.StartTLS,
 			t.SMTP.User, t.SMTP.Password, t.SMTP.From, t.SMTP.Subject,
-			t.Messages.EmailBody, t.MessageVars(), t.SMTP.Timeout)
+			t.Messages.EmailBody, t.MessageVars(), adLine, t.SMTP.Timeout)
 	}
 	if gw, err := t.SMSGateway(); err != nil {
 		slog.Warn("main: sms.gateway не разобран — SMS выключен", "error", err)
@@ -428,6 +455,7 @@ func rebuildSenders(st *store.Store, m *settings.M, existing *telegram.Bot, exis
 		senders[channel.Telegram] = existing
 	default:
 		existing = telegram.New(st, m)
+		existing.SetAdLine(adLine)
 		existingToken = t.TG.BotToken
 		senders[channel.Telegram] = existing
 	}

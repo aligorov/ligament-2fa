@@ -54,6 +54,10 @@ type Bot struct {
 	st  storeDeps
 	set settingsDeps
 
+	// adLine — рекламная подпись бесплатной лицензии ("" — нет);
+	// сеттер SetAdLine, вычисляется на каждую отправку.
+	adLine func() string
+
 	// findLink ищет активный tg_link-челлендж по SHA-256 нормализованного
 	// кода. По умолчанию — прямой SQL через пул store (без user_id: код
 	// вводит пользователь в чат, сервер не знает, чей он). Отдельное поле —
@@ -325,6 +329,11 @@ func (b *Bot) Send(ctx context.Context, to, code string) error {
 		codeTpl = settings.DefaultTelegramCode // тесты без менеджера настроек
 	}
 	text := delivery.RenderTemplate(codeTpl, code, snap.MessageVars())
+	if b.adLine != nil {
+		if ad := b.adLine(); ad != "" {
+			text += "\n\n" + ad
+		}
+	}
 	return b.send(ctx, chatID, text, nil)
 }
 
@@ -392,3 +401,6 @@ func GenerateLinkCode() string {
 	}
 	return string(out[:4]) + "-" + string(out[4:])
 }
+
+// SetAdLine подключает рекламную подпись сообщений (nil — без подписи).
+func (b *Bot) SetAdLine(f func() string) { b.adLine = f }

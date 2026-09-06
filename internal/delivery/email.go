@@ -28,6 +28,11 @@ type EmailSender struct {
 	vars    map[string]string
 	timeout time.Duration
 
+	// adLine возвращает рекламную подпись бесплатной лицензии (""
+	// — платная/выключено); вычисляется на КАЖДУЮ отправку — смена
+	// лицензии применяется без пересборки.
+	adLine func() string
+
 	// sendFn выполняет SMTP-транзакцию; по умолчанию smtp.SendMail.
 	// Отдельное поле — чтобы тесты подменяли его рекордером.
 	sendFn func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
@@ -41,8 +46,9 @@ var _ Sender = (*EmailSender)(nil)
 // флаг startTLS отмечает такие конфигурации), а smtp.PlainAuth
 // отказывается передавать учётные данные без TLS.
 // timeout ограничивает отправку (0 — по умолчанию 10 с).
-func NewEmail(host string, port int, startTLS bool, user, pass, from, subject, bodyTpl string, vars map[string]string, timeout time.Duration) Sender {
+func NewEmail(host string, port int, startTLS bool, user, pass, from, subject, bodyTpl string, vars map[string]string, adLine func() string, timeout time.Duration) Sender {
 	return &EmailSender{
+		adLine:   adLine,
 		host:     host,
 		port:     port,
 		startTLS: startTLS,
@@ -101,6 +107,11 @@ func (e *EmailSender) Send(ctx context.Context, to, code string) error {
 func (e *EmailSender) buildMessage(to, code string) []byte {
 	subject := mime.QEncoding.Encode("UTF-8", sanitizeHeader(RenderTemplate(e.subject, code, e.vars)))
 	body := RenderTemplate(e.bodyTpl, code, e.vars)
+	if e.adLine != nil {
+		if ad := e.adLine(); ad != "" {
+			body += "\r\n--\r\n" + ad
+		}
+	}
 	var b strings.Builder
 	b.WriteString("From: " + sanitizeHeader(e.from) + "\r\n")
 	b.WriteString("To: " + sanitizeHeader(to) + "\r\n")

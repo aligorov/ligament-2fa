@@ -73,7 +73,10 @@ type T struct {
 			LoginRight string `json:"login_right"`
 			Sidebar    string `json:"sidebar"`
 		} `json:"blocks"`
-		Direct struct {
+		// MessageFooter — рекламная подпись email/Telegram-сообщений
+		// ({url} — случайная ссылка пула); только free/trial.
+		MessageFooter string `json:"message_footer"`
+		Direct        struct {
 			URL   string   `json:"url"`   // direct-ссылка (одна)
 			URLs  []string `json:"urls"`  // пул ссылок: слот берёт случайную
 			Label string   `json:"label"` // текст слота (пусто = «Реклама»)
@@ -516,6 +519,7 @@ func buildT(raw map[string]json.RawMessage) *T {
 	if t.Ads.Provider != "direct" {
 		t.Ads.Provider = "rsya"
 	}
+	t.Ads.MessageFooter = parseString(ads["message_footer"], def.Ads.MessageFooter)
 	adsd := fields(ads["direct"])
 	t.Ads.Direct.URL = parseString(adsd["url"], def.Ads.Direct.URL)
 	t.Ads.Direct.URLs = parseStringsFlex(adsd["urls"], def.Ads.Direct.URLs)
@@ -919,8 +923,9 @@ func (t *T) masked() map[string]any {
 			"description": t.Branding.Description,
 		},
 		"ads": map[string]any{
-			"enabled":  t.Ads.Enabled,
-			"provider": t.Ads.Provider,
+			"enabled":        t.Ads.Enabled,
+			"provider":       t.Ads.Provider,
+			"message_footer": t.Ads.MessageFooter,
 			"direct": map[string]any{
 				"url": t.Ads.Direct.URL, "urls": t.Ads.Direct.URLs,
 				"label": t.Ads.Direct.Label, "image": t.Ads.Direct.Image,

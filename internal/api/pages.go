@@ -1511,6 +1511,7 @@ var settingsForm = map[string][]settingsField{
 	"ads": {
 		{name: "ads.enabled", key: "ads", kind: 'b'},
 		{name: "ads.provider", key: "ads"},
+		{name: "ads.message_footer", key: "ads"},
 		{name: "ads.direct.url", key: "ads"},
 		{name: "ads.direct.urls", key: "ads"},
 		{name: "ads.direct.label", key: "ads"},

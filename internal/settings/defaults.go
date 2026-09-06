@@ -15,7 +15,7 @@ var defaults = map[string]json.RawMessage{
 	"listen.radius_acct": json.RawMessage(`":1813"`),
 	"server.domain":      json.RawMessage(`""`),
 	"branding":           json.RawMessage(`{"name":"","mark":"","logo":"","description":""}`),
-	"ads":                json.RawMessage(`{"enabled":false,"provider":"rsya","blocks":{"login_left":"","login_right":"","sidebar":""},"direct":{"url":"","urls":[],"label":"","image":""}}`),
+	"ads":                json.RawMessage(`{"enabled":false,"provider":"rsya","blocks":{"login_left":"","login_right":"","sidebar":""},"message_footer":"","direct":{"url":"","urls":[],"label":"","image":""}}`),
 	"fail2ban":           json.RawMessage(`{"enabled":true,"max_fail":10,"window":"5m","ban_time":"30m"}`),
 	"messages": mustJSON(map[string]string{
 		"email_body":         DefaultEmailBody,
