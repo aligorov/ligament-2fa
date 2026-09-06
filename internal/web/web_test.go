@@ -355,7 +355,7 @@ func TestRenderSidebar(t *testing.T) {
 			t.Errorf("сайдбар админа: нет пункта %q (%s)", label, href)
 		}
 	}
-	for _, w := range []string{"Кабинет", "Админ", "twofa"} {
+	for _, w := range []string{"Кабинет", "Админ", "Ligament"} {
 		if !strings.Contains(adminOut, w) {
 			t.Errorf("сайдбар админа: нет %q", w)
 		}

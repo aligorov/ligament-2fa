@@ -2617,7 +2617,7 @@ components:
           enum: [email, sms, telegram, telegram_push, totp, webauthn]
         purpose:
           type: string
-          enum: [api, radius_prefetch, ui_confirm, webauthn_session, webauthn_web_pending, tg_link]
+          enum: [api, radius, radius_prefetch, ui_confirm, webauthn_session, webauthn_web_pending, tg_link]
         push_state:
           type: string
           enum: ["", pending, approved, denied]

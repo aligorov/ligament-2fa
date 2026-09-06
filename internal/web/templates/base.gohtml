@@ -18,7 +18,7 @@
 {{define "layout_app"}}
 <div class="app">
   <aside class="sidebar">
-    <a class="brand" href="/me"><span class="brand-mark">2FA</span>twofa</a>
+    <a class="brand" href="/me"><span class="brand-mark">L</span>Ligament</a>
     <nav class="nav">
       <div class="nav-section">Кабинет</div>
       <a class="nav-link{{if eq .Nav "me"}} active{{end}}" href="/me">Профиль</a>
@@ -50,7 +50,7 @@
       {{with .FlashErr}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
       {{template "content" .}}
     </main>
-    <footer class="app-footer">twofa</footer>
+    <footer class="app-footer">Ligament</footer>
   </div>
 </div>
 {{end}}
@@ -63,6 +63,6 @@
     {{with .FlashErr}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
     {{template "content" .}}
   </main>
-  <footer class="center-footer">twofa</footer>
+  <footer class="center-footer">Ligament</footer>
 </div>
 {{end}}
