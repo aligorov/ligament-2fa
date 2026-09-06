@@ -7,7 +7,9 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const btn of document.querySelectorAll("[data-copy]")) {
     btn.addEventListener("click", async () => {
       const row = btn.closest(".copy-row");
-      const src = row && row.querySelector("code, .linkcode");
+      // linkcode — настоящий код; plain <code> — только если кода нет в строке
+      const src = (row && row.querySelector(".linkcode, code")) ||
+        btn.closest(".card")?.querySelector(".linkcode");
       if (!src) return;
       try {
         await navigator.clipboard.writeText(src.textContent.trim());

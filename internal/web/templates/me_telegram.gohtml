@@ -30,11 +30,11 @@
     <h2>Код привязки получен</h2>
     <p>Отправьте его боту — бот указан в настройках сервера.</p>
   </div>
-  <div class="linkcode-wrap"><span class="linkcode">{{.LinkCode}}</span></div>
   <div class="copy-row">
-    <code class="muted">Код действует ограниченное время.</code>
+    <span class="linkcode">{{.LinkCode}}</span>
     <button type="button" class="btn ghost sm" data-copy>Скопировать</button>
   </div>
+  <p class="muted">Код действует ограниченное время.</p>
   <form action="/me/telegram/link" method="post" class="form-inline">
     {{csrf .CSRF}}
     <button type="submit" class="btn secondary">Получить новый код</button>

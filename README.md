@@ -52,12 +52,19 @@ SMS-шлюз, Telegram) перестраивается по SIGHUP (смена �
 вписать креды); полный список — в разделе [SMS-шлюзы](#sms-шлюзы-пресеты).
 
 ```json
-{"preset":"smsc","headers":{"login":"user","psw":"pass"}}
+{
+  "preset": "smsc",
+  "method": "GET",
+  "url": "https://smsc.ru/sys/send.php?login={login}&psw={psw}&phones={phone}&mes={text}&fmt=3&charset=utf-8",
+  "headers": {"login": "ЛОГИН", "psw": "ПАРОЛЬ"},
+  "body": "",
+  "content_type": "",
+  "success": {"http_status": 200, "json_path": "$.cnt", "equals": "1"}
+}
 ```
 
-```json
-{"preset":"twilio","headers":{"sid":"AC...","token":"...","from":"+15550001111"}}
-```
+Поле `preset` — памятка для админа; отправка строится из полной конфигурации
+(проще взять готовую выбором в «Пресет шлюза»).
 
 Custom-шлюз (JSONPath-правило успеха и т.п. — см. спеку §8):
 

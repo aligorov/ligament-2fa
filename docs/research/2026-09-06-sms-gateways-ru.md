@@ -20,7 +20,7 @@ Success-поля объединяются по AND, JSONPath одноуровн�
 1. **Сравнение equals должно строкифицировать** JSON-значения: bytehand `$.status` — число `0`, smsaero `$.success` — bool `true`, smsgateway24 `$.error` — число `0`.
 2. **JSON-тело (prostor)**: {text}/{phone} в теле JSON требуют JSON-экранирования (кавычки/переводы строк сломают тело).
 3. **Basic auth (smsaero)**: единственный шлюз с заголовком — решено через `Authorization: Basic {auth_base64}` в Headers, где auth_base64 = base64(email:api_key) (вычисляет пользователь один раз).
-4. smsc/smsgateway24/unisender возвращают ошибки с HTTP 200 → json_path обязателен; smsaero — ошибки не-200.
+4. smsc/smsgateway24 возвращают ошибки с HTTP 200 → json_path обязателен; smsaero/unisender — ошибки не-200 (достаточно http_status).
 
 ## Отсеяны (проверено)
 - **ePochta (epochta.ru/atompark)**: API v3 требует MD5-подпись `sum` от отсортированных параметров (включая текст SMS) на каждый запрос — шаблонный движок не может.
