@@ -141,6 +141,7 @@ func TestAPIDocsServed(t *testing.T) {
 		"/api/v1/login", "/api/v1/login/2fa", "/api/v1/logout",
 		"/api/v1/me", "/api/v1/me/totp/enroll", "/api/v1/me/webauthn/credentials",
 		"/api/v1/admin/users", "/api/v1/admin/audit", "/api/v1/admin/settings",
+		"/api/v1/admin/license", "/api/v1/admin/license/crl",
 		"/healthz",
 	} {
 		if !strings.Contains(page, want) {
@@ -285,7 +286,7 @@ func TestSpecComponentsPresent(t *testing.T) {
 	schemas, _ := comp["schemas"].(map[string]any)
 	for _, name := range []string{
 		"Error", "Challenge", "User", "AuditRow", "SettingsMasked",
-		"LoginTwoFactor", "WebauthnBegin",
+		"LoginTwoFactor", "WebauthnBegin", "LicenseStatus",
 	} {
 		if _, ok := schemas[name]; !ok {
 			t.Errorf("нет компоненты schemas.%s", name)

@@ -2177,6 +2177,165 @@ paths:
                 $ref: '#/components/schemas/Error'
               example: {error: internal}
 
+  /api/v1/admin/license:
+    get:
+      tags: [Admin]
+      summary: "Статус лицензии (без блоба)"
+      description: "Режим free/trial/licensed, лимит и число активных пользователей, метаданные лицензии (клиент, lic_id, тариф), сроки подписки/демо и окна обновлений. Сам license-блоб не возвращается."
+      operationId: adminLicenseGet
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Маскированный статус лицензии.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseStatus'
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+    put:
+      tags: [Admin]
+      summary: "Загрузка license-файла"
+      description: "Тело {blob}: полное содержимое PEM-подобного файла (-----BEGIN LIGAMENT LICENSE----- ...). Проверка: формат, подпись Ed25519 зашитым ключом (kid), CRL-отзыв. Истёкшая подписка принимается (гаснет в free после grace) — 400 только для битого формата/подписки и отозванной лицензии. Действие пишется в аудит (license_upload)."
+      operationId: adminLicensePut
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [blob]
+              properties:
+                blob:
+                  type: string
+            example: {blob: "-----BEGIN LIGAMENT LICENSE-----\nZXhhbXBsZQ.c2ln\n-----END LIGAMENT LICENSE-----"}
+      responses:
+        '200':
+          description: Лицензия применена; возвращен статус.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseStatus'
+        '400':
+          description: "Битый формат (invalid_format), неверная подпись/ключ (invalid_signature), отозвана CRL (revoked) либо пустой blob (bad_request)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: invalid_signature}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+    delete:
+      tags: [Admin]
+      summary: "Удаление лицензии (free-режим)"
+      description: "Снимает загруженную лицензию: сервер возвращается в бесплатный режим (5 активных пользователей). Действие пишется в аудит (license_remove)."
+      operationId: adminLicenseDelete
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Лицензия удалена; возвращен статус free.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseStatus'
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
+  /api/v1/admin/license/crl:
+    put:
+      tags: [Admin]
+      summary: "Загрузка CRL-отзыва лицензии"
+      description: "Тело {blob}: подписанный вендором revocation-файл (-----BEGIN LIGAMENT REVOCATION-----) — досрочный отзыв подписки. Проверка той же схемой Ed25519; отзыв действует на lic_id из блоба. Действие пишется в аудит (license_crl_upload)."
+      operationId: adminLicenseCrlPut
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [blob]
+              properties:
+                blob:
+                  type: string
+            example: {blob: "-----BEGIN LIGAMENT REVOCATION-----\nZXhhbXBsZQ.c2ln\n-----END LIGAMENT REVOCATION-----"}
+      responses:
+        '200':
+          description: CRL принят.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [lic_id, revoked_at]
+                properties:
+                  lic_id:
+                    type: string
+                  revoked_at:
+                    type: string
+              example: {lic_id: 11111111-2222-3333-4444-555555555555, revoked_at: "2026-09-06T10:00:00Z"}
+        '400':
+          description: "Битый формат (invalid_format), неверная подпись/ключ (invalid_signature) либо пустой blob (bad_request)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: invalid_signature}
+        '401':
+          description: Отсутствует или неверен Bearer admin_token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: unauthorized}
+        '500':
+          description: Внутренняя ошибка.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: internal}
+
 components:
   securitySchemes:
     adminBearer:
@@ -2197,6 +2356,52 @@ components:
         error:
           type: string
       example: {error: bad_credentials}
+    LicenseStatus:
+      type: object
+      description: "Маскированный статус лицензии (license-блоб не входит). user_limit=0 и unlimited=true — не ограничено (демо/безлимит); free всегда 5."
+      required: [mode, user_limit, unlimited, active_users, at_limit, revoked, expired, grace, days_left, trial_days_left]
+      properties:
+        mode:
+          type: string
+          enum: [free, trial, licensed]
+        user_limit:
+          type: integer
+        unlimited:
+          type: boolean
+        active_users:
+          type: integer
+          description: Активные (не disabled) пользователи.
+        at_limit:
+          type: boolean
+        lic_id:
+          type: string
+        customer:
+          type: string
+        plan:
+          type: string
+          enum: [subscription, perpetual]
+        features:
+          type: array
+          items:
+            type: string
+        revoked:
+          type: boolean
+          description: Лицензия отозвана CRL — сервер в free.
+        expired:
+          type: boolean
+          description: Подписка истекла позже grace — сервер в free.
+        grace:
+          type: boolean
+          description: Подписка истекла, действует grace-окно 5 дней.
+        days_left:
+          type: integer
+          description: Дней подписки (0 в grace).
+        trial_days_left:
+          type: integer
+        updates_until:
+          type: string
+          description: "Окно обновлений (maintenance_expires), YYYY-MM-DD; версии, собранные позже, не стартуют."
+      example: {mode: licensed, user_limit: 25, unlimited: false, active_users: 3, at_limit: false, lic_id: 11111111-2222-3333-4444-555555555555, customer: "ООО Ромашка", plan: subscription, revoked: false, expired: false, grace: false, days_left: 360, trial_days_left: 0, updates_until: "2027-09-01"}
     RateLimitError:
       type: object
       required: [error, retry_after]
