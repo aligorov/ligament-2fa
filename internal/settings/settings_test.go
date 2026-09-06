@@ -189,6 +189,71 @@ func TestBuildTFallback(t *testing.T) {
 	if snap.TG.BotToken != "" {
 		t.Errorf("telegram.bot_token = %q, ожидался пустой дефолт", snap.TG.BotToken)
 	}
+	if snap.LDAP.Enabled {
+		t.Error("ldap.enabled по умолчанию должен быть выключен")
+	}
+}
+
+// TestBuildTLDAP: ключ ldap — дефолты, полный разбор и откат битых полей.
+func TestBuildTLDAP(t *testing.T) {
+	// Дефолты: выключен, AD-ориентированные фильтры, пустые креды.
+	def := buildT(map[string]json.RawMessage{})
+	if def.LDAP.Enabled || def.LDAP.StartTLS {
+		t.Errorf("ldap дефолт: enabled=%v starttls=%v, ожидались false", def.LDAP.Enabled, def.LDAP.StartTLS)
+	}
+	if def.LDAP.URL != "" || def.LDAP.BindDN != "" || def.LDAP.BindPassword != "" || def.LDAP.BaseDN != "" {
+		t.Errorf("ldap дефолт: соединение не пустое: %+v", def.LDAP)
+	}
+	if def.LDAP.UserFilter != `(&(objectClass=user)(sAMAccountName={login}))` {
+		t.Errorf("ldap.user_filter дефолт = %q", def.LDAP.UserFilter)
+	}
+	if def.LDAP.GroupFilter != `(&(objectClass=group)(member={dn}))` {
+		t.Errorf("ldap.group_filter дефолт = %q", def.LDAP.GroupFilter)
+	}
+	if def.LDAP.GroupBaseDN != "" {
+		t.Errorf("ldap.group_base_dn дефолт = %q, ожидался пустой (= base_dn)", def.LDAP.GroupBaseDN)
+	}
+	if def.LDAP.Attrs.Email != "mail" || def.LDAP.Attrs.Phone != "telephoneNumber" || def.LDAP.Attrs.DisplayName != "displayName" {
+		t.Errorf("ldap.attrs дефолт = %+v", def.LDAP.Attrs)
+	}
+	if len(def.LDAP.AllowGroups) != 0 {
+		t.Errorf("ldap.allow_groups дефолт = %v, ожидался пустой", def.LDAP.AllowGroups)
+	}
+	if len(def.LDAP.RoleMap) != 0 {
+		t.Errorf("ldap.role_map дефолт = %v, ожидался пустой", def.LDAP.RoleMap)
+	}
+
+	// Полный разбор.
+	raw := json.RawMessage(`{"enabled":true,"url":"ldaps://dc1.example.com:636","starttls":true,` +
+		`"bind_dn":"CN=svc,DC=example,DC=com","bind_password":"pw","base_dn":"DC=example,DC=com",` +
+		`"user_filter":"(uid={login})","group_base_dn":"OU=Groups,DC=example,DC=com",` +
+		`"group_filter":"(member={dn})","attrs":{"email":"mail","phone":"mobile","display_name":"cn"},` +
+		`"allow_groups":["CN=VPN-Users,DC=example,DC=com"],"role_map":{"CN=VPN-Admins,DC=example,DC=com":"admin"}}`)
+	snap := buildT(map[string]json.RawMessage{"ldap": raw})
+	if !snap.LDAP.Enabled || !snap.LDAP.StartTLS || snap.LDAP.URL != "ldaps://dc1.example.com:636" ||
+		snap.LDAP.BindDN != "CN=svc,DC=example,DC=com" || snap.LDAP.BindPassword != "pw" ||
+		snap.LDAP.BaseDN != "DC=example,DC=com" || snap.LDAP.UserFilter != "(uid={login})" ||
+		snap.LDAP.GroupBaseDN != "OU=Groups,DC=example,DC=com" || snap.LDAP.GroupFilter != "(member={dn})" {
+		t.Errorf("ldap разбор = %+v", snap.LDAP)
+	}
+	if snap.LDAP.Attrs.Email != "mail" || snap.LDAP.Attrs.Phone != "mobile" || snap.LDAP.Attrs.DisplayName != "cn" {
+		t.Errorf("ldap.attrs = %+v", snap.LDAP.Attrs)
+	}
+	if len(snap.LDAP.AllowGroups) != 1 || snap.LDAP.AllowGroups[0] != "CN=VPN-Users,DC=example,DC=com" {
+		t.Errorf("ldap.allow_groups = %v", snap.LDAP.AllowGroups)
+	}
+	if snap.LDAP.RoleMap["CN=VPN-Admins,DC=example,DC=com"] != "admin" {
+		t.Errorf("ldap.role_map = %v", snap.LDAP.RoleMap)
+	}
+
+	// Битые поля откатываются к дефолтам, валидные сохраняются.
+	snap = buildT(map[string]json.RawMessage{
+		"ldap": json.RawMessage(`{"enabled":"да","url":42,"attrs":{"email":7},"allow_groups":"nope","role_map":[1]}`),
+	})
+	if snap.LDAP.Enabled || snap.LDAP.URL != "" || snap.LDAP.Attrs.Email != "mail" ||
+		len(snap.LDAP.AllowGroups) != 0 || len(snap.LDAP.RoleMap) != 0 {
+		t.Errorf("ldap после битых полей = %+v, ожидались дефолты", snap.LDAP)
+	}
 }
 
 // TestParseDur/parseInt/parseString — точечные проверки хелперов.
@@ -332,6 +397,7 @@ func TestMaskedUnit(t *testing.T) {
 		realBotTok = "123456:real"
 		realSMSTok = "real-sms-token"
 		realTwilio = "real-twilio"
+		realLdapPw = "real-ldap-bind-password"
 	)
 	snap := buildT(map[string]json.RawMessage{
 		"master_key":    json.RawMessage(`"` + realMaster + `"`),
@@ -341,6 +407,7 @@ func TestMaskedUnit(t *testing.T) {
 		"telegram":      json.RawMessage(`{"bot_token":"` + realBotTok + `"}`),
 		"sms.gateway":   json.RawMessage(`{"method":"POST","headers":{"Authorization":"Bearer ` + realSMSTok + `","X-Ok":"visible"},"success":{"http_status":200}}`),
 		"sms.presets":   json.RawMessage(`{"twilio":{"sid":"` + realTwilio + `","token":"` + realTwilio + `"}}`),
+		"ldap":          json.RawMessage(`{"enabled":true,"url":"ldap://d","bind_dn":"CN=svc","bind_password":"` + realLdapPw + `"}`),
 	})
 
 	// Креды всех пресетов шлюзов маскируются (SEC-004): login/psw (smsc,
@@ -391,13 +458,14 @@ func TestMaskedUnit(t *testing.T) {
 	}
 	s := string(dump)
 	for name, secret := range map[string]string{
-		"master_key":    realMaster,
-		"admin_token":   realAdmin,
-		"radius.secret": realRadSec,
-		"smtp.password": realPass,
-		"bot_token":     realBotTok,
-		"sms.auth":      realSMSTok,
-		"sms.twilio":    realTwilio,
+		"master_key":         realMaster,
+		"admin_token":        realAdmin,
+		"radius.secret":      realRadSec,
+		"smtp.password":      realPass,
+		"bot_token":          realBotTok,
+		"sms.auth":           realSMSTok,
+		"sms.twilio":         realTwilio,
+		"ldap.bind_password": realLdapPw,
 	} {
 		if strings.Contains(s, secret) {
 			t.Errorf("секрет %q попал в Masked-дамп: %s", name, s)
@@ -426,6 +494,11 @@ func TestMaskedUnit(t *testing.T) {
 	maskObj("smtp.password", smtp["password"])
 	if smtp["host"] != "h" {
 		t.Errorf("smtp.host = %#v, ожидался открытым", smtp["host"])
+	}
+	ldapSec := masked["ldap"].(map[string]any)
+	maskObj("ldap.bind_password", ldapSec["bind_password"])
+	if ldapSec["url"] != "ldap://d" || ldapSec["enabled"] != true {
+		t.Errorf("ldap.url/enabled = %#v/%#v, ожидались открытыми", ldapSec["url"], ldapSec["enabled"])
 	}
 	tg := masked["telegram"].(map[string]any)
 	maskObj("telegram.bot_token", tg["bot_token"])
@@ -556,7 +629,7 @@ func TestDefaultsCoverKnownKeys(t *testing.T) {
 		"radius.secret", "radius.code_lengths", "radius.max_fail_per_user",
 		"radius.fail_window", "radius.push_wait", "radius.reply_attributes",
 		"smtp", "sms.gateway", "sms.presets", "totp", "telegram", "webauthn",
-		"policy", "web.session_ttl",
+		"policy", "web.session_ttl", "ldap",
 	}
 	if len(knownKeys) != len(want) {
 		t.Fatalf("knownKeys: %d ключей, ожидалось %d (%v)", len(knownKeys), len(want), knownKeys)
