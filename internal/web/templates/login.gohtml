@@ -8,6 +8,7 @@
   {{with .Err}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
   {{if .NeedCode}}<div class="flash ok"><span class="flash-icon">🔐</span>Введите код второго фактора.</div>{{end}}
   <form action="/login" method="post" class="form">
+    {{if .Next}}<input type="hidden" name="next" value="{{.Next}}">{{end}}
     <label class="field">
       <span class="field-label">Имя пользователя</span>
       <input class="input" type="text" name="username" value="{{.Prefill}}" required autofocus autocomplete="username">

@@ -31,12 +31,14 @@ type BaseData struct {
 }
 
 // LoginData — страница /login: одна форма имя+пароль+код (решение о шаге
-// 2FA принимает сервер), чекбокс доверия устройству.
+// 2FA принимает сервер), чекбокс доверия устройству. Next — адрес
+// возврата после входа (hidden-поле; например, /oidc/authorize?...).
 type LoginData struct {
 	BaseData
 	Err      string // ошибка прошлого входа (не флеш — рендерится в 200/401)
 	Prefill  string // подстановка username после неудачной попытки
 	NeedCode bool   // подсказка: сервер ждёт именно код 2FA
+	Next     string // куда вернуться после успешного входа (только локальные пути)
 }
 
 // MeProfileData — /me: контакты, prefer_channels, смена пароля + сводка
@@ -175,6 +177,34 @@ type ErrorData struct {
 	BaseData
 	Code    int
 	Message string
+}
+
+// FormField — скрытое поле формы (проксирование параметров OIDC authorize
+// через POST-подтверждение согласия).
+type FormField struct {
+	Key string
+	Val string
+}
+
+// OIDCConsentData — страница согласия /oidc/authorize: «Приложение X
+// запрашивает вход». Форма POST /oidc/authorize/confirm несёт CSRF и все
+// параметры authorize скрытыми полями.
+type OIDCConsentData struct {
+	BaseData
+	ClientName string
+	ClientID   string
+	Scopes     []string    // человекочитаемые описания запрошенных scope
+	Fields     []FormField // параметры authorize для скрытых полей формы
+}
+
+// AdminOIDCClientsData — /admin/oidc: клиентские приложения OIDC и форма
+// создания. OneTimeClientID/OneTimeSecret непусты после создания: секрет
+// показывается ровно один раз (хранится только хеш).
+type AdminOIDCClientsData struct {
+	BaseData
+	Clients         []store.OIDCClient
+	OneTimeClientID string // созданный client_id (показ один раз)
+	OneTimeSecret   string // созданный client_secret (показ один раз)
 }
 
 // AdminLicenseData — /admin/license: статус-карточка лицензии и формы

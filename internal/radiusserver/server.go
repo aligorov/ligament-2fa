@@ -19,8 +19,8 @@ import (
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2866"
 
-	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/auth"
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
 )

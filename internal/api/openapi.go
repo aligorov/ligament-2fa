@@ -38,7 +38,7 @@ type docEndpoint struct {
 }
 
 // docsTagOrder — порядок групп на странице (прочие теги — в конце списка).
-var docsTagOrder = []string{"Public Auth", "Web Session", "Me", "Admin"}
+var docsTagOrder = []string{"Public Auth", "Web Session", "Me", "Admin", "OIDC"}
 
 var (
 	reDocTag    = regexp.MustCompile(`^tags: \[([^\]]*)\]$`)

@@ -19,13 +19,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/api"
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/backup"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/license"
+	"github.com/aligorov/twofa/internal/oidc"
 	"github.com/aligorov/twofa/internal/radiusserver"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
@@ -157,9 +158,16 @@ func main() {
 		slog.Error("main: шаблоны web-интерфейса", "error", err)
 		os.Exit(1)
 	}
+	// OIDC Provider: ключ подписи ID-токенов читается из настроек
+	// (oidc.keys) и при первом старте генерируется и сохраняется.
+	oidcMgr, err := oidc.NewManager(ctx, st, m, rend)
+	if err != nil {
+		slog.Error("main: OIDC-провайдер", "error", err)
+		os.Exit(1)
+	}
 	rt := api.BuildRouter(api.Deps{
 		Core: core, WA: wa, St: st, Box: box, PV: pv, M: m, Rend: rend, Lic: lic,
-		FW: guard,
+		FW: guard, Oidc: oidcMgr,
 	})
 	defer rt.Stop()
 

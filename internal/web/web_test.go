@@ -22,6 +22,7 @@ var wantPages = []string{
 	"login", "me_profile", "me_totp", "me_backup", "me_telegram",
 	"me_passkeys", "me_devices", "admin_users", "admin_audit", "admin_firewall",
 	"admin_challenges", "admin_settings", "admin_license", "error",
+	"oidc_consent", "admin_oidc",
 }
 
 const (
@@ -262,6 +263,53 @@ func TestRenderPages(t *testing.T) {
 			want: []string{"Ошибка 404", "Страница не найдена"},
 		},
 		{
+			name: "oidc_consent",
+			tmpl: "oidc_consent",
+			data: OIDCConsentData{
+				BaseData:   BaseData{Title: "Вход в приложение", Username: "vasya", CSRF: testCSRF},
+				ClientName: "Grafana",
+				ClientID:   "mfa_aBcD1234",
+				Scopes:     []string{"подтверждение вашей личности (openid)", "профиль: имя пользователя и роль (profile)"},
+				Fields: []FormField{
+					{"client_id", "mfa_aBcD1234"},
+					{"redirect_uri", "https://grafana.example.com/login/generic_oauth"},
+					{"response_type", "code"},
+					{"scope", "openid profile"},
+					{"state", "st-123"},
+				},
+			},
+			want: []string{
+				"Вход в приложение", "Grafana", "mfa_aBcD1234",
+				`action="/oidc/authorize/confirm"`, "Разрешить вход",
+				`name="client_id"`, `name="redirect_uri"`, `name="state"`,
+				`name="csrf_token"`,
+			},
+		},
+		{
+			name: "admin_oidc",
+			tmpl: "admin_oidc",
+			data: AdminOIDCClientsData{
+				BaseData: base("OIDC"),
+				Clients: []store.OIDCClient{{
+					ID:           uuid.MustParse("22222222-2222-2222-2222-222222222222"),
+					ClientID:     "mfa_aBcD1234",
+					Name:         "Grafana",
+					RedirectURIs: []string{"https://grafana.example.com/login/generic_oauth"},
+					IsPublic:     false,
+					CreatedAt:    lastUsed,
+				}},
+				OneTimeClientID: "mfa_Zz9Y8x7w",
+				OneTimeSecret:   "one-time-secret",
+			},
+			want: []string{
+				"OpenID Connect", "mfa_aBcD1234", "Grafana",
+				`action="/admin/oidc/clients"`, `name="redirect_uris"`,
+				`name="is_public"`, "one-time-secret",
+				`action="/admin/oidc/clients/22222222-2222-2222-2222-222222222222/delete"`,
+				"openid-configuration",
+			},
+		},
+		{
 			name: "admin_license",
 			tmpl: "admin_license",
 			data: AdminLicenseData{
@@ -356,12 +404,13 @@ var wantNavItems = map[string]string{
 	"Устройства":         "/me/devices",
 	"Пользователи":       "/admin/users",
 	"Аудит":              "/admin/audit",
+	"OIDC":               "/admin/oidc",
 	"Активные challenge": "/admin/challenges",
 	"Настройки":          "/admin/settings",
 }
 
 // wantAdminNavItems — пункты, видимые только админу.
-var wantAdminNavItems = []string{"/admin/users", "/admin/audit", "/admin/challenges", "/admin/settings"}
+var wantAdminNavItems = []string{"/admin/users", "/admin/audit", "/admin/oidc", "/admin/challenges", "/admin/settings"}
 
 // TestRenderSidebar: боковое меню авторизованной страницы содержит все
 // пункты (админу — включая раздел «Админ»), не-админу админ-пункты скрыты.

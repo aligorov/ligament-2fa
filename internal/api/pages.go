@@ -30,6 +30,7 @@ import (
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
 	"github.com/aligorov/twofa/internal/license"
+	"github.com/aligorov/twofa/internal/oidc"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -113,6 +114,9 @@ func (p *PagesAPI) Register(r chi.Router) {
 	admin.Post("/admin/firewall/ip", p.handleAdminFirewallIPAdd)
 	admin.Post("/admin/firewall/ip/{id}/delete", p.handleAdminFirewallIPDelete)
 	admin.Post("/admin/firewall/bans/{ip}/delete", p.handleAdminFirewallUnban)
+	admin.Get("/admin/oidc", p.handleAdminOIDC)
+	admin.Post("/admin/oidc/clients", p.handleAdminOIDCClientCreate)
+	admin.Post("/admin/oidc/clients/{id}/delete", p.handleAdminOIDCClientDelete)
 	admin.Get("/admin/challenges", p.handleAdminChallenges)
 	admin.Get("/admin/settings", p.handleAdminSettings)
 	admin.Post("/admin/settings", p.handleAdminSettingsPost)
@@ -332,35 +336,53 @@ func (p *PagesAPI) handleRoot(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
-// handleLoginPage — GET /login: форма входа.
+// safeNext — проверка адреса возврата после входа (?next=...): только
+// локальные пути (ведут с «/», но не «//» — защита от открытого редиректа
+// на внешний сайт).
+func safeNext(next string) string {
+	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
+		return next
+	}
+	return ""
+}
+
+// handleLoginPage — GET /login: форма входа; next — адрес возврата после
+// входа (например, /oidc/authorize?...), проксируется hidden-полем.
 func (p *PagesAPI) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	p.render(w, http.StatusOK, "login", web.LoginData{BaseData: p.baseData(r, "Вход", "")})
+	p.render(w, http.StatusOK, "login", web.LoginData{
+		BaseData: p.baseData(r, "Вход", ""),
+		Next:     safeNext(r.URL.Query().Get("next")),
+	})
 }
 
 // renderLoginErr — рендер формы входа с ошибкой (401) либо подсказкой
-// «введите код» (200): решение о шаге 2FA принимает сервер.
-func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status int, prefill, msg string, needCode bool) {
+// «введите код» (200): решение о шаге 2FA принимает сервер. next — адрес
+// возврата (проксируется hidden-полем формы).
+func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status int, prefill, msg string, needCode bool, next string) {
 	p.render(w, status, "login", web.LoginData{
 		BaseData: p.baseData(r, "Вход", ""),
 		Err:      msg,
 		Prefill:  prefill,
 		NeedCode: needCode,
+		Next:     next,
 	})
 }
 
 // handleLoginPost — POST /login: одна форма «имя+пароль+код(опц)». Без кода —
 // логика первого шага (доверенное устройство/без второго фактора → сессия
 // сразу; иначе перерендер с NeedCode); с кодом — «пароль + код» одним
-// запросом (loginStep2). Успех — 302 на /me (админу — /admin).
+// запросом (loginStep2). Успех — 302 на next (локальный путь, например
+// /oidc/authorize?...), по умолчанию /me (админу — /admin).
 func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		p.renderLoginErr(w, r, http.StatusBadRequest, "", "Некорректная форма.", false)
+		p.renderLoginErr(w, r, http.StatusBadRequest, "", "Некорректная форма.", false, "")
 		return
 	}
 	username := r.PostFormValue("username")
 	password := r.PostFormValue("password")
 	code := strings.TrimSpace(r.PostFormValue("code"))
 	remember := r.PostFormValue("remember") != ""
+	next := safeNext(r.PostFormValue("next"))
 	ctx := r.Context()
 
 	fail := func(status int, errCode string) {
@@ -368,7 +390,7 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		if msg == "" {
 			msg = "Внутренняя ошибка, попробуйте позже."
 		}
-		p.renderLoginErr(w, r, status, username, msg, false)
+		p.renderLoginErr(w, r, status, username, msg, false, next)
 	}
 
 	if !p.sess.allowReq(r, username) {
@@ -383,15 +405,15 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if p.sess.trustedDevice(r, user) {
-			p.loginDone(w, r, user, remember, "trusted_device")
+			p.loginDone(w, r, user, remember, next, "trusted_device")
 			return
 		}
 		if methods := p.sess.twoFactorMethods(ctx, user); len(methods) > 0 {
 			// Второй фактор обязателен — та же форма с подсказкой.
-			p.renderLoginErr(w, r, http.StatusOK, username, "", true)
+			p.renderLoginErr(w, r, http.StatusOK, username, "", true, next)
 			return
 		}
-		p.loginDone(w, r, user, remember, "password_only")
+		p.loginDone(w, r, user, remember, next, "password_only")
 		return
 	}
 
@@ -400,20 +422,23 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		fail(status, errCode)
 		return
 	}
-	p.loginDone(w, r, user, remember, "password+code")
+	p.loginDone(w, r, user, remember, next, "password+code")
 }
 
-// loginDone выпускает сессию (startSession) и редиректит по роли:
-// админ — /admin, остальные — /me.
-func (p *PagesAPI) loginDone(w http.ResponseWriter, r *http.Request, user *store.User, remember bool, mode string) {
+// loginDone выпускает сессию (startSession) и редиректит на next
+// (локальный путь) либо по роли: админ — /admin, остальные — /me.
+func (p *PagesAPI) loginDone(w http.ResponseWriter, r *http.Request, user *store.User, remember bool, next, mode string) {
 	if _, err := p.sess.startSession(w, r, user, remember, mode); err != nil {
 		slog.Error("pages: создать сессию", "error", err)
-		p.renderLoginErr(w, r, http.StatusInternalServerError, user.Username, "Не удалось создать сессию.", false)
+		p.renderLoginErr(w, r, http.StatusInternalServerError, user.Username, "Не удалось создать сессию.", false, next)
 		return
 	}
-	to := "/me"
-	if user.Role == "admin" {
-		to = "/admin"
+	to := next
+	if to == "" {
+		to = "/me"
+		if user.Role == "admin" {
+			to = "/admin"
+		}
 	}
 	redirectFlash(w, r, to, "Вы вошли.", true)
 }
@@ -1467,7 +1492,7 @@ var settingsForm = map[string][]settingsField{
 		{name: "messages.telegram_push_text", key: "messages"},
 	},
 	"smtp": {
-		{name: "smtp.host", key: "smtp"},		{name: "smtp.port", key: "smtp", kind: 'i'},
+		{name: "smtp.host", key: "smtp"}, {name: "smtp.port", key: "smtp", kind: 'i'},
 		{name: "smtp.user", key: "smtp"},
 		{name: "smtp.password", key: "smtp"},
 		{name: "smtp.from", key: "smtp"},
@@ -1759,7 +1784,6 @@ func licenseErrText(err error) string {
 	}
 }
 
-
 // ---- админка: файрвол/fail2ban ----
 
 // handleAdminFirewall — GET /admin/firewall.
@@ -1841,4 +1865,105 @@ func (p *PagesAPI) handleAdminFirewallUnban(w http.ResponseWriter, r *http.Reque
 	p.auditPage(r.Context(), "admin", "firewall_unban", clientIP(r), "ok",
 		map[string]any{"ip": ip})
 	redirectFlash(w, r, "/admin/firewall", "Бан снят: "+ip, true)
+}
+
+// ---- админка: OpenID Connect ----
+
+// handleAdminOIDC — GET /admin/oidc: список клиентских приложений и форма
+// создания.
+func (p *PagesAPI) handleAdminOIDC(w http.ResponseWriter, r *http.Request) {
+	clients, err := p.st.OIDCClients(r.Context())
+	if err != nil {
+		flash500(w, r, "/admin/oidc", err)
+		return
+	}
+	p.render(w, http.StatusOK, "admin_oidc", web.AdminOIDCClientsData{
+		BaseData: p.baseData(r, "OIDC", "admin-oidc"),
+		Clients:  clients,
+	})
+}
+
+// handleAdminOIDCClientCreate — POST /admin/oidc/clients (form: name,
+// redirect_uris по одному в строке, is_public). Секрет показывается ровно
+// один раз — ответ 200 телом страницы (без PRG-редиректа, иначе секрет
+// пришлось бы класть в URL).
+func (p *PagesAPI) handleAdminOIDCClientCreate(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	var uris []string
+	for _, line := range strings.Split(r.PostFormValue("redirect_uris"), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			uris = append(uris, line)
+		}
+	}
+	isPublic := r.PostFormValue("is_public") != ""
+
+	renderErr := func(msg string) {
+		clients, err := p.st.OIDCClients(r.Context())
+		if err != nil {
+			flash500(w, r, "/admin/oidc", err)
+			return
+		}
+		p.render(w, http.StatusBadRequest, "admin_oidc", web.AdminOIDCClientsData{
+			BaseData: func() web.BaseData {
+				b := p.baseData(r, "OIDC", "admin-oidc")
+				b.FlashErr = msg
+				return b
+			}(),
+			Clients: clients,
+		})
+	}
+	if name == "" {
+		renderErr("Введите название приложения.")
+		return
+	}
+	uris, err := validateRedirectURIs(uris)
+	if err != nil {
+		renderErr("Каждый redirect_uri должен быть абсолютным http(s)-URL.")
+		return
+	}
+
+	c := &store.OIDCClient{
+		ClientID:     oidc.NewClientID(),
+		Name:         name,
+		RedirectURIs: uris,
+		IsPublic:     isPublic,
+	}
+	d := web.AdminOIDCClientsData{
+		BaseData:        p.baseData(r, "OIDC", "admin-oidc"),
+		OneTimeClientID: c.ClientID,
+	}
+	if !isPublic {
+		secret := oidc.NewClientSecret()
+		c.ClientSecretHash = oidc.HashClientSecret(secret)
+		d.OneTimeSecret = secret
+	}
+	if err := p.st.OIDCClientUpsert(r.Context(), c); err != nil {
+		flash500(w, r, "/admin/oidc", err)
+		return
+	}
+	p.auditPage(r.Context(), "admin", "oidc_client_create", clientIP(r), "ok",
+		map[string]any{"client_id": c.ClientID, "via": "html"})
+	d.Clients, err = p.st.OIDCClients(r.Context())
+	if err != nil {
+		flash500(w, r, "/admin/oidc", err)
+		return
+	}
+	p.render(w, http.StatusOK, "admin_oidc", d)
+}
+
+// handleAdminOIDCClientDelete — POST /admin/oidc/clients/{id}/delete.
+func (p *PagesAPI) handleAdminOIDCClientDelete(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		redirectFlash(w, r, "/admin/oidc", "Некорректный id.", false)
+		return
+	}
+	if err := p.st.OIDCClientDelete(r.Context(), id); err != nil {
+		redirectFlash(w, r, "/admin/oidc", "Клиент не найден.", false)
+		return
+	}
+	p.auditPage(r.Context(), "admin", "oidc_client_delete", clientIP(r), "ok",
+		map[string]any{"id": id.String()})
+	redirectFlash(w, r, "/admin/oidc", "Клиент удалён.", true)
 }

@@ -181,8 +181,9 @@ func specOperations(t *testing.T, doc map[string]any) map[string]bool {
 }
 
 // routerJSONOperations — операции chi-роутера, относящиеся к
-// документируемому JSON API: /api/v1/* и /healthz (HTML-страницы, статика,
-// /openapi.yaml и /api/docs в спеку REST API не входят).
+// документируемому API: /api/v1/*, публичные OIDC-эндпоинты (/oidc/*,
+// /.well-known/*) и /healthz (HTML-страницы, статика, /openapi.yaml и
+// /api/docs в спеку REST API не входят).
 func routerJSONOperations(t *testing.T, mux *chi.Mux) map[string]bool {
 	t.Helper()
 	ops := make(map[string]bool)
@@ -191,7 +192,8 @@ func routerJSONOperations(t *testing.T, mux *chi.Mux) map[string]bool {
 		if pattern == "" {
 			pattern = "/"
 		}
-		if !strings.HasPrefix(pattern, "/api/v1") && pattern != "/healthz" {
+		if !strings.HasPrefix(pattern, "/api/v1") && pattern != "/healthz" &&
+			!strings.HasPrefix(pattern, "/oidc") && !strings.HasPrefix(pattern, "/.well-known") {
 			return nil
 		}
 		ops[method+" "+pattern] = true

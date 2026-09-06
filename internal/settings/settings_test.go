@@ -663,7 +663,7 @@ func TestDefaultsCoverKnownKeys(t *testing.T) {
 		"radius.secret", "radius.code_lengths", "radius.max_fail_per_user",
 		"radius.fail_window", "radius.push_wait", "radius.reply_attributes",
 		"smtp", "sms.gateway", "sms.presets", "totp", "telegram", "webauthn",
-		"policy", "web.session_ttl", "ldap",
+		"policy", "web.session_ttl", "ldap", "oidc.keys",
 	}
 	if len(knownKeys) != len(want) {
 		t.Fatalf("knownKeys: %d ключей, ожидалось %d (%v)", len(knownKeys), len(want), knownKeys)

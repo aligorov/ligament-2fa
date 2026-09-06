@@ -1,0 +1,83 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
+{{define "content"}}
+<header class="page-head">
+  <h1>OpenID Connect</h1>
+  <p class="page-sub">Клиентские приложения (relying party): направляют
+  пользователей на вход в Ligament и получают ID-токен. Discovery-адрес для
+  настройки приложений — <span class="mono">/.well-known/openid-configuration</span>.</p>
+</header>
+
+{{if .OneTimeClientID}}
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">🔑</span>Клиент создан</h2>
+    <p>Секрет показывается только один раз — сохраните его сейчас.</p>
+  </div>
+  <p>client_id:</p>
+  <pre class="one-time">{{.OneTimeClientID}}</pre>
+  {{if .OneTimeSecret}}
+  <p>client_secret:</p>
+  <pre class="one-time">{{.OneTimeSecret}}</pre>
+  {{end}}
+</section>
+{{end}}
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">🧩</span>Клиентские приложения</h2>
+    <p>Внешние приложения, которым разрешён вход через Ligament.</p>
+  </div>
+  {{if .Clients}}
+  <div class="table-wrap">
+    <table class="table">
+      <tr><th>client_id</th><th>Название</th><th>Redirect URI</th><th>Тип</th><th>Создан</th><th></th></tr>
+      {{range .Clients}}
+      <tr>
+        <td class="mono">{{.ClientID}}</td>
+        <td>{{.Name}}</td>
+        <td class="mono">{{range .RedirectURIs}}{{.}}<br>{{end}}</td>
+        <td>{{if .IsPublic}}<span class="badge neutral">public (PKCE)</span>{{else}}<span class="badge neutral">confidential</span>{{end}}</td>
+        <td>{{dt .CreatedAt}}</td>
+        <td>
+          <form action="/admin/oidc/clients/{{.ID}}/delete" method="post" class="form-inline">
+            {{csrf $.CSRF}}
+            <button type="submit" class="btn danger sm">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+  {{else}}
+  <div class="empty"><p>Клиентов пока нет — создайте первое приложение ниже.</p></div>
+  {{end}}
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">➕</span>Новое приложение</h2>
+    <p>client_id и client_secret сгенерируются автоматически; секрет
+    покажется один раз. Public-клиенты (SPA/мобилки) секрет не получают —
+    только PKCE.</p>
+  </div>
+  <form action="/admin/oidc/clients" method="post" class="form">
+    {{csrf .CSRF}}
+    <label class="field">
+      <span class="field-label">Название приложения</span>
+      <input class="input" type="text" name="name" placeholder="Grafana" required>
+    </label>
+    <label class="field">
+      <span class="field-label">Redirect URI (по одному в строке)</span>
+      <textarea class="input mono" name="redirect_uris" rows="3" placeholder="https://grafana.example.com/login/generic_oauth" required></textarea>
+      <span class="help">Строгое совпадение: куда перенаправлять код после входа.</span>
+    </label>
+    <label class="check">
+      <input type="checkbox" name="is_public" value="1">
+      <span>Public-клиент (без секрета, PKCE S256 обязателен)</span>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Создать клиента</button>
+    </div>
+  </form>
+</section>
+{{end}}

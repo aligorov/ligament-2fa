@@ -38,6 +38,8 @@ tags:
     description: Кабинет пользователя /api/v1/me/* — профиль, контакты, prefer-каналы, пароль, TOTP, резервные коды, passkeys, Telegram, устройства. Cookie-сессия + CSRF.
   - name: Admin
     description: "Админ API /api/v1/admin/* — пользователи, сбросы факторов, аудит, челленджи, настройки. Authorization: Bearer admin_token."
+  - name: OIDC
+    description: "OpenID Connect Provider — вход внешних приложений через Ligament: discovery, JWKS, authorization code flow с PKCE, userinfo. Без авторизации (защита — web-сессия пользователя и учётные данные клиента)."
   - name: Service
     description: Служебные эндпоинты (health-проверка).
 security: {}
@@ -2361,6 +2363,79 @@ paths:
               schema: {$ref: '#/components/schemas/Ok'}
         '400': {$ref: '#/components/responses/BadRequest'}
 
+  /api/v1/admin/oidc/clients:
+    get:
+      tags: [Admin]
+      summary: "OIDC: список клиентских приложений"
+      description: "Клиенты (relying party) OpenID Connect Provider. Секреты не возвращаются никогда (в БД только хеш). Аудит не пишется (чтение)."
+      operationId: adminOIDCClientsList
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Список клиентов.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [clients]
+                properties:
+                  clients:
+                    type: array
+                    items: {$ref: '#/components/schemas/OIDCClient'}
+              example: {clients: [{id: 019b…, client_id: mfa_aBcD1234, name: Grafana, redirect_uris: ["https://grafana.example.com/login/generic_oauth"], is_public: false, created_at: "2026-09-05T12:00:00Z"}]}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [Admin]
+      summary: "OIDC: создать клиентское приложение"
+      description: "Генерирует client_id (mfa_…) и client_secret; секрет возвращается РОВНО ОДИН раз (в БД — только хеш sha256+salt). public-клиент (SPA/мобильные) секрета не получает: только PKCE S256. PUT-патча нет — пересоздайте клиента. Аудит oidc_client_create."
+      operationId: adminOIDCClientCreate
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, redirect_uris]
+              properties:
+                name: {type: string, example: Grafana}
+                redirect_uris:
+                  type: array
+                  items: {type: string}
+                  description: "Абсолютные http(s)-URL; совпадение при authorize строгое."
+                is_public: {type: boolean, description: "public-клиент без секрета (PKCE S256 обязателен)."}
+            example: {name: Grafana, redirect_uris: ["https://grafana.example.com/login/generic_oauth"], is_public: false}
+      responses:
+        '201':
+          description: "Клиент создан; client_secret показан единственный раз."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OIDCClientCreated'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /api/v1/admin/oidc/clients/{id}:
+    delete:
+      tags: [Admin]
+      summary: "OIDC: удалить клиентское приложение"
+      description: "Удаляет клиента по id вместе с его authorization-кодами и access-токенами. Аудит oidc_client_delete."
+      operationId: adminOIDCClientDelete
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Удалено.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ok'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /api/v1/admin/backup:
     get:
       tags: [Admin]
@@ -2566,12 +2641,215 @@ paths:
                 $ref: '#/components/schemas/Error'
               example: {error: internal}
 
+  # ---- OpenID Connect Provider (публичные, без авторизации) ----
+
+  /.well-known/openid-configuration:
+    get:
+      tags: [OIDC]
+      summary: "Discovery-документ провайдера"
+      description: "Метаданные OIDC Provider: issuer (настройка server.domain, иначе схема+Host запроса), эндпоинты authorize/token/userinfo/JWKS, поддерживаемые grant/scope/методы. Точка входа для настройки внешних приложений."
+      operationId: oidcDiscovery
+      responses:
+        '200':
+          description: Discovery-документ (OpenID Connect Discovery 1.0).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OIDCDiscovery'}
+              example: {issuer: "https://2fa.example.com", authorization_endpoint: "https://2fa.example.com/oidc/authorize", token_endpoint: "https://2fa.example.com/oidc/token", userinfo_endpoint: "https://2fa.example.com/oidc/userinfo", jwks_uri: "https://2fa.example.com/.well-known/jwks.json", response_types_supported: [code], grant_types_supported: [authorization_code], subject_types_supported: [public], id_token_signing_alg_values_supported: [RS256], code_challenge_methods_supported: [plain, S256], scopes_supported: [openid, profile, email], token_endpoint_auth_methods_supported: [client_secret_basic, client_secret_post, none]}
+
+  /.well-known/jwks.json:
+    get:
+      tags: [OIDC]
+      summary: "JWKS: публичные ключи проверки подписи"
+      description: "Публичный RSA-ключ (kid, RS256) для проверки подписи ID-токенов клиентскими приложениями."
+      operationId: oidcJWKS
+      responses:
+        '200':
+          description: Набор ключей (RFC 7517).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      required: [kty, use, kid, alg, n, e]
+                      properties:
+                        kty: {type: string, enum: [RSA]}
+                        use: {type: string, enum: [sig]}
+                        kid: {type: string}
+                        alg: {type: string, enum: [RS256]}
+                        n: {type: string, description: "Модуль, base64url без паддинга."}
+                        e: {type: string, example: AQAB}
+              example: {keys: [{kty: RSA, use: sig, kid: 0f1e2d3c4b5a6978, alg: RS256, n: "0oaX…", e: AQAB}]}
+
+  /oidc/authorize:
+    get:
+      tags: [OIDC]
+      summary: "Authorization endpoint (вход через Ligament)"
+      description: "Проверяет client_id и redirect_uri (строгое совпадение; ошибки клиента — страница 400 без редиректа), затем параметры запроса (ошибки — редирект с error/state). Без web-сессии — редирект /login?next=<authorize>; с сессией — страница согласия (oidc_consent), подтверждение выпускает код. Параметры: client_id, redirect_uri, response_type=code, scope (обязателен openid), state, nonce, code_challenge+code_challenge_method (S256 обязателен для public-клиентов)."
+      operationId: oidcAuthorize
+      parameters:
+        - name: client_id
+          in: query
+          required: true
+          schema: {type: string}
+        - name: redirect_uri
+          in: query
+          required: true
+          schema: {type: string}
+        - name: response_type
+          in: query
+          required: true
+          schema: {type: string, enum: [code]}
+        - name: scope
+          in: query
+          required: true
+          schema: {type: string, example: "openid profile email"}
+        - name: state
+          in: query
+          schema: {type: string}
+        - name: nonce
+          in: query
+          schema: {type: string}
+        - name: code_challenge
+          in: query
+          schema: {type: string}
+        - name: code_challenge_method
+          in: query
+          schema: {type: string, enum: [S256, plain]}
+      responses:
+        '200':
+          description: Страница согласия (HTML).
+        '302':
+          description: "redirect_uri?code=…&state=… (после подтверждения), /login?next=… (без сессии) либо redirect_uri?error=… (invalid_scope, unsupported_response_type, invalid_request)."
+        '400':
+          description: "Страница ошибки (HTML): неизвестный client_id или незарегистрированный redirect_uri — редиректить нельзя."
+
+  /oidc/authorize/confirm:
+    post:
+      tags: [OIDC]
+      summary: "Подтверждение согласия (HTML-форма)"
+      description: "POST со страницы согласия: CSRF-токен сессии + скрытые поля всех параметров authorize. Выпускает authorization-код (32 байта, TTL 60 с, одноразовый) и редиректит на redirect_uri?code=…&state=…. Аудит oidc_consent."
+      operationId: oidcAuthorizeConfirm
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [csrf_token, client_id, redirect_uri, response_type, scope]
+              properties:
+                csrf_token: {type: string}
+                client_id: {type: string}
+                redirect_uri: {type: string}
+                response_type: {type: string}
+                scope: {type: string}
+                state: {type: string}
+                nonce: {type: string}
+                code_challenge: {type: string}
+                code_challenge_method: {type: string}
+      responses:
+        '302':
+          description: "redirect_uri?code=…&state=…; без сессии — /login?next=…; ошибка запроса — redirect_uri?error=…."
+        '400':
+          description: "Страница ошибки (HTML): неизвестный клиент/redirect_uri."
+        '403':
+          description: "Отсутствует или неверен CSRF-токен (text/plain)."
+
+  /oidc/token:
+    post:
+      tags: [OIDC]
+      summary: "Token endpoint (grant_type=authorization_code)"
+      description: "Аутентификация клиента: Basic или form (public — без секрета, PKCE обязателен). Атомарно погашает код (повторное использование/истёкший → invalid_grant), проверяет PKCE (S256/plain) и выдаёт access-токен (TTL 300 с) и подписанный ID-токен (RS256, TTL 5 мин). Refresh-токенов нет. Аудит oidc_token. Ошибки — RFC 6749 §5.2: {error}."
+      operationId: oidcToken
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, code, redirect_uri]
+              properties:
+                grant_type: {type: string, enum: [authorization_code]}
+                code: {type: string}
+                redirect_uri: {type: string}
+                client_id: {type: string}
+                client_secret: {type: string, description: "form-аутентификация (альтернатива Basic)."}
+                code_verifier: {type: string, description: "PKCE; обязателен, если код выдан с code_challenge."}
+            example: {grant_type: authorization_code, code: "…", redirect_uri: "https://grafana.example.com/login/generic_oauth", code_verifier: "dBjftJeZ4CVP…"}
+      responses:
+        '200':
+          description: "Токены; ID-токен содержит iss/sub/aud/exp/iat/auth_time/amr/groups (+nonce, profile/email по scope)."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, token_type, expires_in, scope, id_token]
+                properties:
+                  access_token: {type: string}
+                  token_type: {type: string, enum: [Bearer]}
+                  expires_in: {type: integer, example: 300}
+                  scope: {type: string}
+                  id_token: {type: string, description: "JWT RS256."}
+              example: {access_token: "…", token_type: Bearer, expires_in: 300, scope: "openid profile email", id_token: "eyJhbGciOiJSUzI1NiIs…"}
+        '400':
+          description: "invalid_request / invalid_grant / unsupported_grant_type."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: invalid_grant}
+        '401':
+          description: invalid_client (неверный/неизвестный клиент).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: invalid_client}
+
+  /oidc/userinfo:
+    get:
+      tags: [OIDC]
+      summary: "Клеймы пользователя по access-токену"
+      description: "Authorization: Bearer <access_token> (из /oidc/token, TTL 300 с). sub обязателен; preferred_username/name/groups — по scope profile, email/email_verified — по scope email."
+      operationId: oidcUserinfo
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Клеймы пользователя.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sub]
+                properties:
+                  sub: {type: string, description: "UUID пользователя."}
+                  preferred_username: {type: string}
+                  name: {type: string}
+                  groups: {type: array, items: {type: string}}
+                  email: {type: string}
+                  email_verified: {type: boolean}
+              example: {sub: "11111111-1111-1111-1111-111111111111", preferred_username: vasya, name: Василий, groups: [user], email: vasya@example.com, email_verified: true}
+        '401':
+          description: "invalid_token: токен отсутствует, неизвестен или истёк."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: invalid_token}
+
 components:
   securitySchemes:
     adminBearer:
       type: http
       scheme: bearer
       description: "Админ-токен из настроек (admin_token; задать/перегенерировать — POST /api/v1/admin/settings/regenerate). Заголовок Authorization: Bearer <token>; сравнение SHA-256 в постоянном времени."
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "Access-токен /oidc/token (TTL 300 с); заголовок Authorization: Bearer <access_token> для /oidc/userinfo."
     sessionCookie:
       type: apiKey
       in: cookie
@@ -2596,6 +2874,47 @@ components:
         fails: {type: integer}
         banned_until: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+    OIDCClient:
+      type: object
+      description: "Клиентское приложение OIDC (секрет никогда не возвращается)."
+      required: [id, client_id, name, redirect_uris, is_public, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        client_id: {type: string, example: mfa_aBcD1234}
+        name: {type: string}
+        redirect_uris: {type: array, items: {type: string}}
+        is_public: {type: boolean, description: "public-клиент: без секрета, PKCE S256 обязателен."}
+        created_at: {type: string, format: date-time}
+    OIDCClientCreated:
+      type: object
+      description: "Ответ создания клиента: client_secret показывается единственный раз и только конфиденциальным клиентам."
+      required: [id, client_id, name, redirect_uris, is_public, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        client_id: {type: string}
+        client_secret: {type: string, description: "Одноразовый: в БД только хеш; повторно не восстанавливается."}
+        name: {type: string}
+        redirect_uris: {type: array, items: {type: string}}
+        is_public: {type: boolean}
+        created_at: {type: string, format: date-time}
+      example: {id: 019b…, client_id: mfa_aBcD1234, client_secret: "one-time-secret", name: Grafana, redirect_uris: ["https://grafana.example.com/login/generic_oauth"], is_public: false, created_at: "2026-09-05T12:00:00Z"}
+    OIDCDiscovery:
+      type: object
+      description: "Discovery-документ OpenID Connect Provider (issuer — server.domain, иначе схема+Host запроса)."
+      required: [issuer, authorization_endpoint, token_endpoint, userinfo_endpoint, jwks_uri, response_types_supported, grant_types_supported, subject_types_supported, id_token_signing_alg_values_supported, code_challenge_methods_supported, scopes_supported, token_endpoint_auth_methods_supported]
+      properties:
+        issuer: {type: string, format: uri}
+        authorization_endpoint: {type: string, format: uri}
+        token_endpoint: {type: string, format: uri}
+        userinfo_endpoint: {type: string, format: uri}
+        jwks_uri: {type: string, format: uri}
+        response_types_supported: {type: array, items: {type: string}}
+        grant_types_supported: {type: array, items: {type: string}}
+        subject_types_supported: {type: array, items: {type: string}}
+        id_token_signing_alg_values_supported: {type: array, items: {type: string}}
+        code_challenge_methods_supported: {type: array, items: {type: string}}
+        scopes_supported: {type: array, items: {type: string}}
+        token_endpoint_auth_methods_supported: {type: array, items: {type: string}}
     Error:
       type: object
       required: [error]

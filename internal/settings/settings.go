@@ -111,6 +111,11 @@ type T struct {
 		BotToken string
 	}
 
+	// OIDCKeys — сырой JSON ключа подписи ID-токенов (ключ oidc.keys):
+	// {"current":{"kid","private_pem"},"previous":{...}|null}. Генерируется
+	// менеджером OIDC при первом старте; nil — ключ ещё не создан.
+	OIDCKeys json.RawMessage
+
 	WebAuthn struct {
 		RPID   string
 		RPName string
@@ -492,6 +497,11 @@ func buildT(raw map[string]json.RawMessage) *T {
 	tg := fields(raw["telegram"])
 	t.TG.BotToken = parseString(tg["bot_token"], def.TG.BotToken)
 
+	// oidc.keys: null/отсутствие = ключ не создан (nil), иначе — сырой JSON.
+	if v := rawJSON(raw["oidc.keys"], def.OIDCKeys); !isNullJSON(v) {
+		t.OIDCKeys = v
+	}
+
 	wa := fields(raw["webauthn"])
 	t.WebAuthn.RPID = parseString(wa["rp_id"], def.WebAuthn.RPID)
 	t.WebAuthn.RPName = parseString(wa["rp_name"], def.WebAuthn.RPName)
@@ -675,10 +685,12 @@ func IsKnownKey(key string) bool { return isKnownKey(key) }
 
 // exportExcluded — ключи, НИКОГДА не покидающие сервер в экспорте
 // настроек: master_key расшифровывает TOTP-секреты (перенос равен
-// компрометации всех факторов), admin_token — полный доступ к админ-API.
+// компрометации всех факторов), admin_token — полный доступ к админ-API,
+// oidc.keys подписывает ID-токены (перенос позволяет подделывать вход).
 var exportExcluded = map[string]struct{}{
 	"master_key":  {},
 	"admin_token": {},
+	"oidc.keys":   {},
 }
 
 // IsImportExcluded — ключ, который нельзя применить импортом настроек
@@ -827,10 +839,10 @@ func (t *T) masked() map[string]any {
 			"domain": t.Server.Domain,
 		},
 		"fail2ban": map[string]any{
-			"enabled":   t.Fail2ban.Enabled,
-			"max_fail":  t.Fail2ban.MaxFail,
-			"window":    t.Fail2ban.Window.String(),
-			"ban_time":  t.Fail2ban.BanTime.String(),
+			"enabled":  t.Fail2ban.Enabled,
+			"max_fail": t.Fail2ban.MaxFail,
+			"window":   t.Fail2ban.Window.String(),
+			"ban_time": t.Fail2ban.BanTime.String(),
 		},
 		"messages": map[string]any{
 			"email_body":         t.Messages.EmailBody,
@@ -870,6 +882,9 @@ func (t *T) masked() map[string]any {
 		},
 		"telegram": map[string]any{
 			"bot_token": secretMask(t.TG.BotToken),
+		},
+		"oidc": map[string]any{
+			"keys": maskForValue(t.OIDCKeys), // секрет: приватный ключ подписи
 		},
 		"webauthn": map[string]any{
 			"rp_id":   t.WebAuthn.RPID,

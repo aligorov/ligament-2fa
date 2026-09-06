@@ -1,0 +1,25 @@
+{{define "layout"}}{{template "layout_center" .}}{{end}}
+{{define "content"}}
+<div class="login-card">
+  <div class="login-brand"><span class="brand-mark">2FA</span>twofa</div>
+  <h1>Вход в приложение</h1>
+  <p class="page-sub">Приложение <strong>{{.ClientName}}</strong>
+  (client_id <span class="mono">{{.ClientID}}</span>) запрашивает вход под
+  вашей учётной записью.</p>
+  <p>Приложение получит:</p>
+  <ul>
+    {{range .Scopes}}<li>{{.}}</li>{{end}}
+  </ul>
+  <form action="/oidc/authorize/confirm" method="post" class="form">
+    {{csrf .CSRF}}
+    {{range .Fields}}<input type="hidden" name="{{.Key}}" value="{{.Val}}">
+    {{end}}
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Разрешить вход</button>
+      <a class="btn ghost" href="/me">Отклонить</a>
+    </div>
+  </form>
+  <p class="help">Вход проходит с вашей двухфакторной защитой Ligament.
+  Приложение не увидит ваш пароль и коды.</p>
+</div>
+{{end}}

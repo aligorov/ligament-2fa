@@ -7,9 +7,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/auth"
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/license"
+	"github.com/aligorov/twofa/internal/oidc"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -56,6 +57,7 @@ type Deps struct {
 	Rend *web.Renderer
 	Lic  *license.Manager // nil — лицензирование не смонтировано
 	FW   *firewall.Guard  // nil — файрвол/fail2ban выключен
+	Oidc *oidc.Manager    // nil — OIDC не смонтирован (роуты отвечают 503); main всегда инициализирует
 }
 
 // firewallMiddleware фильтрует запросы по IP ДО маршрутов и обработчиков:
@@ -122,6 +124,7 @@ func BuildRouter(d Deps) *Router {
 	me.Register(r)
 	admin.Register(r)
 	pages.Register(r)
+	d.Oidc.Register(r) // nil-безопасно: маршруты остаются, отвечают 503
 
 	registerOpenAPI(r)
 

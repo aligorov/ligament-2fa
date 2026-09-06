@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aligorov/twofa/internal/license"
+	"github.com/aligorov/twofa/internal/oidc"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -46,7 +48,7 @@ var regenerableKeys = map[string]struct{}{
 
 // AdminAPI — зависимости и маршруты /api/v1/admin/*.
 type AdminAPI struct {
-	fw firewallInvalidate // nil — мутации списков не сбрасывают кэш guard
+	fw  firewallInvalidate // nil — мутации списков не сбрасывают кэш guard
 	st  *store.Store
 	m   *settings.M
 	lic *license.Manager // nil — лицензирование не смонтировано (тесты)
@@ -94,6 +96,9 @@ func (a *AdminAPI) Register(r chi.Router) {
 		r.Post("/firewall/ip", a.handleFirewallIPAdd)
 		r.Delete("/firewall/ip/{id}", a.handleFirewallIPDelete)
 		r.Delete("/firewall/bans/{ip}", a.handleFirewallUnban)
+		r.Get("/oidc/clients", a.handleOIDCClientsList)
+		r.Post("/oidc/clients", a.handleOIDCClientCreate)
+		r.Delete("/oidc/clients/{id}", a.handleOIDCClientDelete)
 		a.registerLicenseRoutes(r)
 	})
 }
@@ -866,3 +871,146 @@ type firewallInvalidate interface{ Invalidate() }
 
 // SetFirewall подключает guard для сброса кэша списков при мутациях.
 func (a *AdminAPI) SetFirewall(f firewallInvalidate) { a.fw = f }
+
+// ---- OpenID Connect: клиентские приложения ----
+
+// adminOIDCClient — клиент OIDC в ответах API: секрет никогда не покидает
+// БД (в ответе создания — только что сгенерированный, один раз).
+type adminOIDCClient struct {
+	ID           string    `json:"id"`
+	ClientID     string    `json:"client_id"`
+	Name         string    `json:"name"`
+	RedirectURIs []string  `json:"redirect_uris"`
+	IsPublic     bool      `json:"is_public"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// toAdminOIDCClient переводит store.OIDCClient в безопасное представление;
+// nil redirect_uris становится пустым массивом (стабильный JSON).
+func toAdminOIDCClient(c store.OIDCClient) adminOIDCClient {
+	uris := c.RedirectURIs
+	if uris == nil {
+		uris = []string{}
+	}
+	return adminOIDCClient{
+		ID:           c.ID.String(),
+		ClientID:     c.ClientID,
+		Name:         c.Name,
+		RedirectURIs: uris,
+		IsPublic:     c.IsPublic,
+		CreatedAt:    c.CreatedAt,
+	}
+}
+
+// validateRedirectURIs проверяет список redirect_uri: непустой, каждый —
+// абсолютный http(s)-URL. Возвращает нормализованный список или ошибку.
+func validateRedirectURIs(uris []string) ([]string, error) {
+	if len(uris) == 0 {
+		return nil, errors.New("нужен хотя бы один redirect_uri")
+	}
+	out := make([]string, 0, len(uris))
+	for _, raw := range uris {
+		u := strings.TrimSpace(raw)
+		if u == "" {
+			continue
+		}
+		parsed, err := url.Parse(u)
+		if err != nil || parsed.Host == "" ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return nil, fmt.Errorf("redirect_uri %q не является абсолютным http(s)-URL", u)
+		}
+		out = append(out, u)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("нужен хотя бы один redirect_uri")
+	}
+	return out, nil
+}
+
+// handleOIDCClientsList — GET /api/v1/admin/oidc/clients.
+func (a *AdminAPI) handleOIDCClientsList(w http.ResponseWriter, r *http.Request) {
+	clients, err := a.st.OIDCClients(r.Context())
+	if err != nil {
+		slog.Error("api: admin oidc список клиентов", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	out := make([]adminOIDCClient, len(clients))
+	for i, c := range clients {
+		out[i] = toAdminOIDCClient(c)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"clients": out})
+}
+
+type oidcClientCreateReq struct {
+	Name         string   `json:"name"`
+	RedirectURIs []string `json:"redirect_uris"`
+	IsPublic     bool     `json:"is_public"`
+}
+
+// handleOIDCClientCreate — POST /api/v1/admin/oidc/clients {name,
+// redirect_uris, is_public}: генерирует client_id и client_secret; секрет
+// возвращается ровно один раз (в БД — только хеш).
+func (a *AdminAPI) handleOIDCClientCreate(w http.ResponseWriter, r *http.Request) {
+	var req oidcClientCreateReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	uris, err := validateRedirectURIs(req.RedirectURIs)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_redirect_uri")
+		return
+	}
+	c := &store.OIDCClient{
+		ClientID:     oidc.NewClientID(),
+		Name:         strings.TrimSpace(req.Name),
+		RedirectURIs: uris,
+		IsPublic:     req.IsPublic,
+	}
+	resp := map[string]any{
+		"id": "", "client_id": c.ClientID, "name": c.Name,
+		"redirect_uris": uris, "is_public": c.IsPublic,
+	}
+	if !c.IsPublic {
+		secret := oidc.NewClientSecret()
+		c.ClientSecretHash = oidc.HashClientSecret(secret)
+		// Секрет показывается один раз — только в ответе создания.
+		resp["client_secret"] = secret
+	}
+	if err := a.st.OIDCClientUpsert(r.Context(), c); err != nil {
+		slog.Error("api: admin oidc создать клиента", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	a.audit(r.Context(), "oidc_client_create", map[string]any{
+		"client_id": c.ClientID, "is_public": c.IsPublic,
+	})
+	resp["id"] = c.ID.String()
+	resp["created_at"] = c.CreatedAt
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// handleOIDCClientDelete — DELETE /api/v1/admin/oidc/clients/{id} (каскад
+// чистит коды и токены клиента).
+func (a *AdminAPI) handleOIDCClientDelete(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if err := a.st.OIDCClientDelete(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		slog.Error("api: admin oidc удалить клиента", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	a.audit(r.Context(), "oidc_client_delete", map[string]any{"id": id.String()})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
