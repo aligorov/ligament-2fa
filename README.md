@@ -258,7 +258,7 @@ enroll/confirm, `POST /api/v1/me/backup-codes/regenerate` — новая пар�
 
 ## API-документация (OpenAPI)
 
-Полный контракт REST API (все 41 операция `/api/v1/*` + `/healthz`, схемы
+Полный контракт REST API (все 44 операции `/api/v1/*` + `/healthz`, схемы
 запросов/ответов, коды ошибок, примеры) — OpenAPI 3.0.3:
 
 - **`/openapi.yaml`** — сама спецификация (встроена в бинарник,
@@ -281,6 +281,84 @@ enroll/confirm, `POST /api/v1/me/backup-codes/regenerate` — новая пар�
   `X-CSRF-Token` со значением `csrf` из ответа входа — иначе 403 `csrf`;
 - cookie выпускается с флагом Secure — при импорте через plain HTTP
   используйте `localhost` или TLS-прокси.
+
+## Бэкап и перенос
+
+Три слоя — от переноса одной конфигурации до полного бэкапа продакшена.
+
+### 1. Экспорт/импорт настроек (конфигурация без учётных записей)
+
+Админка → Настройки → «Экспорт и импорт настроек», либо API:
+
+```sh
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  localhost:8080/api/v1/admin/settings/export -o ligament-settings.json
+
+curl -s -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
+  localhost:8080/api/v1/admin/settings/import \
+  -d @ligament-settings.json        # → {"applied":N,"skipped":M}
+```
+
+Файл содержит всю конфигурацию с НАСТОЯЩИМИ значениями секретов
+(`radius.secret`, пароль SMTP, токен Telegram, креды SMS-шлюза и LDAP) —
+храните его как секрет (в файле об этом предупреждает поле `_warning`).
+**`master_key` и `admin_token` не экспортируются никогда** и импортом не
+принимаются. Импорт атомарен: неизвестный ключ отклоняет запрос целиком
+(400 со списком), маски «••••», `null` и ключи `license.*` (состояние
+инсталляции, не конфигурация) пропускаются, отсутствующие в файле ключи
+не затрагиваются.
+
+### 2. Логический дамп БД (`twofa -backup`)
+
+Полный дамп данных в SQL силами самого бинарника — pg_dump в
+distroless-образе отсутствует:
+
+```sh
+docker compose exec twofa twofa -backup - > backup.sql     # stdout (DSS из env)
+./twofa -dsn "$TWOFA_DB_DSN" -backup out.sql               # файл с правами 0600
+./twofa -dsn "$TWOFA_DB_DSN" -backup out.sql -backup-audit=false  # без audit_log
+```
+
+Дамп — транзакция (`BEGIN;`…`COMMIT;`) из `DELETE FROM` + multi-row INSERT
+по всем таблицам (порядок по FK); применяется в **уже мигрированную** БД и
+идемпотентен. Восстановление — через psql (флага `-restore` намеренно нет:
+автоматически применять дамп опасно):
+
+```sh
+docker compose exec -T db psql -U twofa -d twofa < backup.sql
+```
+
+**`master_key` в дамп НЕ входит.** TOTP-секреты хранятся шифротекстами
+AES-256-GCM под мастер-ключом, поэтому на ДРУГОЙ инсталляции дамп
+расшифруется только при том же master_key: восстановите данные, затем
+перенесите master_key прежней инсталляции (слой 3) и перезапустите
+сервер. Скачать дамп из браузера — админка → Настройки → «Обслуживание» →
+«Скачать бэкап» (`GET /api/v1/admin/backup`; при `audit_log` свыше
+500 000 строк ответ 413 с подсказкой снять дамп CLI).
+
+### 3. Продакшен: pg_dump/том + master_key отдельно
+
+Канонический бэкап продакшена — `pg_dump` или копия тома `twofa_pgdata`
+(полная БД, включая `master_key` внутри `settings`):
+
+```sh
+docker compose exec -T db pg_dump -U twofa twofa | gzip > twofa-$(date +%F).sql.gz
+```
+
+`master_key` дополнительно дублируйте ОТДЕЛЬНО от бэкапов БД и храните в
+секретном хранилище: это ключ ко всем TOTP-секретам, утечка бэкапа БД без
+него не раскрывает второй фактор, а наличие — раскрывает:
+
+```sh
+docker compose exec -T db psql -U twofa -d twofa -Atc \
+  "select value from settings where key='master_key'" > master_key.txt
+```
+
+Ночной бэкап с ротацией (cron на хосте):
+
+```cron
+30 2 * * * docker compose -f /opt/twofa/docker-compose.yml exec -T db pg_dump -U twofa twofa | gzip > /var/backups/twofa/twofa-$(date +\%F).sql.gz && find /var/backups/twofa -name 'twofa-*.sql.gz' -mtime +14 -delete
+```
 
 ## Лицензирование (реализация)
 
@@ -466,6 +544,7 @@ internal/api/    REST API + web-страницы (chi)
 internal/auth/   ядро аутентификации (челленджи, сплиты, TOTP)
 internal/radiusserver/  RADIUS auth/acct (layeh.com/radius)
 internal/store/  PostgreSQL (pgx) — пользователи, челленджи, аудит...
+internal/backup/ логический SQL-дамп БД (twofa -backup, GET /admin/backup)
 internal/settings/ конфигурация в БД (defaults, hot-reload)
 internal/delivery/ email/SMS-отправка (9 пресетов шлюзов: smsc, sms.ru,
                  smsaero, mainsms, bytehand, prostor, unisender,
