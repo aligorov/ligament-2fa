@@ -290,13 +290,22 @@ func (p *PagesAPI) render(w http.ResponseWriter, status int, page string, data a
 }
 
 // redirectFlash — POST/Redirect/GET: 302 на path с флешем kind=ok|err.
+// Флеш вливается в СУЩЕСТВУЮЩИЙ query path: next-возврат после входа
+// может нести свои параметры (например, /oidc/authorize?…).
 func redirectFlash(w http.ResponseWriter, r *http.Request, path, msg string, ok bool) {
 	kind := "ok"
 	if !ok {
 		kind = "err"
 	}
-	q := url.Values{"flash": {msg}, "kind": {kind}}
-	http.Redirect(w, r, path+"?"+q.Encode(), http.StatusFound)
+	u, err := url.Parse(path)
+	if err != nil {
+		u = &url.URL{Path: path}
+	}
+	q := u.Query()
+	q.Set("flash", msg)
+	q.Set("kind", kind)
+	u.RawQuery = q.Encode()
+	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
 // auditPage пишет событие аудита, не ломая основной поток.
