@@ -92,7 +92,13 @@ func (mgr *Manager) audit(r *http.Request, username, event, result string, detai
 // запроса (снимок настроек читается на каждый запрос — это дёшево, а
 // смена domain применяется без рестарта).
 func (mgr *Manager) issuer(r *http.Request) string {
-	if d := strings.TrimRight(mgr.m.Get().Server.Domain, "/"); d != "" {
+	return issuerFrom(mgr.m.Get().Server.Domain, r)
+}
+
+// issuerFrom — вычисление issuer: domain из настроек (без хвостового
+// слэша), при пустом — «scheme://host» запроса (https при TLS).
+func issuerFrom(domain string, r *http.Request) string {
+	if d := strings.TrimRight(domain, "/"); d != "" {
 		return d
 	}
 	scheme := "http"

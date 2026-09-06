@@ -199,7 +199,7 @@ func NewClientSecret() string { return secrets.RandomToken(32) }
 // защищает от радужных таблиц при утечке БД.
 func HashClientSecret(secret string) string {
 	salt := secrets.RandomToken(secretSaltLen)
-	return salt + "$" + string(secrets.SHA256(salt+secret))
+	return salt + "$" + b64url(secrets.SHA256(salt+secret))
 }
 
 // VerifyClientSecret сверяет секрет с хранимым «salt$hash» в постоянном
@@ -211,7 +211,7 @@ func VerifyClientSecret(stored, secret string) bool {
 			continue
 		}
 		salt, want := stored[:i], stored[i+1:]
-		got := string(secrets.SHA256(salt + secret))
+		got := b64url(secrets.SHA256(salt + secret))
 		return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 	}
 	return false
