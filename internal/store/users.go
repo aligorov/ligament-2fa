@@ -20,6 +20,15 @@ var ErrNotFound = errors.New("not found")
 // defaultPreferChannels — значение prefer_channels по умолчанию (спека §5).
 var defaultPreferChannels = []channel.Channel{channel.TOTP, channel.Email, channel.SMS}
 
+// Источники учётной записи (users.source, миграция 0002).
+const (
+	// SourceLocal — локальный пароль (argon2id-хеш в password_hash).
+	SourceLocal = "local"
+	// SourceLDAP — внешний каталог LDAP/AD: пароль проверяется bind-ом,
+	// password_hash непригоден (случайный при авто-провижининге).
+	SourceLDAP = "ldap"
+)
+
 // User — строка таблицы users.
 type User struct {
 	ID             uuid.UUID
@@ -33,6 +42,8 @@ type User struct {
 	RadiusReply    map[string]string // JSONB, nil допустим
 	WebAuthnID     []byte            // nil до первого webauthn-enroll
 	PasswordHash   string
+	Source         string // SourceLocal | SourceLDAP (миграция 0002)
+	DisplayName    string // отображаемое имя (синк из LDAP-атрибута)
 }
 
 // scanner абстрагирует pgx.Row и pgx.Rows для общего кода сканирования.
@@ -41,7 +52,8 @@ type scanner interface{ Scan(dest ...any) error }
 // userCols — список колонок users для SELECT/сканирования (без created_at/
 // updated_at — они не входят в структуру User).
 const userCols = `id, username, password_hash, role, enabled, email, phone,
-	telegram_chat_id, prefer_channels, radius_push, radius_reply, webauthn_id`
+	telegram_chat_id, prefer_channels, radius_push, radius_reply, webauthn_id,
+	source, display_name`
 
 // defaultChannels возвращает свежую копию каналов по умолчанию.
 func defaultChannels() []channel.Channel {
@@ -113,9 +125,14 @@ func scanUser(row scanner) (*User, error) {
 	if err := row.Scan(
 		&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled,
 		&u.Email, &u.Phone, &u.TelegramChatID, &preferRaw, &u.RadiusPush,
-		&replyRaw, &u.WebAuthnID,
+		&replyRaw, &u.WebAuthnID, &u.Source, &u.DisplayName,
 	); err != nil {
 		return nil, err
+	}
+	// Пустой source (строки, созданные до миграции 0002, и дефолты форм)
+	// трактуется как локальный.
+	if u.Source == "" {
+		u.Source = SourceLocal
 	}
 	prefer, err := scanPreferChannels(preferRaw)
 	if err != nil {
@@ -161,6 +178,9 @@ func (s *Store) UserCreate(ctx context.Context, u *User) error {
 	if u.ID == uuid.Nil {
 		u.ID = uuid.New()
 	}
+	if u.Source == "" {
+		u.Source = SourceLocal
+	}
 	prefer, err := preferChannelsJSON(u.PreferChannels)
 	if err != nil {
 		return err
@@ -171,10 +191,12 @@ func (s *Store) UserCreate(ctx context.Context, u *User) error {
 	}
 	_, err = s.Pool().Exec(ctx, `INSERT INTO users
 		(id, username, password_hash, role, enabled, email, phone,
-		 telegram_chat_id, prefer_channels, radius_push, radius_reply, webauthn_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		 telegram_chat_id, prefer_channels, radius_push, radius_reply, webauthn_id,
+		 source, display_name)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		u.ID, u.Username, u.PasswordHash, u.Role, u.Enabled, u.Email, u.Phone,
-		u.TelegramChatID, prefer, u.RadiusPush, reply, u.WebAuthnID)
+		u.TelegramChatID, prefer, u.RadiusPush, reply, u.WebAuthnID,
+		u.Source, u.DisplayName)
 	if err != nil {
 		return fmt.Errorf("store: создать пользователя %q: %w", u.Username, err)
 	}
@@ -192,13 +214,18 @@ func (s *Store) UserUpdate(ctx context.Context, u *User) error {
 	if err != nil {
 		return err
 	}
+	if u.Source == "" {
+		u.Source = SourceLocal
+	}
 	ct, err := s.Pool().Exec(ctx, `UPDATE users SET
 		username = $2, password_hash = $3, role = $4, enabled = $5,
 		email = $6, phone = $7, telegram_chat_id = $8, prefer_channels = $9,
-		radius_push = $10, radius_reply = $11, webauthn_id = $12, updated_at = now()
+		radius_push = $10, radius_reply = $11, webauthn_id = $12,
+		source = $13, display_name = $14, updated_at = now()
 		WHERE id = $1`,
 		u.ID, u.Username, u.PasswordHash, u.Role, u.Enabled, u.Email, u.Phone,
-		u.TelegramChatID, prefer, u.RadiusPush, reply, u.WebAuthnID)
+		u.TelegramChatID, prefer, u.RadiusPush, reply, u.WebAuthnID,
+		u.Source, u.DisplayName)
 	if err != nil {
 		return fmt.Errorf("store: обновить пользователя %s: %w", u.ID, err)
 	}

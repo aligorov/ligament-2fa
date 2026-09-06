@@ -24,6 +24,7 @@ func TestUserCRUDIntegration(t *testing.T) {
 		Enabled:      true,
 		Email:        "crud@example.com",
 		Phone:        "+70000000001",
+		DisplayName:  "Иван Иванов",
 	}
 	if err := st.UserCreate(ctx, created); err != nil {
 		t.Fatalf("UserCreate: %v", err)
@@ -41,6 +42,12 @@ func TestUserCRUDIntegration(t *testing.T) {
 		got.Phone != created.Phone || got.TelegramChatID != nil || got.RadiusPush ||
 		got.RadiusReply != nil || got.WebAuthnID != nil {
 		t.Fatalf("несовпадение после создания: %+v", got)
+	}
+	if got.Source != SourceLocal {
+		t.Fatalf("source после создания = %q, ожидался local (дефолт)", got.Source)
+	}
+	if got.DisplayName != "Иван Иванов" {
+		t.Fatalf("display_name после создания = %q", got.DisplayName)
 	}
 	if want := []channel.Channel{channel.TOTP, channel.Email, channel.SMS}; !channelsEq(got.PreferChannels, want) {
 		t.Fatalf("prefer_channels: got %v, want %v", got.PreferChannels, want)
@@ -66,6 +73,8 @@ func TestUserCRUDIntegration(t *testing.T) {
 	created.RadiusReply = map[string]string{"Filter-Id": "vpn", "Framed-IP": "10.0.0.1"}
 	created.WebAuthnID = []byte("waid-" + uuid.NewString()[:8])
 	created.PasswordHash = "$argon2id$rotated"
+	created.Source = SourceLDAP
+	created.DisplayName = "Иван Обновлённый"
 	if err := st.UserUpdate(ctx, created); err != nil {
 		t.Fatalf("UserUpdate: %v", err)
 	}
@@ -97,6 +106,12 @@ func TestUserCRUDIntegration(t *testing.T) {
 	}
 	if updated.PasswordHash != "$argon2id$rotated" {
 		t.Fatalf("password_hash не обновился: %q", updated.PasswordHash)
+	}
+	if updated.Source != SourceLDAP {
+		t.Fatalf("source не обновился: %q", updated.Source)
+	}
+	if updated.DisplayName != "Иван Обновлённый" {
+		t.Fatalf("display_name не обновился: %q", updated.DisplayName)
 	}
 
 	if err := st.UserDelete(ctx, created.ID); err != nil {
