@@ -29,15 +29,21 @@ var defaults = map[string]json.RawMessage{
 	"radius.fail_window":       json.RawMessage(`"5m"`),
 	"radius.push_wait":         json.RawMessage(`"20s"`),
 	"radius.reply_attributes":  json.RawMessage(`{}`),
-	"smtp":                     json.RawMessage(`{"host":"","port":0,"starttls":false,"user":"","password":"","from":"","subject":"","timeout":"0s"}`),
-	"sms.gateway":              json.RawMessage(`{}`),
-	"sms.presets":              json.RawMessage(`{}`),
-	"totp":                     json.RawMessage(`{"issuer":"twofa","digits":6,"period":30,"skew":1}`),
-	"telegram":                 json.RawMessage(`{"bot_token":""}`),
-	"webauthn":                 json.RawMessage(`{"rp_id":"","rp_name":"twofa","origins":[]}`),
-	"policy":                   json.RawMessage(`{"code_ttl":"5m","code_length":6,"max_attempts":5,"resend_cooldown":"60s","default_prefer_channels":["totp","telegram","email","sms"],"push_cooldown":"30s","push_per_hour":10,"trusted_device_ttl":"720h","max_fail":5,"fail_window":"5m","ban_time":"15m"}`),
-	"web.session_ttl":          json.RawMessage(`"12h"`),
-	"ldap":                     json.RawMessage(`{"enabled":false,"url":"","starttls":false,"bind_dn":"","bind_password":"","base_dn":"","user_filter":"(&(objectClass=user)(sAMAccountName={login}))","group_base_dn":"","group_filter":"(&(objectClass=group)(member={dn}))","attrs":{"email":"mail","phone":"telephoneNumber","display_name":"displayName"},"allow_groups":[],"role_map":{}}`),
+	// radius.eap_cert — пара self-signed сертификата EAP-TTLS (RSA-2048,
+	// JSON {"cert_pem","key_pem"}). Дефолт null — «сертификат не создан»:
+	// генерируется RADIUS-сервером при первом старте
+	// (internal/radiusserver.EnsureEAPCert) и записывается через Put, а не
+	// здесь. Секрет: не экспортируется/не импортируется и маскируется.
+	"radius.eap_cert": json.RawMessage(`null`),
+	"smtp":            json.RawMessage(`{"host":"","port":0,"starttls":false,"user":"","password":"","from":"","subject":"","timeout":"0s"}`),
+	"sms.gateway":     json.RawMessage(`{}`),
+	"sms.presets":     json.RawMessage(`{}`),
+	"totp":            json.RawMessage(`{"issuer":"twofa","digits":6,"period":30,"skew":1}`),
+	"telegram":        json.RawMessage(`{"bot_token":""}`),
+	"webauthn":        json.RawMessage(`{"rp_id":"","rp_name":"twofa","origins":[]}`),
+	"policy":          json.RawMessage(`{"code_ttl":"5m","code_length":6,"max_attempts":5,"resend_cooldown":"60s","default_prefer_channels":["totp","telegram","email","sms"],"push_cooldown":"30s","push_per_hour":10,"trusted_device_ttl":"720h","max_fail":5,"fail_window":"5m","ban_time":"15m"}`),
+	"web.session_ttl": json.RawMessage(`"12h"`),
+	"ldap":            json.RawMessage(`{"enabled":false,"url":"","starttls":false,"bind_dn":"","bind_password":"","base_dn":"","user_filter":"(&(objectClass=user)(sAMAccountName={login}))","group_base_dn":"","group_filter":"(&(objectClass=group)(member={dn}))","attrs":{"email":"mail","phone":"telephoneNumber","display_name":"displayName"},"allow_groups":[],"role_map":{}}`),
 	// oidc.keys — пара ключей подписи ID-токенов (RSA-2048, JSON
 	// {"current":{"kid","private_pem"},"previous":null}). Дефолт null —
 	// «ключ не создан»: генерируется менеджером OIDC при первом старте

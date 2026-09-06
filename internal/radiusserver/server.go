@@ -1,23 +1,30 @@
 // Package radiusserver — RADIUS-интерфейс 2FA-сервера: Access-Request (PAP)
 // через auth.Core (сплиты «пароль+код», push_wait-удержание, fail-счётчик)
-// и accounting-лог. Reply-атрибуты Access-Accept: сначала per-user
+// и accounting-лог. EAP-TTLS/PAP (RFC 3579/5281) для WPA2/WPA3-Enterprise:
+// внутренний PAP идёт через тот же Core.RADIUSAuth (eapauth.go), сессии
+// держатся по RADIUS State (eapsession.go), серверный сертификат
+// self-signed (cert.go). Reply-атрибуты Access-Accept: сначала per-user
 // users.radius_reply, иначе глобальные radius.reply_attributes (MikroTik VSA
 // и стандартные атрибуты, см. attrs.go). Ответ на запрос с
 // Message-Authenticator подписывается (RFC 3579, митигация BlastRADIUS,
-// см. messageauth.go). Неизвестные коды пакетов игнорируются без ответа.
+// см. messageauth.go); ответы EAP-обмена несут Message-Authenticator всегда.
+// Неизвестные коды пакетов игнорируются без ответа.
 package radiusserver
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2866"
+	"layeh.com/radius/rfc2869"
 
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/firewall"
@@ -44,12 +51,20 @@ type Server struct {
 	st   *store.Store
 	m    *settings.M
 	fw   *firewall.Guard // nil — фильтрации по IP нет
+
+	// EAP-TTLS (802.1X): сессии по RADIUS State и серверный сертификат
+	// (self-signed, см. cert.go; nil при его отсутствии — EAP отключён).
+	eapSessions *eapSessionStore
+	certMu      sync.Mutex
+	eapTLSCert  *tls.Certificate
 }
 
 // New собирает RADIUS-сервер. Секрет и адреса читаются из настроек при
-// каждом запуске слушателей (ListenAndServe/ServeAuth/ServeAcct).
+// каждом запуске слушателей (ListenAndServe/ServeAuth/ServeAcct);
+// сертификат EAP-TTLS — EnsureEAPCert (main) или лениво при первом
+// EAP-запросе.
 func New(core *auth.Core, st *store.Store, m *settings.M) *Server {
-	return &Server{core: core, st: st, m: m}
+	return &Server{core: core, st: st, m: m, eapSessions: newEAPSessionStore()}
 }
 
 // SetFirewall подключает fail2ban-guard: Access-Request с чёрного/
@@ -189,10 +204,11 @@ func shutdownOnDone(ctx context.Context, srv *radius.PacketServer, conn net.Pack
 	}
 }
 
-// handleAuth — Access-Request (PAP): UserName + User-Password (библиотека
-// расшифровывает PAP сама) → Core.RADIUSAuth с таймаутом push_wait+5s →
-// Accept с reply-атрибутами (per-user radius_reply, иначе глобальные) или
-// Reject с Reply-Message "rejected" без внутренних деталей.
+// handleAuth — Access-Request: EAP-Message (RFC 3579) уходит в EAP-TTLS/
+// PAP-поток (handleEAPAuth), иначе — PAP: UserName + User-Password
+// (библиотека расшифровывает PAP сама) → Core.RADIUSAuth с таймаутом
+// push_wait+5s → Accept с reply-атрибутами (per-user radius_reply, иначе
+// глобальные) или Reject с Reply-Message "rejected" без внутренних деталей.
 func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 	if r.Code != radius.CodeAccessRequest {
 		return // неизвестные коды игнорируются без ответа
@@ -215,6 +231,13 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 			_ = w.Write(resp)
 			return
 		}
+	}
+
+	// EAP-обмен (WPA2/WPA3-Enterprise): все EAP-Message атрибуты запроса
+	// библиотека уже склеила в один EAP-пакет.
+	if eapRaw, err := rfc2869.EAPMessage_Lookup(r.Packet); err == nil {
+		s.handleEAPAuth(w, r, eapRaw)
+		return
 	}
 
 	username, _ := rfc2865.UserName_LookupString(r.Packet)

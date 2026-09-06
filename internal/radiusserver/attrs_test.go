@@ -1,5 +1,5 @@
-// Юнит-тесты таблицы reply-атрибутов и Message-Authenticator (RFC 3579)
-// — без БД и сети.
+// Юнит-тесты таблицы reply-атрибутов, Message-Authenticator (RFC 3579)
+// и MS-MPPE-ключей (RFC 2548) — без БД и сети.
 package radiusserver
 
 import (
@@ -10,7 +10,11 @@ import (
 
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
+	"layeh.com/radius/rfc2869"
+	msm "layeh.com/radius/vendors/microsoft"
 	mt "layeh.com/radius/vendors/mikrotik"
+
+	"github.com/aligorov/twofa/internal/radiusserver/eap"
 )
 
 func TestApplyReplyAttrsMikrotikAndStandard(t *testing.T) {
@@ -173,4 +177,140 @@ func TestMessageAuthenticatorResponseSignature(t *testing.T) {
 	if hasMessageAuthenticator(plainResp) {
 		t.Fatal("ответ на запрос без Message-Authenticator не должен содержать атрибут")
 	}
+}
+
+// TestEAPResponseMessageAuthenticator: ответы EAP-обмена (RFC 3579 §3.2)
+// подписываются ВСЕГДА — даже на запрос без Message-Authenticator — и
+// проходят клиентскую проверку (пара подпись+проверка).
+func TestEAPResponseMessageAuthenticator(t *testing.T) {
+	// EAP-запрос без Message-Authenticator (пустой State, Identity).
+	req := radius.New(radius.CodeAccessRequest, []byte("topsecret"))
+	rfc2865.UserName_SetString(req, "anonymous")
+	rfc2869.EAPMessage_Set(req, eap.BuildIdentity(eap.CodeResponse, 0, "anonymous"))
+
+	resp := req.Response(radius.CodeAccessChallenge)
+	rfc2865.State_Add(resp, []byte("0123456789abcdef"))
+	rfc2869.EAPMessage_Set(resp,
+		eap.BuildTTLS(eap.CodeRequest, 1, eap.TTLSFlagStart, -1, nil))
+	signEAPResponseMessageAuthenticator(req, resp)
+
+	if !hasMessageAuthenticator(resp) {
+		t.Fatal("ответ EAP-обмена обязан содержать Message-Authenticator (RFC 3579 §3.2)")
+	}
+	if !verifyResponseMA(req, resp) {
+		t.Fatal("Message-Authenticator EAP-ответа не проходит проверку RFC 3579")
+	}
+
+	// Подпись чувствительна к изменению содержимого: меняем EAP-пакет —
+	// старая подпись больше не сходится (перестановка атрибутов тоже
+	// меняет кодировку пакета), повторная подпись восстанавливает парность.
+	saved := append([]byte(nil), mustEAPMessage(resp)...)
+	mustEAPMessageSet(resp, eap.BuildTTLS(eap.CodeRequest, 2, 0, -1, nil))
+	if verifyResponseMA(req, resp) {
+		t.Fatal("подпись совпала после подмены EAP-Message")
+	}
+	mustEAPMessageSet(resp, saved)
+	signEAPResponseMessageAuthenticator(req, resp)
+	if !verifyResponseMA(req, resp) {
+		t.Fatal("переподписанный EAP-ответ не прошёл проверку")
+	}
+}
+
+// mustEAPMessage достаёт собранный EAP-пакет ответа (тестовый хелпер).
+func mustEAPMessage(p *radius.Packet) []byte {
+	b, err := rfc2869.EAPMessage_Lookup(p)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func mustEAPMessageSet(p *radius.Packet, pkt []byte) {
+	p.Attributes.Del(rfc2869.EAPMessage_Type)
+	if err := rfc2869.EAPMessage_Set(p, pkt); err != nil {
+		panic(err)
+	}
+}
+
+// TestMSMPPEKeyAttributes: формат MS-MPPE-Send/Recv-Key (RFC 2548 §3.5/
+// §3.6): vendor 311, типы 16/17, значение Salt(2, старший бит 1)+
+// length(1)+ключ с паддингом, зашифрованное цепочкой MD5 по секрету и
+// Request Authenticator. Расшифровка зеркалом NewTunnelPassword должна
+// вернуть исходные 32 байта.
+func TestMSMPPEKeyAttributes(t *testing.T) {
+	secret := []byte("topsecret")
+	req := radius.New(radius.CodeAccessRequest, secret)
+	rfc2865.UserName_SetString(req, "alice")
+
+	recvKey := make([]byte, 32)
+	sendKey := make([]byte, 32)
+	for i := range recvKey {
+		recvKey[i] = byte(i)
+		sendKey[i] = byte(255 - i)
+	}
+
+	resp := req.Response(radius.CodeAccessAccept)
+	if err := msm.MSMPPERecvKey_Add(resp, recvKey); err != nil {
+		t.Fatalf("MSMPPERecvKey_Add: %v", err)
+	}
+	if err := msm.MSMPPESendKey_Add(resp, sendKey); err != nil {
+		t.Fatalf("MSMPPESendKey_Add: %v", err)
+	}
+
+	gotRecv := decryptMSMPPE(t, resp, req, 17)
+	gotSend := decryptMSMPPE(t, resp, req, 16)
+	if !bytes.Equal(gotRecv, recvKey) {
+		t.Fatalf("Recv-Key не расшифровался: %x", gotRecv)
+	}
+	if !bytes.Equal(gotSend, sendKey) {
+		t.Fatalf("Send-Key не расшифровался: %x", gotSend)
+	}
+}
+
+// decryptMSMPPE достаёт VSA Microsoft(311)/type и расшифровывает
+// Tunnel-Password-подобное значение (зеркало layeh/radius NewTunnelPassword).
+func decryptMSMPPE(t *testing.T, resp, req *radius.Packet, vendorType byte) []byte {
+	t.Helper()
+	for _, avp := range resp.Attributes {
+		if avp.Type != rfc2865.VendorSpecific_Type {
+			continue
+		}
+		vendorID, vsa, err := radius.VendorSpecific(avp.Attribute)
+		if err != nil || vendorID != 311 || len(vsa) < 2 || vsa[0] != vendorType {
+			continue
+		}
+		attr := vsa[2:] // за байтом типа лежит длина VSA (учтена выше)
+		if len(attr) < 18 {
+			t.Fatalf("MPPE-атрибут подозрительно короткий: %d", len(attr))
+		}
+		salt := attr[:2]
+		if salt[0]&0x80 == 0 {
+			t.Fatal("старший бит Salt не установлен (RFC 2548)")
+		}
+		enc := attr[2:]
+		plain := make([]byte, len(enc))
+		hash := md5.New()
+		var b [md5.Size]byte
+		for chunk := 0; chunk*16 < len(enc); chunk++ {
+			hash.Reset()
+			hash.Write(resp.Secret)
+			if chunk == 0 {
+				hash.Write(req.Authenticator[:])
+				hash.Write(salt)
+			} else {
+				hash.Write(enc[(chunk-1)*16 : chunk*16])
+			}
+			hash.Sum(b[:0])
+			for i := 0; i < 16 && chunk*16+i < len(enc); i++ {
+				plain[chunk*16+i] = enc[chunk*16+i] ^ b[i]
+			}
+		}
+		keyLen := int(plain[0])
+		if keyLen != 32 {
+			t.Fatalf("длина ключа внутри атрибута = %d, хочу 32", keyLen)
+		}
+		return plain[1 : 1+keyLen]
+	}
+	t.Fatalf("VSA Microsoft c типом %d не найден", vendorType)
+	return nil
 }

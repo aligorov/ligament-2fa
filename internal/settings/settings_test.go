@@ -662,6 +662,7 @@ func TestDefaultsCoverKnownKeys(t *testing.T) {
 		"master_key", "admin_token",
 		"radius.secret", "radius.code_lengths", "radius.max_fail_per_user",
 		"radius.fail_window", "radius.push_wait", "radius.reply_attributes",
+		"radius.eap_cert",
 		"smtp", "sms.gateway", "sms.presets", "totp", "telegram", "webauthn",
 		"policy", "web.session_ttl", "ldap", "oidc.keys",
 	}

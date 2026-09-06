@@ -231,6 +231,14 @@ func main() {
 	radius := radiusserver.New(core, st, m)
 	radius.SetFirewall(guard)
 
+	// Сертификат EAP-TTLS (WPA2/WPA3-Enterprise): self-signed пара
+	// создаётся при первом старте и хранится в настройках (radius.eap_cert).
+	// Ошибка не фатальна: PAP-RADIUS продолжает работать, EAP-запросы
+	// получат Reject (и повторную попытку генерации при следующем).
+	if err := radius.EnsureEAPCert(ctx); err != nil {
+		slog.Warn("main: сертификат EAP-TTLS не создан — 802.1X временно отключён", "error", err)
+	}
+
 	addr := *addrFlag
 	if addr == "" {
 		addr = m.Get().Listen.HTTP

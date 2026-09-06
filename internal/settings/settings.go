@@ -116,6 +116,10 @@ type T struct {
 		FailWindow      time.Duration
 		PushWait        time.Duration
 		ReplyAttributes map[string]string
+		// EAPCert — сырой JSON ключа radius.eap_cert: self-signed пара
+		// сертификата EAP-TTLS {"cert_pem","key_pem"}. Генерируется
+		// RADIUS-сервером при первом старте; nil — ещё не создан.
+		EAPCert json.RawMessage
 	}
 
 	SMTP struct {
@@ -563,6 +567,12 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Radius.PushWait = parseDur(raw["radius.push_wait"], def.Radius.PushWait)
 	t.Radius.ReplyAttributes = parseStringMap(raw["radius.reply_attributes"], def.Radius.ReplyAttributes)
 
+	// radius.eap_cert: null/отсутствие = сертификат не создан (nil), иначе
+	// сырой JSON (расшифровкой занимается radiusserver).
+	if v := rawJSON(raw["radius.eap_cert"], def.Radius.EAPCert); !isNullJSON(v) {
+		t.Radius.EAPCert = v
+	}
+
 	smtp := fields(raw["smtp"])
 	t.SMTP.Host = parseString(smtp["host"], def.SMTP.Host)
 	t.SMTP.Port = parseInt(smtp["port"], def.SMTP.Port)
@@ -774,11 +784,14 @@ func IsKnownKey(key string) bool { return isKnownKey(key) }
 // exportExcluded — ключи, НИКОГДА не покидающие сервер в экспорте
 // настроек: master_key расшифровывает TOTP-секреты (перенос равен
 // компрометации всех факторов), admin_token — полный доступ к админ-API,
-// oidc.keys подписывает ID-токены (перенос позволяет подделывать вход).
+// oidc.keys подписывает ID-токены (перенос позволяет подделывать вход),
+// radius.eap_cert — приватный ключ TLS-сертификата EAP-TTLS (перенос
+// позволяет MITM 802.1X-клиентов, доверяющих сертификату).
 var exportExcluded = map[string]struct{}{
-	"master_key":  {},
-	"admin_token": {},
-	"oidc.keys":   {},
+	"master_key":      {},
+	"admin_token":     {},
+	"oidc.keys":       {},
+	"radius.eap_cert": {},
 }
 
 // IsImportExcluded — ключ, который нельзя применить импортом настроек
@@ -970,6 +983,8 @@ func (t *T) masked() map[string]any {
 			"fail_window":       t.Radius.FailWindow.String(),
 			"push_wait":         t.Radius.PushWait.String(),
 			"reply_attributes":  t.Radius.ReplyAttributes,
+			// eap_cert — секрет: приватный ключ TLS-сертификата.
+			"eap_cert": maskForValue(t.Radius.EAPCert),
 		},
 		"smtp": map[string]any{
 			"host":     t.SMTP.Host,

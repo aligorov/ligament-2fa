@@ -68,6 +68,24 @@ func signResponseMessageAuthenticator(req, resp *radius.Packet) {
 	if !hasMessageAuthenticator(req) {
 		return
 	}
+	forceResponseMessageAuthenticator(resp)
+}
+
+// signEAPResponseMessageAuthenticator подписывает ответ EAP-обмена:
+// RFC 3579 §3.2 требует Message-Authenticator в ЛЮБОМ ответе на запрос
+// с EAP-Message (Access-Challenge/Accept/Reject), даже если сам запрос
+// атрибута не содержал. Алгоритм общий с обычной подписью (RFC 2869 §5.14).
+func signEAPResponseMessageAuthenticator(req, resp *radius.Packet) {
+	_ = req
+	forceResponseMessageAuthenticator(resp)
+}
+
+// forceResponseMessageAuthenticator добавляет в ответ нулевой
+// Message-Authenticator, кодирует пакет и вписывает HMAC-MD5 секрета
+// (Request Authenticator уже стоит в поле Authenticator ответа). Повторная
+// подпись заменяет предыдущий атрибут, а не дублирует его.
+func forceResponseMessageAuthenticator(resp *radius.Packet) {
+	resp.Attributes.Del(messageAuthenticatorType)
 	resp.Add(messageAuthenticatorType, make(radius.Attribute, macSize))
 	b, err := resp.MarshalBinary()
 	if err != nil {
