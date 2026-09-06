@@ -48,11 +48,11 @@ var ldapDial = func(ctx context.Context, rawURL string, starttls bool) (LdapConn
 	var conn *ldap.Conn
 	switch scheme {
 	case "ldaps":
-		if conn, err = ldap.DialURL(u.Host, ldap.DialWithTLSConfig(tlsCfg)); err != nil {
+		if conn, err = ldap.DialURL(rawURL, ldap.DialWithTLSConfig(tlsCfg)); err != nil {
 			return nil, fmt.Errorf("auth/ldap: подключение %s: %w", rawURL, err)
 		}
 	case "ldap", "":
-		if conn, err = ldap.DialURL(u.Host); err != nil {
+		if conn, err = ldap.DialURL(rawURL); err != nil {
 			return nil, fmt.Errorf("auth/ldap: подключение %s: %w", rawURL, err)
 		}
 		if starttls {
