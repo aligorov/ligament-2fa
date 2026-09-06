@@ -174,7 +174,8 @@ type ttlsFrag struct {
 // (layeh/radius обслуживает пакеты последовательно на своём цикле); воркер
 // runTLS пишет только в каналы, keyBlock и буферы conn.
 type eapSession struct {
-	state     string
+	state     []byte // сырые байты RADIUS State (кладутся в Challenge как есть)
+	stateKey  string // hex(state) — ключ карты сессий
 	createdAt time.Time
 	lastUsed  time.Time // под мьютексом store
 
@@ -198,8 +199,8 @@ type eapSession struct {
 	lastRespEAP []byte
 }
 
-// newEAPSession собирает сессию и стартует TLS-воркер.
-func newEAPSession(state string, cert *tls.Certificate) *eapSession {
+// newEAPSession собирает сессию (stateKey = hex(raw)) и стартует TLS-воркер.
+func newEAPSession(raw []byte, stateKey string, cert *tls.Certificate) *eapSession {
 	conn := newEAPConn()
 	// EAP-TTLS определён на TLS 1.0–1.2 (RFC 5281): 1.3 не используется,
 	// ExportKeyingMaterial TTLS на нём не определён.
@@ -209,7 +210,8 @@ func newEAPSession(state string, cert *tls.Certificate) *eapSession {
 		MaxVersion:   tls.VersionTLS12,
 	}
 	sess := &eapSession{
-		state:        state,
+		state:        append([]byte(nil), raw...),
+		stateKey:     stateKey,
 		createdAt:    time.Now(),
 		lastUsed:     time.Now(),
 		conn:         conn,
@@ -436,7 +438,7 @@ func (st *eapSessionStore) create(cert *tls.Certificate) *eapSession {
 		if _, exists := st.sessions[state]; exists {
 			continue
 		}
-		sess := newEAPSession(state, cert)
+		sess := newEAPSession(b, state, cert)
 		st.sessions[state] = sess
 		return sess
 	}
@@ -449,8 +451,8 @@ func (st *eapSessionStore) delete(sess *eapSession) {
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if cur, ok := st.sessions[sess.state]; ok && cur == sess {
-		delete(st.sessions, sess.state)
+	if cur, ok := st.sessions[sess.stateKey]; ok && cur == sess {
+		delete(st.sessions, sess.stateKey)
 	}
 	sess.conn.Close()
 }

@@ -116,22 +116,28 @@ func (s *Server) handleTTLS(w radius.ResponseWriter, r *radius.Request,
 		s.failEAP(w, r, sess, "сборка фрагментов: "+err.Error())
 		return
 	}
-	if !complete {
-		// Ждём остальные фрагменты: пустой ACK-запрос.
-		s.sendEAP(w, r, sess, sess.popOrAck())
+	if !complete && sess.frag.InFlight() {
+		// Входящее сообщение ещё не собрано (ждём фрагменты); застрявший
+		// исходящий поток (воркер мог дописать между шагами — гонка
+		// сигналов wantIn) прокачиваем.
+		s.pumpTTLS(w, r, sess, nil)
 		return
 	}
-	// Пустой ACK клиента может приносить расшифрованные phase-2 данные
-	// (воркер успел раньше) — забираем неблокирующе.
-	if extra := sess.takeAppData(); len(extra) > 0 {
-		sess.pendingInner = append(sess.pendingInner, extra...)
-	}
+	// Здесь payload либо полный, либо пустой ACK клиента (InFlight=false):
+	// в inner-фазе пустой ACK всё равно обязан попробовать расшифровать
+	// накопленные phase-2 данные — воркер мог расшифровать AVP ещё до
+	// перехода фазы (handshake завершился на предыдущем шаге).
 
 	switch sess.phase {
 	case eapPhaseHandshake:
-		if len(payload) > 0 {
-			sess.conn.deliver(payload)
+		if len(payload) == 0 {
+			// Пустой ACK клиента (подтверждение нашего фрагмента/запроса):
+			// продолжаем очередь исходящих, handshake не двигаем — новых
+			// данных нет, ждать нечего.
+			s.pumpTTLS(w, r, sess, nil)
+			return
 		}
+		sess.conn.deliver(payload)
 		out, finished, err := sess.waitHandshakeStep()
 		if err != nil {
 			s.failEAP(w, r, sess, "TLS handshake: "+err.Error())
@@ -140,17 +146,25 @@ func (s *Server) handleTTLS(w radius.ResponseWriter, r *radius.Request,
 		if finished {
 			sess.phase = eapPhaseInner
 		}
-		sess.pushOutQueue(out)
-		s.sendEAP(w, r, sess, sess.popOrAck())
+		s.pumpTTLS(w, r, sess, out)
 
 	case eapPhaseInner:
+		var app []byte
 		if len(payload) > 0 {
 			sess.conn.deliver(payload)
-		}
-		app, err := sess.waitAppData()
-		if err != nil {
-			s.failEAP(w, r, sess, "чтение phase-2: "+err.Error())
-			return
+			app, err = sess.waitAppData()
+			if err != nil {
+				s.failEAP(w, r, sess, "чтение phase-2: "+err.Error())
+				return
+			}
+		} else {
+			// Пустой ACK: расшифрованные AVP могли накопиться в канале
+			// раньше (handshake завершился на прошлом шаге — гонка фаз).
+			app = sess.takeAppData()
+			if len(app) == 0 && len(sess.pendingInner) == 0 {
+				s.pumpTTLS(w, r, sess, nil)
+				return
+			}
 		}
 		if extra := sess.takeAppData(); len(extra) > 0 {
 			app = append(app, extra...)
@@ -164,20 +178,26 @@ func (s *Server) handleTTLS(w radius.ResponseWriter, r *radius.Request,
 			s.failEAP(w, r, sess, "AVP phase-2: "+perr.Error())
 			return
 		case !inner.Complete():
-			if len(app) == 0 {
-				// Серверу нечего сказать и данных нет: пустой ACK-запрос —
-				// приглашение клиенту слать AVP (RFC 5281 §9.1: немедленный
-				// inner требует запроса).
-				s.sendEAP(w, r, sess, sess.popOrAck())
-				return
-			}
-			// AVP пришли частично — ждём продолжения.
+			// AVP пришли частично — ждём продолжения; пустой ACK-запрос —
+			// приглашение клиенту слать данные (RFC 5281 §9.1).
 			sess.pendingInner = app
-			s.sendEAP(w, r, sess, sess.popOrAck())
+			s.pumpTTLS(w, r, sess, nil)
 			return
 		}
 		s.finishInnerPAP(w, r, sess, pkt.ID, inner, srcIP)
 	}
+}
+
+// pumpTTLS кладёт out (и застрявший в мосту исходящий поток — воркер мог
+// дописать записи между шагами, гонка сигналов wantIn) в очередь фрагментов
+// и отправляет следующий фрагмент либо пустой ACK-запрос. Гарантирует
+// продвижение обмена: данные никогда не застревают в мосту.
+func (s *Server) pumpTTLS(w radius.ResponseWriter, r *radius.Request, sess *eapSession, out []byte) {
+	if stuck := sess.conn.takeOutput(); len(stuck) > 0 {
+		sess.pushOutQueue(stuck)
+	}
+	sess.pushOutQueue(out)
+	s.sendEAP(w, r, sess, sess.popOrAck())
 }
 
 // finishInnerPAP — внутренний PAP через общий конвейер RADIUSAuth (сплиты
@@ -250,7 +270,7 @@ func (s *Server) finishInnerPAP(w radius.ResponseWriter, r *radius.Request,
 // запоминая его для идемпотентных ретрансмитов NAS.
 func (s *Server) sendEAP(w radius.ResponseWriter, r *radius.Request, sess *eapSession, pkt []byte) {
 	resp := r.Response(radius.CodeAccessChallenge)
-	if err := rfc2865.State_Add(resp, []byte(sess.state)); err != nil {
+	if err := rfc2865.State_Add(resp, sess.state); err != nil {
 		slog.Warn("radius: State не установлен", "error", err)
 	}
 	if err := rfc2869.EAPMessage_Set(resp, pkt); err != nil {
