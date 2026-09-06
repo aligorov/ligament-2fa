@@ -460,49 +460,52 @@ func TestLicenseRevocationByCRL(t *testing.T) {
 	}
 }
 
-// TestLicenseTrialPersistence: Init отмечает старт демо один раз (повторный
-// Init не сдвигает), Effective даёт trial без лимита; старт 31 день назад —
-// free/5 (деградация, не блокировка входа).
-func TestLicenseTrialPersistence(t *testing.T) {
+// TestLicenseDemoPersistence: демо живёт ТОЛЬКО подписанным файлом
+// (plan=demo): Upload → trial без лимита; blob персистентен в БД (новый
+// менеджер после «рестарта» видит то же демо); без файла — всегда free.
+func TestLicenseDemoPersistence(t *testing.T) {
 	st, _, _ := setup(t)
 	ctx := context.Background()
 	licenseCleanup(t, st)
 	defer licenseCleanup(t, st)
 
+	exp := time.Now().Add(10 * 24 * time.Hour)
+	blob := signTestLicense(t, "k-demo-p", func(p *license.Payload) {
+		p.Plan = license.PlanDemo
+		p.UserLimit = 0
+		p.ExpiresAt = &exp
+		p.MaintenanceExpires = time.Time{}
+	})
+
 	m := license.NewManager(st)
-	if err := m.Init(ctx); err != nil {
-		t.Fatalf("Init: %v", err)
+	if _, err := m.Upload(ctx, blob); err != nil {
+		t.Fatalf("Upload demo: %v", err)
 	}
 	st1, err := m.Effective(ctx)
 	if err != nil {
 		t.Fatalf("Effective: %v", err)
 	}
-	if st1.Mode != license.ModeTrial || st1.UserLimit > 0 {
-		t.Fatalf("после Init: %+v, хочу trial без лимита", st1)
+	if st1.Mode != license.ModeTrial || st1.UserLimit > 0 || st1.TrialDaysLeft != 10 {
+		t.Fatalf("демо-статус: %+v, хочу trial/безлимит/10д", st1)
 	}
 
-	// Повторный Init не перезаписывает старт демо.
-	if err := m.Init(ctx); err != nil {
-		t.Fatalf("Init (повтор): %v", err)
-	}
-	st2, _ := m.Effective(ctx)
-	if st2.Mode != license.ModeTrial || st2.TrialDaysLeft != st1.TrialDaysLeft {
-		t.Fatalf("старт демо сдвинулся: %v → %v", st1, st2)
-	}
-
-	// Демо истекло (31 день назад) → free/5.
-	if _, err := st.Pool().Exec(ctx,
-		`UPDATE settings SET value = to_jsonb(to_char(now() - interval '31 days',
-			 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
-		 WHERE key = 'license.trial_started'`); err != nil {
-		t.Fatalf("сдвиг trial_started: %v", err)
-	}
-	st3, err := m.Effective(ctx)
+	// «Рестарт»: новый менеджер читает тот же blob из БД.
+	m2 := license.NewManager(st)
+	st2, err := m2.Effective(ctx)
 	if err != nil {
-		t.Fatalf("Effective (истекло): %v", err)
+		t.Fatalf("Effective (рестарт): %v", err)
 	}
+	if st2.Mode != license.ModeTrial || st2.TrialDaysLeft != 10 {
+		t.Fatalf("демо не пережило рестарт: %+v", st2)
+	}
+
+	// Удаление файла → free/5.
+	if err := m2.Remove(ctx); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	st3, _ := m2.Effective(ctx)
 	if st3.Mode != license.ModeFree || st3.UserLimit != license.FreeUserLimit {
-		t.Fatalf("после демо: %+v, хочу free/%d", st3, license.FreeUserLimit)
+		t.Fatalf("после удаления демо-файла: %+v, хочу free/%d", st3, license.FreeUserLimit)
 	}
 }
 
@@ -592,56 +595,44 @@ func TestLicenseFormCreateBlocked(t *testing.T) {
 	}
 }
 
-// TestLicenseTrialNotResurrected: демо не воскрешается циклом
-// «загрузка лицензии → удаление → рестарт» — Upload ставит неотзываемый
-// маркер license.trial_used и не удаляет trial_started (review fix 1).
-func TestLicenseTrialNotResurrected(t *testing.T) {
+// TestLicenseDemoNotResurrected: с демо-файлами воскрешение не
+// возможно в принципе — удаление файла даёт free, повторная загрузка
+// того же файла возвращает то же демо с тем же сроком (даты в подписи).
+func TestLicenseDemoNotResurrected(t *testing.T) {
 	st, _, _ := setup(t)
 	ctx := context.Background()
 	licenseCleanup(t, st)
 	defer licenseCleanup(t, st)
 
+	exp := time.Now().Add(5 * 24 * time.Hour)
+	blob := signTestLicense(t, "k-demo-res", func(p *license.Payload) {
+		p.Plan = license.PlanDemo
+		p.UserLimit = 0
+		p.ExpiresAt = &exp
+		p.MaintenanceExpires = time.Time{}
+	})
 	m := license.NewManager(st)
-	if err := m.Init(ctx); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-	st1, err := m.Effective(ctx)
-	if err != nil {
-		t.Fatalf("Effective: %v", err)
-	}
-	if st1.Mode != license.ModeTrial {
-		t.Fatalf("после первого Init: %+v, хочу trial", st1)
-	}
-
-	// Загрузка лицензии «израсходует» демо.
-	blob := signTestLicense(t, "it-trialused", nil)
 	if _, err := m.Upload(ctx, blob); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	if ok, _ := getSetting(t, st, "license.trial_used"); !ok {
-		t.Fatal("license.trial_used не установлен загрузкой лицензии")
-	}
-	if ok, _ := getSetting(t, st, "license.trial_started"); !ok {
-		t.Fatal("license.trial_started удалён загрузкой лицензии")
+	if st1, _ := m.Effective(ctx); st1.Mode != license.ModeTrial || st1.TrialDaysLeft != 5 {
+		t.Fatalf("демо: %+v, хочу trial/5д", st1)
 	}
 
-	// Удаление лицензии → free (не возврат в демо).
+	// Удаление → free (не «вечное демо»).
 	if err := m.Remove(ctx); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
+	if st2, _ := m.Effective(ctx); st2.Mode != license.ModeFree {
+		t.Fatalf("после удаления: %+v, хочу free", st2)
+	}
 
-	// «Рестарт» — новый менеджер Init: демо НЕ начинается заново.
-	m2 := license.NewManager(st)
-	if err := m2.Init(ctx); err != nil {
-		t.Fatalf("Init (рестарт): %v", err)
+	// Повторная загрузка того же файла — тот же срок, не продление.
+	if _, err := m.Upload(ctx, blob); err != nil {
+		t.Fatalf("Upload (повтор): %v", err)
 	}
-	st2, err := m2.Effective(ctx)
-	if err != nil {
-		t.Fatalf("Effective (рестарт): %v", err)
-	}
-	if st2.Mode != license.ModeFree || st2.UserLimit != license.FreeUserLimit {
-		t.Fatalf("после удаления лицензии и рестарта: %+v, хочу free/%d (остаток демо не восстанавливается)",
-			st2, license.FreeUserLimit)
+	if st3, _ := m.Effective(ctx); st3.Mode != license.ModeTrial || st3.TrialDaysLeft != 5 {
+		t.Fatalf("повторная загрузка сдвинула срок: %+v", st3)
 	}
 }
 
@@ -779,30 +770,25 @@ func TestLicenseOverLimitGraceLifecycle(t *testing.T) {
 	}
 }
 
-// TestLicenseTrialCorruptValue: битое значение license.trial_started не
-// валит старт — Init/Effective деградируют (значение трактуется
-// отсутствующим, ничего не перезаписывается), режим free (review fix 6).
-func TestLicenseTrialCorruptValue(t *testing.T) {
+// TestLicenseLeftoverTrialKeysIgnored: после перехода на демо-файлы
+// остатки старых ключей license.trial_* в БД игнорируются — режим
+// определяется только лицензионным blob (free без файла).
+func TestLicenseLeftoverTrialKeysIgnored(t *testing.T) {
 	st, _, _ := setup(t)
 	ctx := context.Background()
 	licenseCleanup(t, st)
 	defer licenseCleanup(t, st)
 
+	// Наследие авто-триала: не должно влиять ни на что.
 	setSetting(t, st, "license.trial_started", "не-время-вообще")
+	setSetting(t, st, "license.trial_used", "true")
 
 	m := license.NewManager(st)
-	if err := m.Init(ctx); err != nil {
-		t.Fatalf("Init с битым trial_started: %v (не должен валить старт)", err)
-	}
 	st1, err := m.Effective(ctx)
 	if err != nil {
-		t.Fatalf("Effective с битым trial_started: %v", err)
+		t.Fatalf("Effective: %v", err)
 	}
 	if st1.Mode != license.ModeFree || st1.UserLimit != license.FreeUserLimit {
-		t.Fatalf("битый trial_started: %+v, хочу free/%d", st1, license.FreeUserLimit)
-	}
-	// Битое значение не перезаписано молча.
-	if ok, v := getSetting(t, st, "license.trial_started"); !ok || v != "не-время-вообще" {
-		t.Fatalf("битое trial_started перезаписано: %v %q", ok, v)
+		t.Fatalf("остатки trial-ключей: %+v, хочу free/%d", st1, license.FreeUserLimit)
 	}
 }

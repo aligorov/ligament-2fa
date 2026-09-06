@@ -186,6 +186,11 @@
         <input class="input mono" type="text" name="ads.direct.url" placeholder="https://…" value="{{.S.Ads.Direct.URL}}">
       </label>
       <label class="field">
+        <span class="field-label">Подпись в email/Telegram (бесплатная лицензия)</span>
+        <input class="input" type="text" name="ads.message_footer" placeholder="Реклама: {url}" value="{{.S.Ads.MessageFooter}}">
+        <span class="help">{url} — случайная ссылка из пула; пусто — без подписи. SMS и push не затрагиваются.</span>
+      </label>
+      <label class="field">
         <span class="field-label">Direct-link: пул ссылок (ротация)</span>
         <textarea class="textarea" name="ads.direct.urls" rows="4" placeholder="https://omg10.com/… (по одной на строку)">{{range .S.Ads.Direct.URLs}}{{.}}
 {{end}}</textarea>

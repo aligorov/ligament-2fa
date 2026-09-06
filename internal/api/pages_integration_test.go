@@ -459,6 +459,9 @@ var valueRe = regexp.MustCompile(`value=(?:"([^"]*)"|'([^']*)')`)
 // textareaRe — textarea с именем; значение — внутренний текст.
 var textareaRe = regexp.MustCompile(`(?s)<textarea[^>]*name="([^"]+)"[^>]*>(.*?)</textarea>`)
 
+// selectRe — select с именем (ads.provider): значение — selected-опция.
+var selectRe = regexp.MustCompile(`(?s)<select[^>]*name="([^"]+)"[^>]*>(.*?)</select>`)
+
 // parseSettingsForm разбирает блок <form> на секцию и карту «имя → значение»
 // (браузер отправил бы ровно это); checkbox без checked в форму не входит.
 func parseSettingsForm(block string) (section string, fields map[string]string) {
@@ -490,6 +493,12 @@ func parseSettingsForm(block string) (section string, fields map[string]string) 
 		} else {
 			fields[name] = "" // секретные поля с placeholder — «не менять»
 		}
+	}
+	for _, m := range selectRe.FindAllStringSubmatch(block, -1) {
+		if m[1] == "csrf_token" || m[1] == "section" {
+			continue
+		}
+		fields[m[1]] = "" // наличие важнее значения (контракт — по именам)
 	}
 	for _, m := range textareaRe.FindAllStringSubmatch(block, -1) {
 		fields[m[1]] = html.UnescapeString(m[2])
