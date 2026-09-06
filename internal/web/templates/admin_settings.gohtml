@@ -166,6 +166,12 @@
         <input class="input mono" type="text" name="ads.direct.url" placeholder="https://…" value="{{.S.Ads.Direct.URL}}">
       </label>
       <label class="field">
+        <span class="field-label">Direct-link: пул ссылок (ротация)</span>
+        <textarea class="textarea" name="ads.direct.urls" rows="4" placeholder="https://omg10.com/… (по одной на строку)">{{range .S.Ads.Direct.URLs}}{{.}}
+{{end}}</textarea>
+        <span class="help">Слот берёт случайную ссылку из пула при каждой загрузке страницы.</span>
+      </label>
+      <label class="field">
         <span class="field-label">Direct-link: надпись слота</span>
         <input class="input" type="text" name="ads.direct.label" placeholder="Реклама" value="{{.S.Ads.Direct.Label}}">
       </label>

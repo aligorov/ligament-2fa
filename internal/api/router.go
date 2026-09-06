@@ -3,6 +3,7 @@
 package api
 
 import (
+	"math/rand"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -109,11 +110,15 @@ func adsFor(lic *license.Manager, m *settings.M) func(*http.Request) web.AdsData
 		if err != nil || st.Mode == license.ModeLicensed {
 			return web.AdsData{}
 		}
+		directURL := snap.Ads.Direct.URL
+		if pool := snap.Ads.Direct.URLs; len(pool) > 0 {
+			directURL = pool[rand.Intn(len(pool))] // ротация на каждую отрисовку
+		}
 		return web.AdsData{Show: true, Provider: snap.Ads.Provider,
 			LoginLeft:   snap.Ads.Blocks.LoginLeft,
 			LoginRight:  snap.Ads.Blocks.LoginRight,
 			Sidebar:     snap.Ads.Blocks.Sidebar,
-			DirectURL:   snap.Ads.Direct.URL,
+			DirectURL:   directURL,
 			DirectLabel: snap.Ads.Direct.Label,
 			DirectImage: snap.Ads.Direct.Image}
 	}

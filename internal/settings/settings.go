@@ -74,9 +74,10 @@ type T struct {
 			Sidebar    string `json:"sidebar"`
 		} `json:"blocks"`
 		Direct struct {
-			URL   string `json:"url"`   // сама direct-ссылка
-			Label string `json:"label"` // текст слота (пусто = «Реклама»)
-			Image string `json:"image"` // опц. картинка баннера (https URL)
+			URL   string   `json:"url"`   // direct-ссылка (одна)
+			URLs  []string `json:"urls"`  // пул ссылок: слот берёт случайную
+			Label string   `json:"label"` // текст слота (пусто = «Реклама»)
+			Image string   `json:"image"` // опц. картинка баннера (https URL)
 		} `json:"direct"`
 	}
 
@@ -238,6 +239,7 @@ func defaultT() *T {
 	t.Listen.RadiusAuth = ":1812"
 	t.Listen.RadiusAcct = ":1813"
 	t.Ads.Enabled = false
+	t.Ads.Direct.URLs = []string{}
 	t.Fail2ban.Enabled = true
 	t.Fail2ban.MaxFail = 10
 	t.Fail2ban.Window = 5 * time.Minute
@@ -371,6 +373,28 @@ func parseInts(raw json.RawMessage, def []int) []int {
 
 // parseStrings разбирает JSON-массив строк. Пустой массив значим
 // (в отличие от parseChannels) и возвращается как есть.
+// parseStringsFlex — список строк из JSON-массива ИЛИ сырой строки
+// (ссылки через перевод строки / запятую / пробел — форма админки).
+func parseStringsFlex(raw json.RawMessage, def []string) []string {
+	if isNullJSON(raw) {
+		return def
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return list
+	}
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil && strings.TrimSpace(one) != "" {
+		out := strings.FieldsFunc(one, func(r rune) bool {
+			return r == '\n' || r == '\r' || r == ',' || r == ' ' || r == '\t'
+		})
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return def
+}
+
 func parseStrings(raw json.RawMessage, def []string) []string {
 	if isNullJSON(raw) {
 		return def
@@ -494,6 +518,7 @@ func buildT(raw map[string]json.RawMessage) *T {
 	}
 	adsd := fields(ads["direct"])
 	t.Ads.Direct.URL = parseString(adsd["url"], def.Ads.Direct.URL)
+	t.Ads.Direct.URLs = parseStringsFlex(adsd["urls"], def.Ads.Direct.URLs)
 	t.Ads.Direct.Label = parseString(adsd["label"], def.Ads.Direct.Label)
 	t.Ads.Direct.Image = parseString(adsd["image"], def.Ads.Direct.Image)
 	adsb := fields(ads["blocks"])
@@ -897,7 +922,8 @@ func (t *T) masked() map[string]any {
 			"enabled":  t.Ads.Enabled,
 			"provider": t.Ads.Provider,
 			"direct": map[string]any{
-				"url": t.Ads.Direct.URL, "label": t.Ads.Direct.Label, "image": t.Ads.Direct.Image,
+				"url": t.Ads.Direct.URL, "urls": t.Ads.Direct.URLs,
+				"label": t.Ads.Direct.Label, "image": t.Ads.Direct.Image,
 			},
 			"blocks": map[string]any{
 				"login_left":  t.Ads.Blocks.LoginLeft,
