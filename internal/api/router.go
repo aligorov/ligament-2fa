@@ -88,6 +88,8 @@ func BuildRouter(d Deps) *Router {
 	admin.Register(r)
 	pages.Register(r)
 
+	registerOpenAPI(r)
+
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(web.Static())))
 	r.NotFound(pages.NotFound)
 
