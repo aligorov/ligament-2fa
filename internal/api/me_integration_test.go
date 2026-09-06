@@ -292,8 +292,10 @@ func TestMeDevices(t *testing.T) {
 	}
 }
 
-// TestMeTelegramLink: код привязки XXXX-XXXXX, челлендж purpose=tg_link с
-// SHA-256-хешем; отвязка Telegram.
+// TestMeTelegramLink: выдача кода привязки — чувствительная операция
+// (SEC-002): без кода подтверждения → 400, с неверным → 401, с верным
+// (TOTP) → код XXXX-XXXXX, челлендж purpose=tg_link с SHA-256-хешем;
+// отвязка Telegram.
 func TestMeTelegramLink(t *testing.T) {
 	st, set, box := setup(t)
 	ctx := context.Background()
@@ -303,8 +305,31 @@ func TestMeTelegramLink(t *testing.T) {
 		u.TelegramChatID = &chat
 	})
 	c := loginSession(t, h, user.Username)
+	key := enrollTOTP(t, ctx, st, set, box, user)
 
+	// Есть второй фактор (TOTP + привязанный чат) — код подтверждения
+	// обязателен: пустой → 400, неверный → 401.
 	rec := c.do(http.MethodPost, "/api/v1/me/telegram/link", map[string]string{})
+	wantStatus(t, rec, http.StatusBadRequest)
+	if jsonBody(t, rec)["error"] != "code_required" {
+		t.Fatalf("link(без кода): body = %s, want code_required", rec.Body.String())
+	}
+	rec = c.do(http.MethodPost, "/api/v1/me/telegram/link", map[string]string{"code": "000000"})
+	wantStatus(t, rec, http.StatusUnauthorized)
+	if jsonBody(t, rec)["error"] != "bad_code" {
+		t.Fatalf("link(неверный код): body = %s, want bad_code", rec.Body.String())
+	}
+	rows, err := st.AuditList(ctx, store.AuditFilter{Username: user.Username, Event: "tg_link_start"})
+	if err != nil || len(rows) < 2 {
+		t.Fatalf("аудит tg_link_start(fail) не записан: rows=%d err=%v", len(rows), err)
+	}
+
+	totpCode, err := totp.GenerateCode(key.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("totp.GenerateCode: %v", err)
+	}
+	rec = c.do(http.MethodPost, "/api/v1/me/telegram/link",
+		map[string]string{"code": totpCode})
 	wantStatus(t, rec, http.StatusOK)
 	body := jsonBody(t, rec)
 	linkCode, _ := body["link_code"].(string)
@@ -317,11 +342,10 @@ func TestMeTelegramLink(t *testing.T) {
 
 	// Челлендж по хешу кода находит бота (T8), purpose=tg_link.
 	var purpose string
-	err := st.Pool().QueryRow(ctx, `
+	if err := st.Pool().QueryRow(ctx, `
 		SELECT purpose FROM challenges
 		WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now()`,
-		secrets.SHA256(linkCode)).Scan(&purpose)
-	if err != nil || purpose != "tg_link" {
+		secrets.SHA256(linkCode)).Scan(&purpose); err != nil || purpose != "tg_link" {
 		t.Fatalf("tg_link-челлендж: purpose=%q err=%v", purpose, err)
 	}
 
@@ -446,4 +470,102 @@ func TestMeWebauthn(t *testing.T) {
 	// Удаление несуществующего ключа → 404.
 	rec = c.do(http.MethodDelete, "/api/v1/me/webauthn/credentials/999999", nil)
 	wantStatus(t, rec, http.StatusNotFound)
+}
+
+// TestLoginRejectsScreenCodes (SEC-001): экранные коди не работают как
+// второй фактор входа — ни код привязки Telegram (tg_link), ни код
+// подтверждения операций кабинета (ui_confirm из send-code).
+func TestLoginRejectsScreenCodes(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	// Тест дважды берёт email-код подряд (send-code и auth/start) — без
+	// ускорения cooldown второй запрос упрётся в 429.
+	if err := set.Put(ctx, "policy", json.RawMessage(`{"resend_cooldown":"1ms"}`)); err != nil {
+		t.Fatalf("set.Put(policy): %v", err)
+	}
+	t.Cleanup(func() {
+		_ = set.Put(ctx, "policy", json.RawMessage(`{"resend_cooldown":"1m0s"}`))
+	})
+	h, email := newWebRouter(t, st, set, box, nil)
+	user := mkUser(t, ctx, st, "screencode", func(u *store.User) {
+		u.Email = "screencode@example.com"
+		u.PreferChannels = []channel.Channel{channel.TOTP, channel.Email}
+	})
+	key := enrollTOTP(t, ctx, st, set, box, user)
+	backupCodes, err := replaceBackupCodes(ctx, st, user.ID)
+	if err != nil {
+		t.Fatalf("replaceBackupCodes: %v", err)
+	}
+
+	// Полный 2FA-вход (TOTP-код расходуется на вход).
+	c := newWebClient(t, h)
+	rec := c.login(user.Username, testPassword, false)
+	wantStatus(t, rec, http.StatusOK)
+	totpCode, err := totp.GenerateCode(key.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("totp.GenerateCode: %v", err)
+	}
+	rec = c.login2FA(user.Username, testPassword, totpCode, false)
+	wantStatus(t, rec, http.StatusOK)
+	c.adoptCSRF(rec)
+
+	// 1) tg_link-код: выдача с подтверждением резервным кодом (фактор
+	// пользователя подходит для ui_confirm).
+	rec = c.do(http.MethodPost, "/api/v1/me/telegram/link",
+		map[string]string{"code": backupCodes[0]})
+	wantStatus(t, rec, http.StatusOK)
+	linkCode, _ := jsonBody(t, rec)["link_code"].(string)
+	if linkCode == "" {
+		t.Fatalf("link_code пуст: %s", rec.Body.String())
+	}
+	// Логин вторым шагом с ЭКРАННЫМ кодом привязки → 401 bad_code.
+	rec = c.do(http.MethodPost, "/api/v1/login/2fa",
+		map[string]string{"username": user.Username, "password": testPassword, "code": linkCode})
+	wantStatus(t, rec, http.StatusUnauthorized)
+	if jsonBody(t, rec)["error"] != "bad_code" {
+		t.Fatalf("login/2fa с tg_link-кодом: body = %s, want bad_code", rec.Body.String())
+	}
+	// Тот же код не подтверждает и операцию кабинета (не его purpose).
+	rec = c.do(http.MethodPost, "/api/v1/me/totp/delete",
+		map[string]string{"code": linkCode})
+	wantStatus(t, rec, http.StatusUnauthorized)
+
+	// 2) ui_confirm-код (send-code для смены контактов) → входом не
+	// принимается, но сменой контактов — принимается.
+	rec = c.do(http.MethodPut, "/api/v1/me/contacts/send-code", map[string]string{})
+	wantStatus(t, rec, http.StatusOK)
+	uiCode := email.lastCode()
+	if uiCode == "" {
+		t.Fatal("код доставки не захвачен")
+	}
+	rec = c.do(http.MethodPost, "/api/v1/login/2fa",
+		map[string]string{"username": user.Username, "password": testPassword, "code": uiCode})
+	wantStatus(t, rec, http.StatusUnauthorized)
+	if jsonBody(t, rec)["error"] != "bad_code" {
+		t.Fatalf("login/2fa с ui_confirm-кодом: body = %s, want bad_code", rec.Body.String())
+	}
+	rec = c.do(http.MethodPut, "/api/v1/me/contacts",
+		map[string]any{"email": "screencode2@example.com", "code": uiCode})
+	wantStatus(t, rec, http.StatusOK)
+	fresh, err := st.UserByUsername(ctx, user.Username)
+	if err != nil || fresh.Email != "screencode2@example.com" {
+		t.Fatalf("email после смены = %q (err %v)", fresh.Email, err)
+	}
+
+	// 3) Контроль: код входа (purpose api из /auth/start) логином
+	// принимается. Отдельный пользователь с email первым в prefer —
+	// auth/start отправляет именно email-код.
+	ctl := mkUser(t, ctx, st, "screencodectl", func(u *store.User) {
+		u.Email = "screencodectl@example.com"
+		u.PreferChannels = []channel.Channel{channel.Email}
+	})
+	rec = c.do(http.MethodPost, "/api/v1/auth/start",
+		map[string]string{"username": ctl.Username, "password": testPassword})
+	wantStatus(t, rec, http.StatusOK)
+	rec = c.do(http.MethodPost, "/api/v1/login/2fa",
+		map[string]string{"username": ctl.Username, "password": testPassword, "code": email.lastCode()})
+	wantStatus(t, rec, http.StatusOK)
+	if jsonBody(t, rec)["ok"] != true {
+		t.Fatalf("login/2fa с api-кодом: body = %s, want ok", rec.Body.String())
+	}
 }

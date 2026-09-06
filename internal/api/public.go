@@ -279,7 +279,7 @@ func (p *PublicAPI) handleCombined(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	user, ok, err := p.core.VerifyPasswordAndCode(r.Context(), req.Username, req.Password, req.Code)
+	user, ok, err := p.core.VerifyPasswordAndCode(r.Context(), req.Username, req.Password, req.Code, auth.LoginCodePurposes...)
 	switch {
 	case err == nil && ok && user != nil:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": user.Username})

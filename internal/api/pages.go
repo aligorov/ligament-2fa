@@ -383,7 +383,7 @@ func (p *PagesAPI) handleContacts(w http.ResponseWriter, r *http.Request) {
 		redirectFlash(w, r, "/me", "Введите код подтверждения.", false)
 		return
 	}
-	if _, err := p.core.VerifyAnyCode(ctx, user, code); err != nil {
+	if _, err := p.core.VerifyAnyCode(ctx, user, code, purposeUIConfirm); err != nil {
 		p.auditPage(ctx, user.Username, "contacts_change", clientIP(r), "fail",
 			map[string]any{"reason": "bad_code"})
 		redirectFlash(w, r, "/me", "Неверный код подтверждения.", false)
@@ -605,7 +605,8 @@ func (p *PagesAPI) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		flash500(w, r, "/me/totp", err)
 		return
 	}
-	// Replay-защита подтверждённого кода (как в JSON API).
+	// Replay-защита подтверждённого кода (как в JSON API): только подъём
+	// last_timestep TOTP-фактора, доставленные коды не расходуются.
 	if _, err := p.core.VerifyAnyCode(ctx, user, code); err != nil {
 		slog.Warn("pages: burn кода после totp confirm", "error", err)
 	}
@@ -628,7 +629,7 @@ func (p *PagesAPI) handleTOTPDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if _, err := p.core.VerifyAnyCode(ctx, user, code); err != nil {
+	if _, err := p.core.VerifyAnyCode(ctx, user, code, purposeUIConfirm); err != nil {
 		p.auditPage(ctx, user.Username, "totp_delete", clientIP(r), "fail",
 			map[string]any{"reason": "bad_code"})
 		redirectFlash(w, r, "/me/totp", "Неверный код.", false)
@@ -664,7 +665,7 @@ func (p *PagesAPI) handleBackupRegen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if _, err := p.core.VerifyAnyCode(ctx, user, code); err != nil {
+	if _, err := p.core.VerifyAnyCode(ctx, user, code, purposeUIConfirm); err != nil {
 		p.auditPage(ctx, user.Username, "backup_regen", clientIP(r), "fail",
 			map[string]any{"reason": "bad_code"})
 		redirectFlash(w, r, "/me/backup", "Неверный код.", false)
@@ -699,13 +700,28 @@ func (p *PagesAPI) handleTelegramPage(w http.ResponseWriter, r *http.Request) {
 		BaseData: p.baseData(r, "Telegram", "telegram"),
 		Linked:   user.TelegramChatID != nil,
 		ChatID:   user.TelegramChatID,
+		NeedCode: hasSecondFactor(r.Context(), p.st, user),
 	})
 }
 
-// handleTelegramLink — POST /me/telegram/link: код привязки (XXXX-XXXX)
-// рендерится на странице один раз.
+// handleTelegramLink — POST /me/telegram/link (form: code): код привязки
+// (XXXX-XXXX) рендерится на странице один раз. Выдача — чувствительная
+// операция (SEC-002): при наличии второго фактора требуется код
+// подтверждения (ui_confirm).
 func (p *PagesAPI) handleTelegramLink(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
+	ctx := r.Context()
+	reason, ok := tgLinkCodeCheck(ctx, p.core, p.st, user, r.PostFormValue("code"))
+	if !ok {
+		p.auditPage(ctx, user.Username, "tg_link_start", clientIP(r), "fail",
+			map[string]any{"reason": reason})
+		if reason == "code_required" {
+			redirectFlash(w, r, "/me/telegram", "Введите код подтверждения.", false)
+		} else {
+			redirectFlash(w, r, "/me/telegram", "Неверный код подтверждения.", false)
+		}
+		return
+	}
 	code := telegram.GenerateLinkCode()
 	ch := &store.Challenge{
 		UserID:       user.ID,
@@ -736,7 +752,7 @@ func (p *PagesAPI) handleTelegramDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ctx := r.Context()
-	if _, err := p.core.VerifyAnyCode(ctx, user, code); err != nil {
+	if _, err := p.core.VerifyAnyCode(ctx, user, code, purposeUIConfirm); err != nil {
 		p.auditPage(ctx, user.Username, "telegram_unlink", clientIP(r), "fail",
 			map[string]any{"reason": "bad_code"})
 		redirectFlash(w, r, "/me/telegram", "Неверный код.", false)
@@ -790,7 +806,7 @@ func (p *PagesAPI) handleWARegisterBegin(w http.ResponseWriter, r *http.Request)
 		redirectFlash(w, r, "/me/passkeys", "Введите код подтверждения.", false)
 		return
 	}
-	if _, err := p.core.VerifyAnyCode(r.Context(), user, code); err != nil {
+	if _, err := p.core.VerifyAnyCode(r.Context(), user, code, purposeUIConfirm); err != nil {
 		p.auditPage(r.Context(), user.Username, "webauthn_register", clientIP(r), "fail",
 			map[string]any{"reason": "bad_code"})
 		redirectFlash(w, r, "/me/passkeys", "Неверный код подтверждения.", false)
@@ -1198,13 +1214,15 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 		}
 	}
 	return web.AdminSettingsData{
-		BaseData:         p.baseData(r, "Настройки сервера", "admin-settings"),
-		S:                t,
-		RadiusSecretSet:  t.RadiusSecret != "",
-		SMTPPasswordSet:  t.SMTP.Password != "",
-		TGBotTokenSet:    t.TG.BotToken != "",
-		SMSGatewayJSON:   string(t.SMS),
-		SMSPresetsJSON:   string(t.SMSPresets),
+		BaseData:        p.baseData(r, "Настройки сервера", "admin-settings"),
+		S:               t,
+		RadiusSecretSet: t.RadiusSecret != "",
+		SMTPPasswordSet: t.SMTP.Password != "",
+		TGBotTokenSet:   t.TG.BotToken != "",
+		// SEC-004: сырой JSON шлюза содержит креды — в textarea рендерится
+		// маскированное дерево; POST с масками мерж оставляет без изменений.
+		SMSGatewayJSON:   settings.MaskedJSONTree(t.SMS),
+		SMSPresetsJSON:   settings.MaskedJSONTree(t.SMSPresets),
 		SMSPresetChoices: smsPresetChoices(),
 		ReplyAttrsJSON:   replyJSON,
 	}

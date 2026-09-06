@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aligorov/twofa/internal/secrets"
+	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
 )
 
@@ -526,4 +527,64 @@ func TestAdminMergedValueDBErrors(t *testing.T) {
 	if _, err := (NewAdminAPI(dead, set)).mergedValue(ctx, "totp", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("mergedValue проглотил ошибку БД (закрытый пул)")
 	}
+}
+
+// TestAdminSettingsSMSGatewayMasked (SEC-004): креды SMS-шлюза не
+// раскрываются JSON API (GET /admin/settings), а html-форма с масками
+// (MaskedJSONTree) сохраняет креды при отправке без изменений и заменяет
+// их при вводе новых.
+func TestAdminSettingsSMSGatewayMasked(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	h, _ := newWebRouter(t, st, set, box, nil)
+	tok := set.Get().AdminToken
+
+	// Реальный конфиг шлюза с кредами всех типов.
+	gw := `{"preset":"smsaero","method":"POST","url":"https://gate.example/send",` +
+		`"headers":{"auth_base64":"REAL-BASE64","login":"REAL-LOGIN","api_key":"REAL-KEY","id":"REAL-ID","sender":"N"},` +
+		`"success":{"http_status":200}}`
+	rec := adminReq(t, h, http.MethodPut, "/api/v1/admin/settings",
+		map[string]any{"sms.gateway": json.RawMessage(gw)}, tok)
+	wantStatus(t, rec, http.StatusOK)
+
+	// JSON API: ни один кред не встречается в GET-дереве.
+	rec = adminReq(t, h, http.MethodGet, "/api/v1/admin/settings", nil, tok)
+	wantStatus(t, rec, http.StatusOK)
+	for _, secret := range []string{"REAL-BASE64", "REAL-LOGIN", "REAL-KEY", "REAL-ID"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Fatalf("GET settings раскрывает кред %q: %s", secret, rec.Body.String())
+		}
+	}
+
+	// PUT с маскированным деревом (как отправила бы html-форма): креды
+	// не меняются, соседние поля — меняются.
+	masked := settings.MaskedJSONTree(set.Get().SMS)
+	rec = adminReq(t, h, http.MethodPut, "/api/v1/admin/settings",
+		map[string]any{"sms.gateway": json.RawMessage(masked)}, tok)
+	wantStatus(t, rec, http.StatusOK)
+	after, err := set.Get().SMSGateway()
+	if err != nil {
+		t.Fatalf("SMSGateway: %v", err)
+	}
+	if after.Headers["auth_base64"] != "REAL-BASE64" || after.Headers["login"] != "REAL-LOGIN" ||
+		after.Headers["api_key"] != "REAL-KEY" || after.Headers["id"] != "REAL-ID" {
+		t.Fatalf("маскированное дерево изменило креды: %v", after.Headers)
+	}
+
+	// PUT с новыми кредами: заменяются.
+	rec = adminReq(t, h, http.MethodPut, "/api/v1/admin/settings",
+		map[string]any{"sms.gateway": map[string]any{"headers": map[string]any{"login": "NEW-LOGIN"}}}, tok)
+	wantStatus(t, rec, http.StatusOK)
+	after, err = set.Get().SMSGateway()
+	if err != nil {
+		t.Fatalf("SMSGateway: %v", err)
+	}
+	if after.Headers["login"] != "NEW-LOGIN" || after.Headers["auth_base64"] != "REAL-BASE64" {
+		t.Fatalf("мерж новых кредов: %v", after.Headers)
+	}
+
+	// Восстановление дефолта для остальных тестов пакета.
+	t.Cleanup(func() {
+		_ = set.Put(ctx, "sms.gateway", json.RawMessage(`{}`))
+	})
 }

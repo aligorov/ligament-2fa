@@ -35,9 +35,16 @@
     <button type="button" class="btn ghost sm" data-copy>Скопировать</button>
   </div>
   <p class="muted">Код действует ограниченное время.</p>
-  <form action="/me/telegram/link" method="post" class="form-inline">
+  <form action="/me/telegram/link" method="post" class="form form-tight">
     {{csrf .CSRF}}
-    <button type="submit" class="btn secondary">Получить новый код</button>
+    <label class="field">
+      <span class="field-label">Код подтверждения</span>
+      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code"{{if .NeedCode}} required{{end}}>
+      <span class="help">Код из приложения, резервный код или код со старого канала.</span>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn secondary">Получить новый код</button>
+    </div>
   </form>
   {{else}}
   <div class="card-head">
@@ -47,6 +54,13 @@
   </div>
   <form action="/me/telegram/link" method="post" class="form">
     {{csrf .CSRF}}
+    <label class="field">
+      <span class="field-label">Код подтверждения</span>
+      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code"{{if .NeedCode}} required{{end}}>
+      <span class="help">Выдача кода привязки — чувствительная операция:
+      подтвердите её кодом второго фактора (из приложения, резервным или
+      доставленным на привязанный канал).</span>
+    </label>
     <div class="form-actions">
       <button type="submit" class="btn primary">Получить код привязки</button>
     </div>

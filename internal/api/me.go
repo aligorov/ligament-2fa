@@ -38,6 +38,44 @@ const tgLinkTTL = 10 * time.Minute
 // операции в кабинете (см. схему challenges).
 const purposeUIConfirm = "ui_confirm"
 
+// hasSecondFactor сообщает, есть ли у пользователя хоть один второй фактор:
+// подтверждённый TOTP, неиспользованные резервные коды, passkeys или
+// привязанный канал доставки кода (email/телефон/Telegram-чат). Выдача кода
+// привязки Telegram — чувствительная операция (SEC-002) и требует
+// подтверждения кодом, когда подтверждаться есть чем; пользователь вообще
+// без факторов (свежая учётка) — редкий случай, ему код не требуется.
+func hasSecondFactor(ctx context.Context, st *store.Store, user *store.User) bool {
+	if _, _, _, confirmed, _, err := st.TOTPGet(ctx, user.ID); err == nil && confirmed {
+		return true
+	}
+	if n, err := backupRemaining(ctx, st, user.ID); err == nil && n > 0 {
+		return true
+	}
+	if creds, err := st.WACredListForUser(ctx, user.ID); err == nil && len(creds) > 0 {
+		return true
+	}
+	return user.Email != "" || user.Phone != "" || user.TelegramChatID != nil
+}
+
+// tgLinkCodeCheck — общий предикат выдачи кода привязки Telegram: если у
+// пользователя есть второй фактор, выдача требует код подтверждения
+// (VerifyAnyCode с purpose ui_confirm — TOTP/резервный/код доставки со
+// старого канала). Возвращает ("", true), когда можно выдавать, и машинную
+// причину (code_required/bad_code), когда подтверждение не пройдено.
+func tgLinkCodeCheck(ctx context.Context, core *auth.Core, st *store.Store, user *store.User, code string) (string, bool) {
+	if !hasSecondFactor(ctx, st, user) {
+		return "", true // факторов нет — подтверждаться нечем
+	}
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return "code_required", false
+	}
+	if _, err := core.VerifyAnyCode(ctx, user, code, purposeUIConfirm); err != nil {
+		return "bad_code", false
+	}
+	return "", true
+}
+
 // MeAPI — зависимости и маршруты /api/v1/me/* (под RequireSession).
 type MeAPI struct {
 	core *auth.Core
@@ -221,7 +259,7 @@ func (p *MeAPI) handleContactsPut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "code_required")
 		return
 	}
-	if _, err := p.core.VerifyAnyCode(ctx, user, req.Code); err != nil {
+	if _, err := p.core.VerifyAnyCode(ctx, user, req.Code, purposeUIConfirm); err != nil {
 		p.audit(ctx, user.Username, "contacts_change", ip, "fail",
 			map[string]any{"reason": "bad_code"})
 		writeError(w, http.StatusUnauthorized, "bad_code")
@@ -408,7 +446,9 @@ func (p *MeAPI) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	// Replay-защита подтверждённого кода (см. auth.Core.verifyTOTP).
+	// Replay-защита подтверждённого кода (см. auth.Core.verifyTOTP): нужен
+	// только подъём last_timestep у TOTP-фактора — доставленные коды
+	// (purposes) здесь не расходуются.
 	if _, err := p.core.VerifyAnyCode(ctx, user, req.Code); err != nil {
 		slog.Warn("api: burn кода после totp confirm", "error", err)
 	}
@@ -435,7 +475,7 @@ func (p *MeAPI) handleTOTPDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if _, err := p.core.VerifyAnyCode(ctx, user, req.Code); err != nil {
+	if _, err := p.core.VerifyAnyCode(ctx, user, req.Code, purposeUIConfirm); err != nil {
 		p.audit(ctx, user.Username, "totp_delete", clientIP(r), "fail",
 			map[string]any{"reason": "bad_code"})
 		writeError(w, http.StatusUnauthorized, "bad_code")
@@ -465,7 +505,7 @@ func (p *MeAPI) handleBackupCodesRegenerate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	ctx := r.Context()
-	if _, err := p.core.VerifyAnyCode(ctx, user, req.Code); err != nil {
+	if _, err := p.core.VerifyAnyCode(ctx, user, req.Code, purposeUIConfirm); err != nil {
 		p.audit(ctx, user.Username, "backup_regen", clientIP(r), "fail",
 			map[string]any{"reason": "bad_code"})
 		writeError(w, http.StatusUnauthorized, "bad_code")
@@ -547,7 +587,7 @@ func (p *MeAPI) handleWARegisterBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, _ := userFrom(r.Context())
-	if _, err := p.core.VerifyAnyCode(r.Context(), user, req.Code); err != nil {
+	if _, err := p.core.VerifyAnyCode(r.Context(), user, req.Code, purposeUIConfirm); err != nil {
 		p.audit(r.Context(), user.Username, "webauthn_register", clientIP(r), "fail",
 			map[string]any{"reason": "bad_code"})
 		writeError(w, http.StatusUnauthorized, "bad_code")
@@ -638,12 +678,31 @@ func (p *MeAPI) handleWACredDelete(w http.ResponseWriter, r *http.Request) {
 
 // ---- Telegram ----
 
-// handleTelegramLink — POST /api/v1/me/telegram/link: код привязки
+// handleTelegramLink — POST /api/v1/me/telegram/link {code}: код привязки
 // (telegram.GenerateLinkCode, формат XXXX-XXXX) с SHA-256-хешем и TTL
 // 10 минут; бот (T8) находит челлендж по purpose=tg_link и хешу
-// нормализованного кода и привязывает chat_id.
+// нормализованного кода и привязывает chat_id. Выдача — чувствительная
+// операция (SEC-002): при наличии у пользователя второго фактора требуется
+// код подтверждения (ui_confirm).
 func (p *MeAPI) handleTelegramLink(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
+	var req codeReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	ip := clientIP(r)
+	reason, ok := tgLinkCodeCheck(ctx, p.core, p.st, user, req.Code)
+	if !ok {
+		p.audit(ctx, user.Username, "tg_link_start", ip, "fail",
+			map[string]any{"reason": reason})
+		if reason == "code_required" {
+			writeError(w, http.StatusBadRequest, "code_required")
+		} else {
+			writeError(w, http.StatusUnauthorized, "bad_code")
+		}
+		return
+	}
 	code := telegram.GenerateLinkCode()
 	ch := &store.Challenge{
 		UserID:       user.ID,

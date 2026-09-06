@@ -215,6 +215,15 @@ func (b *Bot) linkChat(ctx context.Context, chatID int64, code string) {
 		b.reply(ctx, chatID, "❌ Ошибка привязки, попробуйте позже")
 		return
 	}
+	// Перепривязка (SEC-002): у аккаунта уже был ДРУГОЙ чат — до перезаписи
+	// уведомляем старый чат best-effort: если код привязки утёк или аккаунт
+	// захватывают, у владельца есть сигнал сменить пароль. Ошибка отправки
+	// не мешает привязке.
+	if u.TelegramChatID != nil && *u.TelegramChatID != chatID {
+		old := *u.TelegramChatID
+		b.reply(context.WithoutCancel(ctx), old, fmt.Sprintf(
+			"Ваш Telegram отвязан от аккаунта %s. Если это не вы — смените пароль.", u.Username))
+	}
 	chat := chatID
 	u.TelegramChatID = &chat
 	if err := b.st.UserUpdate(ctx, u); err != nil {

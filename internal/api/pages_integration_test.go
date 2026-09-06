@@ -730,3 +730,83 @@ func TestPagesAnonymousRedirects(t *testing.T) {
 	wantStatus(t, rec, http.StatusNotFound)
 	wantBody(t, rec, "Ошибка 404")
 }
+
+// TestPagesAdminSettingsSMSMasked (SEC-004): страница настроек рендерит
+// sms.gateway замаскированным (креды не покидают сервер); отправка формы
+// без изменений сохраняет креды, ввод новых — заменяет.
+func TestPagesAdminSettingsSMSMasked(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	admin := mkUser(t, ctx, st, "smsadmin", func(u *store.User) { u.Role = "admin" })
+	t.Cleanup(func() {
+		_ = set.Put(ctx, "sms.gateway", json.RawMessage(`{}`))
+	})
+
+	// Реальный конфиг с кредами.
+	gw := json.RawMessage(`{"preset":"smsc","method":"GET","url":"https://gate.example/send",` +
+		`"headers":{"login":"REAL-LOGIN","psw":"REAL-PSW"},"success":{"http_status":200}}`)
+	if err := set.Put(ctx, "sms.gateway", gw); err != nil {
+		t.Fatalf("set.Put(sms.gateway): %v", err)
+	}
+
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.login(t, admin.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	// GET: маска в textarea, креды не в теле страницы.
+	rec = c.get("/admin/settings")
+	wantStatus(t, rec, http.StatusOK)
+	for _, secret := range []string{"REAL-LOGIN", "REAL-PSW"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Fatalf("страница настроек раскрывает кред %q", secret)
+		}
+	}
+	// textarea sms.gateway содержит маски-объекты и подсказку.
+	m := textareaRe.FindStringSubmatch(rec.Body.String())
+	var found bool
+	for _, mm := range textareaRe.FindAllStringSubmatch(rec.Body.String(), -1) {
+		if mm[1] == "sms.gateway" {
+			m = mm
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("textarea sms.gateway не найдена на странице")
+	}
+	if !strings.Contains(m[2], "••••") {
+		t.Fatalf("textarea sms.gateway без масок: %s", m[2])
+	}
+
+	// POST секции sms с замаскированным значением как есть → креды живы.
+	form := url.Values{
+		"section":     {"sms"},
+		"sms.gateway": {html.UnescapeString(m[2])},
+		"sms.presets": {"{}"},
+	}
+	rec = c.postForm("/admin/settings", form, true)
+	wantStatus(t, rec, http.StatusFound)
+	after, err := set.Get().SMSGateway()
+	if err != nil {
+		t.Fatalf("SMSGateway: %v", err)
+	}
+	if after.Headers["login"] != "REAL-LOGIN" || after.Headers["psw"] != "REAL-PSW" {
+		t.Fatalf("отправка маскированной формы изменила креды: %v", after.Headers)
+	}
+
+	// POST с новыми кредами → заменены.
+	form = url.Values{
+		"section":     {"sms"},
+		"sms.gateway": {`{"preset":"smsc","method":"GET","url":"https://gate.example/send","headers":{"login":"NEW-LOGIN","psw":"NEW-PSW"},"success":{"http_status":200}}`},
+		"sms.presets": {"{}"},
+	}
+	rec = c.postForm("/admin/settings", form, true)
+	wantStatus(t, rec, http.StatusFound)
+	after, err = set.Get().SMSGateway()
+	if err != nil {
+		t.Fatalf("SMSGateway: %v", err)
+	}
+	if after.Headers["login"] != "NEW-LOGIN" || after.Headers["psw"] != "NEW-PSW" {
+		t.Fatalf("новые креды не применились: %v", after.Headers)
+	}
+}

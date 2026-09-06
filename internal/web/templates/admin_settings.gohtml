@@ -84,7 +84,7 @@
     <div class="form-actions">
       <button type="submit" class="btn primary">Сохранить секцию</button>
       <button type="submit" name="regenerate" value="radius.secret" class="btn danger"
-        onclick="return confirm('Перегенерировать radius.secret? Все NAS отключатся, пока не обновят секрет.')">Перегенерировать секрет</button>
+        data-confirm="Перегенерировать radius.secret? Все NAS отключатся, пока не обновят секрет.">Перегенерировать секрет</button>
     </div>
   </form>
 </section>
@@ -100,7 +100,7 @@
     {{csrf .CSRF}}
     <div class="form-actions">
       <button type="submit" name="regenerate" value="admin_token" class="btn danger"
-        onclick="return confirm('Перегенерировать admin_token? Все интеграции со старым токеном перестанут работать.')">Перегенерировать admin_token</button>
+        data-confirm="Перегенерировать admin_token? Все интеграции со старым токеном перестанут работать.">Перегенерировать admin_token</button>
     </div>
   </form>
 </section>
@@ -172,6 +172,8 @@
     <label class="field">
       <span class="field-label">Шлюз (JSON)</span>
       <textarea class="textarea" name="sms.gateway" rows="8" placeholder="preset, method, url, headers, body, content_type, success">{{.SMSGatewayJSON}}</textarea>
+      <span class="help">Учётные данные скрыты маской «••••» — оставьте поле
+      как есть (креды сохранятся) или введите новые значения.</span>
     </label>
     <label class="field">
       <span class="field-label">Пресеты (JSON)</span>

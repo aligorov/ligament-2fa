@@ -71,6 +71,9 @@ type MeTelegramData struct {
 	Linked   bool
 	ChatID   *int64
 	LinkCode string // непусто после POST /me/telegram/link
+	// NeedCode — у пользователя есть второй фактор: выдача кода привязки
+	// требует кода подтверждения (SEC-002).
+	NeedCode bool
 }
 
 // MePasskeysData — /me/passkeys: список credential и форма добавления
