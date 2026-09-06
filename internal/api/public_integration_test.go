@@ -585,13 +585,13 @@ func TestAPIWebauthnBeginFinish(t *testing.T) {
 	if !ok {
 		t.Fatalf("options не объект: %s", rec.Body.String())
 	}
-	// go-webauthn сериализует CredentialAssertion как {"publicKey": {...}}.
-	pk, ok := opts["publicKey"].(map[string]any)
-	if !ok {
-		t.Fatalf("options.publicKey не объект: %v", opts)
+	// options верхнего уровня (без обёртки publicKey): challenge и rpId
+	// наверху — так ожидает клиент церемонии.
+	if _, wrapped := opts["publicKey"]; wrapped {
+		t.Fatalf("options завёрнуты в publicKey: %v", opts)
 	}
-	if pk["challenge"] == nil || pk["rpId"] != "localhost" {
-		t.Fatalf("options.publicKey некорректен: %v", pk)
+	if opts["challenge"] == nil || opts["rpId"] != "localhost" {
+		t.Fatalf("options некорректны: %v", opts)
 	}
 
 	// Finish без handle → 400.

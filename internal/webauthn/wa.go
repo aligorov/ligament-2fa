@@ -153,7 +153,7 @@ func (s *Svc) BeginRegister(ctx context.Context, user *store.User) (opts json.Ra
 	if err != nil {
 		return nil, "", err
 	}
-	opts, err = json.Marshal(creation)
+	opts, err = json.Marshal(creation.Response)
 	if err != nil {
 		return nil, "", fmt.Errorf("webauthn: кодирование creation options: %w", err)
 	}
@@ -218,7 +218,7 @@ func (s *Svc) BeginLogin(ctx context.Context, user *store.User) (opts json.RawMe
 	if err != nil {
 		return nil, "", err
 	}
-	opts, err = json.Marshal(assertion)
+	opts, err = json.Marshal(assertion.Response)
 	if err != nil {
 		return nil, "", fmt.Errorf("webauthn: кодирование assertion options: %w", err)
 	}

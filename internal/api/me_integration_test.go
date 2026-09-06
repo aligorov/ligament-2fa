@@ -473,7 +473,8 @@ func TestMeWebauthn(t *testing.T) {
 		t.Fatalf("аудит webauthn_register(fail) не записан: rows=%d err=%v", len(rows), err)
 	}
 
-	// Верный код: 200 {handle, options.publicKey.challenge}.
+	// Верный код: 200 {handle, options.challenge} — options верхнего
+	// уровня, без обёртки publicKey (webauthn.js ждёт challenge наверху).
 	rec = c.do(http.MethodPost, "/api/v1/me/webauthn/register/begin",
 		map[string]string{"name": "Новый ключ", "code": goodCode})
 	wantStatus(t, rec, http.StatusOK)
@@ -483,9 +484,11 @@ func TestMeWebauthn(t *testing.T) {
 		t.Fatalf("handle пуст: %s", rec.Body.String())
 	}
 	opts := body["options"].(map[string]any)
-	pk := opts["publicKey"].(map[string]any)
-	if pk["challenge"] == nil {
-		t.Fatalf("options.publicKey.challenge отсутствует: %v", pk)
+	if _, wrapped := opts["publicKey"]; wrapped {
+		t.Fatalf("options завёрнуты в publicKey: %v", opts)
+	}
+	if opts["challenge"] == nil {
+		t.Fatalf("options.challenge отсутствует: %v", opts)
 	}
 
 	// Finish с мусорным ответом аутентификатора → 400 (сессия церемонии

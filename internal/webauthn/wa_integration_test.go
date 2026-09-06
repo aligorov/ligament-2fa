@@ -150,27 +150,27 @@ func newWASvc(t *testing.T, st *store.Store) (*Svc, *settings.M) {
 	return svc, m
 }
 
-// creationOpts — разобранные PublicKeyCredentialCreationOptions.
+// creationOpts — разобранные PublicKeyCredentialCreationOptions. Сервис
+// отдаёт options верхнего уровня (спека и webauthn.js ждут challenge
+// наверху), БЕЗ обёртки protocol.CredentialCreation {"publicKey":…}.
 type creationOpts struct {
-	PublicKey struct {
-		RP struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"rp"`
-		User struct {
-			ID          string `json:"id"`
-			Name        string `json:"name"`
-			DisplayName string `json:"displayName"`
-		} `json:"user"`
-		Challenge              string `json:"challenge"`
-		AuthenticatorSelection struct {
-			ResidentKey      string `json:"residentKey"`
-			UserVerification string `json:"userVerification"`
-		} `json:"authenticatorSelection"`
-		ExcludeCredentials []struct {
-			ID string `json:"id"`
-		} `json:"excludeCredentials"`
-	} `json:"publicKey"`
+	RP struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"rp"`
+	User struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		DisplayName string `json:"displayName"`
+	} `json:"user"`
+	Challenge              string `json:"challenge"`
+	AuthenticatorSelection struct {
+		ResidentKey      string `json:"residentKey"`
+		UserVerification string `json:"userVerification"`
+	} `json:"authenticatorSelection"`
+	ExcludeCredentials []struct {
+		ID string `json:"id"`
+	} `json:"excludeCredentials"`
 }
 
 // TestNewEmptyRPIDIntegration: дефолтные настройки (rp_id пуст) → ошибка.
@@ -219,27 +219,34 @@ func TestBeginRegisterIntegration(t *testing.T) {
 		t.Fatalf("webauthn_id: %d байт, want %d", len(fresh.WebAuthnID), userHandleLen)
 	}
 
-	// Options: publicKey, rp.id, residentKey/UV required, user handle.
+	// Options верхнего уровня: rp.id, residentKey/UV required, user handle.
+	// Обёртки {"publicKey":…} быть не должно (регрессия формы ответа).
 	var opts creationOpts
 	if err := json.Unmarshal(optsJSON, &opts); err != nil {
 		t.Fatalf("opts не JSON: %v\n%s", err, optsJSON)
 	}
-	pk := opts.PublicKey
-	if pk.RP.ID != testRPID || pk.RP.Name != "twofa" {
-		t.Errorf("rp = %+v", pk.RP)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(optsJSON, &raw); err != nil {
+		t.Fatalf("opts не JSON-объект: %v", err)
 	}
-	if pk.AuthenticatorSelection.ResidentKey != "required" ||
-		pk.AuthenticatorSelection.UserVerification != "required" {
-		t.Errorf("authenticatorSelection = %+v", pk.AuthenticatorSelection)
+	if _, wrapped := raw["publicKey"]; wrapped {
+		t.Error("options завёрнуты в publicKey — клиент ждёт поля наверху")
 	}
-	if pk.User.Name != u.Username || pk.User.DisplayName != u.Username {
-		t.Errorf("user = %+v", pk.User)
+	if opts.RP.ID != testRPID || opts.RP.Name != "twofa" {
+		t.Errorf("rp = %+v", opts.RP)
 	}
-	userID, err := base64.RawURLEncoding.DecodeString(pk.User.ID)
+	if opts.AuthenticatorSelection.ResidentKey != "required" ||
+		opts.AuthenticatorSelection.UserVerification != "required" {
+		t.Errorf("authenticatorSelection = %+v", opts.AuthenticatorSelection)
+	}
+	if opts.User.Name != u.Username || opts.User.DisplayName != u.Username {
+		t.Errorf("user = %+v", opts.User)
+	}
+	userID, err := base64.RawURLEncoding.DecodeString(opts.User.ID)
 	if err != nil || !bytes.Equal(userID, fresh.WebAuthnID) {
-		t.Errorf("user.id = %q (%v), want webauthn_id", pk.User.ID, err)
+		t.Errorf("user.id = %q (%v), want webauthn_id", opts.User.ID, err)
 	}
-	if pk.Challenge == "" {
+	if opts.Challenge == "" {
 		t.Error("challenge пуст")
 	}
 
@@ -272,8 +279,8 @@ func TestBeginRegisterIntegration(t *testing.T) {
 	if err := json.Unmarshal([]byte(*ch.PushState), &session); err != nil {
 		t.Fatalf("разбор SessionData: %v", err)
 	}
-	if session.Challenge != pk.Challenge {
-		t.Errorf("session.Challenge = %s, want %s", session.Challenge, pk.Challenge)
+	if session.Challenge != opts.Challenge {
+		t.Errorf("session.Challenge = %s, want %s", session.Challenge, opts.Challenge)
 	}
 	if !bytes.Equal(session.UserID, fresh.WebAuthnID) {
 		t.Error("session.UserID != webauthn_id")
@@ -305,9 +312,9 @@ func TestBeginRegisterIntegration(t *testing.T) {
 	if err := json.Unmarshal(optsJSON3, &opts3); err != nil {
 		t.Fatalf("opts3: %v", err)
 	}
-	if len(opts3.PublicKey.ExcludeCredentials) != 1 ||
-		opts3.PublicKey.ExcludeCredentials[0].ID != base64.RawURLEncoding.EncodeToString(wc.CredentialID) {
-		t.Errorf("excludeCredentials = %+v", opts3.PublicKey.ExcludeCredentials)
+	if len(opts3.ExcludeCredentials) != 1 ||
+		opts3.ExcludeCredentials[0].ID != base64.RawURLEncoding.EncodeToString(wc.CredentialID) {
+		t.Errorf("excludeCredentials = %+v", opts3.ExcludeCredentials)
 	}
 }
 
@@ -347,9 +354,9 @@ func TestUserHandleAdoptPersistedIntegration(t *testing.T) {
 	if err := json.Unmarshal(optsJSON, &opts); err != nil {
 		t.Fatalf("opts не JSON: %v\n%s", err, optsJSON)
 	}
-	userID, err := base64.RawURLEncoding.DecodeString(opts.PublicKey.User.ID)
+	userID, err := base64.RawURLEncoding.DecodeString(opts.User.ID)
 	if err != nil || !bytes.Equal(userID, persisted1.WebAuthnID) {
-		t.Fatalf("user.id = %q (%v), want сохранённый webauthn_id", opts.PublicKey.User.ID, err)
+		t.Fatalf("user.id = %q (%v), want сохранённый webauthn_id", opts.User.ID, err)
 	}
 	if !bytes.Equal(second.WebAuthnID, persisted1.WebAuthnID) {
 		t.Fatal("вторая церемония не приняла сохранённый webauthn_id")
@@ -440,9 +447,9 @@ func TestUserHandleRaceAdoptsDBValueIntegration(t *testing.T) {
 	if err := json.Unmarshal(optsJSON, &opts); err != nil {
 		t.Fatalf("opts не JSON: %v\n%s", err, optsJSON)
 	}
-	userID, err := base64.RawURLEncoding.DecodeString(opts.PublicKey.User.ID)
+	userID, err := base64.RawURLEncoding.DecodeString(opts.User.ID)
 	if err != nil || !bytes.Equal(userID, dbu.WebAuthnID) {
-		t.Fatalf("user.id = %q (%v), want БД webauthn_id %x (handle победителя)", opts.PublicKey.User.ID, err, dbu.WebAuthnID)
+		t.Fatalf("user.id = %q (%v), want БД webauthn_id %x (handle победителя)", opts.User.ID, err, dbu.WebAuthnID)
 	}
 	if !bytes.Equal(u.WebAuthnID, dbu.WebAuthnID) {
 		t.Fatal("резолв не принял БД webauthn_id в объект пользователя")
@@ -577,26 +584,24 @@ func TestLoginIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginLogin: %v", err)
 	}
+	// PublicKeyCredentialRequestOptions верхнего уровня, без обёртки.
 	var assertion struct {
-		PublicKey struct {
-			Challenge        string `json:"challenge"`
-			RPID             string `json:"rpId"`
-			UserVerification string `json:"userVerification"`
-			AllowCredentials []struct {
-				ID string `json:"id"`
-			} `json:"allowCredentials"`
-		} `json:"publicKey"`
+		Challenge        string `json:"challenge"`
+		RPID             string `json:"rpId"`
+		UserVerification string `json:"userVerification"`
+		AllowCredentials []struct {
+			ID string `json:"id"`
+		} `json:"allowCredentials"`
 	}
 	if err := json.Unmarshal(optsJSON, &assertion); err != nil {
 		t.Fatalf("assertion opts: %v", err)
 	}
-	pk := assertion.PublicKey
-	if pk.RPID != testRPID || pk.UserVerification != "required" || pk.Challenge == "" {
-		t.Errorf("assertion options = %+v", pk)
+	if assertion.RPID != testRPID || assertion.UserVerification != "required" || assertion.Challenge == "" {
+		t.Errorf("assertion options = %+v", assertion)
 	}
-	if len(pk.AllowCredentials) != 1 ||
-		pk.AllowCredentials[0].ID != base64.RawURLEncoding.EncodeToString(wc.CredentialID) {
-		t.Errorf("allowCredentials = %+v", pk.AllowCredentials)
+	if len(assertion.AllowCredentials) != 1 ||
+		assertion.AllowCredentials[0].ID != base64.RawURLEncoding.EncodeToString(wc.CredentialID) {
+		t.Errorf("allowCredentials = %+v", assertion.AllowCredentials)
 	}
 	// Сессия входа хранится как webauthn_session.
 	if _, err := st.ChallengeGet(ctx, sessionChallengeID(handle)); err != nil {
