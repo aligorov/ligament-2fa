@@ -52,7 +52,7 @@
             <button type="submit" class="btn secondary sm">Отозвать устройства</button>
           </form>
           <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="delete">
-            <button type="submit" class="btn danger sm" onclick="return confirm('Удалить пользователя {{.Username}}?')">Удалить</button>
+            <button type="submit" class="btn danger sm" data-confirm="Удалить пользователя {{.Username}}?">Удалить</button>
           </form>
         </td>
       </tr>

@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -808,5 +810,50 @@ func TestPagesAdminSettingsSMSMasked(t *testing.T) {
 	}
 	if after.Headers["login"] != "NEW-LOGIN" || after.Headers["psw"] != "NEW-PSW" {
 		t.Fatalf("новые креды не применились: %v", after.Headers)
+	}
+}
+
+// TestSecurityHeaders (SEC-011): заголовки безопасности присутствуют на
+// HTML-страницах (/ и /login) и статике полной композиции BuildRouter.
+func TestSecurityHeaders(t *testing.T) {
+	st, set, box := setup(t)
+	rt := newPagesRouter(t, st, set, box)
+
+	for _, path := range []string{"/", "/login"} {
+		rec := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		rt.Handler.ServeHTTP(w, rec)
+		h := w.Header()
+		if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", path, got)
+		}
+		if got := h.Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("%s: X-Frame-Options = %q, want DENY", path, got)
+		}
+		if got := h.Get("Referrer-Policy"); got != "no-referrer" {
+			t.Errorf("%s: Referrer-Policy = %q, want no-referrer", path, got)
+		}
+		wantCSP := "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
+		if got := h.Get("Content-Security-Policy"); got != wantCSP {
+			t.Errorf("%s: CSP = %q, want %q", path, got, wantCSP)
+		}
+	}
+
+	// Инлайн-обработчики вынесены в data-атрибуты (CSP без unsafe-*):
+	// ни один шаблон не содержит onclick=/style=.
+	files, err := filepath.Glob(filepath.Join("..", "web", "templates", "*.gohtml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("шаблоны не найдены: %v", err)
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("чтение %s: %v", f, err)
+		}
+		for _, bad := range []string{"onclick=", "onchange=", "onsubmit=", "style="} {
+			if strings.Contains(string(b), bad) {
+				t.Errorf("%s содержит инлайн-атрибут %q (запрещён CSP)", filepath.Base(f), bad)
+			}
+		}
 	}
 }

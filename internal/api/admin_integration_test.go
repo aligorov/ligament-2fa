@@ -588,3 +588,52 @@ func TestAdminSettingsSMSGatewayMasked(t *testing.T) {
 		_ = set.Put(ctx, "sms.gateway", json.RawMessage(`{}`))
 	})
 }
+
+// TestAdminAuthFailAudited (SEC-010): неверный Bearer-токен — 401 И запись
+// admin_auth_fail в аудит (с ip, без секретов); успешный запрос аудита не
+// оставляет.
+func TestAdminAuthFailAudited(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	h, _ := newWebRouter(t, st, set, box, nil)
+	tok := set.Get().AdminToken
+
+	// База: соседние тесты тоже пишут admin_auth_fail (общий контейнер).
+	countFails := func() int {
+		t.Helper()
+		rows, err := st.AuditList(ctx, store.AuditFilter{Event: "admin_auth_fail"})
+		if err != nil {
+			t.Fatalf("AuditList: %v", err)
+		}
+		return len(rows)
+	}
+	before := countFails()
+
+	rec := adminReq(t, h, http.MethodGet, "/api/v1/admin/users", nil, "wrong-token")
+	wantStatus(t, rec, http.StatusUnauthorized)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if n := countFails(); n > before {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("admin_auth_fail не появился в audit_log за 3с")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	rows, err := st.AuditList(ctx, store.AuditFilter{Event: "admin_auth_fail"})
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("admin_auth_fail: rows=%d err=%v", len(rows), err)
+	}
+	if rows[0].Result != "fail" {
+		t.Fatalf("admin_auth_fail.result = %q, want fail", rows[0].Result)
+	}
+
+	// Успешный запрос новых записей не оставляет.
+	rec = adminReq(t, h, http.MethodGet, "/api/v1/admin/users", nil, tok)
+	wantStatus(t, rec, http.StatusOK)
+	if n := countFails(); n != before+1 {
+		t.Fatalf("admin_auth_fail после успешного запроса: delta=%d (before=%d after=%d), want 1", n-before, before, n)
+	}
+}

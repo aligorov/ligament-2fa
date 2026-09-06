@@ -1,9 +1,21 @@
 // twofa: мелкие UI-улучшения без фреймворков: кнопки «Скопировать»
-// (data-copy копирует текст соседнего code-элемента в буфер обмена) и
-// выбор пресета SMS-шлюза в настройках (data-sms-preset).
+// (data-copy копирует текст соседнего code-элемента в буфер обмена),
+// подтверждение опасных действий (data-confirm — вместо инлайн-onclick,
+// запрещённого CSP) и выбор пресета SMS-шлюза в настройках
+// (data-sms-preset).
 "use strict";
 
 document.addEventListener("DOMContentLoaded", () => {
+  // Опасное действие: кнопка data-confirm в форме требует confirm() до
+  // отправки (перехват на submit — покрывает и Enter в поле формы).
+  for (const btn of document.querySelectorAll("[data-confirm]")) {
+    const form = btn.closest("form");
+    if (!form) continue;
+    form.addEventListener("submit", (e) => {
+      if (!confirm(btn.dataset.confirm)) e.preventDefault();
+    });
+  }
+
   for (const btn of document.querySelectorAll("[data-copy]")) {
     btn.addEventListener("click", async () => {
       const row = btn.closest(".copy-row");

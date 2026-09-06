@@ -187,7 +187,7 @@ func TestRenderPages(t *testing.T) {
 			}},
 			want: []string{
 				`action="/me/webauthn/credentials"`, `action="/me/webauthn/credentials/7/delete"`,
-				"twofaRegisterPasskey", "MacBook · Touch ID", "Добавить passkey",
+				"data-passkey-register", "MacBook · Touch ID", "Добавить passkey",
 			},
 		},
 		{

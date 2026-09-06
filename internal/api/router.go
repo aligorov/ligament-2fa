@@ -15,6 +15,25 @@ import (
 	"github.com/aligorov/twofa/internal/webauthn"
 )
 
+// contentSecurityPolicy — CSP всех HTML-ответов: только собственные
+// скрипты/стили (инлайн-обработчики вынесены в app.js/webauthn.js),
+// QR-коды — data:-URI (img-src data:).
+const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
+
+// securityHeaders — базовые заголовки безопасности каждого ответа (SEC-011):
+// nosniff против MIME-сниффинга, DENY против кликджекинга, no-referrer
+// против утечки URL (в них — коды/токены query), CSP против XSS/инъекций.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // NewRouter собирает минимальный роутер (healthz без БД) — для smoke-тестов;
 // полная композиция — BuildRouter.
 func NewRouter() http.Handler {
@@ -54,6 +73,7 @@ func (rt *Router) Stop() {
 // HTML-404. Вызывается из main и интеграционных тестов.
 func BuildRouter(d Deps) *Router {
 	r := chi.NewRouter()
+	r.Use(securityHeaders)
 	r.Get("/healthz", healthzHandler(d.St))
 
 	pub := NewPublicAPI(d.Core, d.WA, d.St, d.PV, d.M)

@@ -117,6 +117,17 @@ async function finishRegistration(handle, name, cred) {
   if (!finish.ok) throw new Error("завершение регистрации: HTTP " + finish.status);
 }
 
+// Кнопка «Добавить passkey» (data-passkey-register) вместо инлайн-onclick
+// (CSP запрещает инлайн-обработчики).
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.querySelector("[data-passkey-register]");
+  if (!btn) return;
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    twofaRegisterPasskey(btn.form);
+  });
+});
+
 // Продолжение регистрации, начатой с сервера: POST /me/webauthn/credentials
 // (форма без JS-fallback) перерендеривает страницу с data-атрибутами
 // handle/name/options — проводим церемонию сразу и завершаем через JSON API.
