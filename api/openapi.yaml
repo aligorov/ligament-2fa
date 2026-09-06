@@ -622,7 +622,7 @@ paths:
                 $ref: '#/components/schemas/Ok'
               example: {ok: true}
         '400':
-          description: Пустой новый пароль (bad_request).
+          description: "Пустой новый пароль (bad_request) либо LDAP-пользователь — пароль управляется Active Directory (ldap_managed)."
           content:
             application/json:
               schema:
