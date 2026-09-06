@@ -409,4 +409,54 @@
     </div>
   </form>
 </section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">🧳</span>Экспорт и импорт настроек</h2>
+    <p>Перенос конфигурации между инсталляциями. Файл экспорта содержит
+    <strong>секреты</strong> (radius.secret, пароль SMTP, токен Telegram,
+    креды SMS-шлюза и LDAP) — всё, кроме master_key и admin_token. Храните
+    его как секрет.</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn primary" href="/admin/settings/export">Экспорт настроек</a>
+  </div>
+  <form action="/admin/settings/import" method="post" enctype="multipart/form-data" class="form">
+    {{csrf .CSRF}}
+    <label class="field">
+      <span class="field-label">Файл экспорта (JSON)</span>
+      <input class="input" type="file" name="file" accept=".json,application/json">
+      <span class="help">Или вставьте содержимое файла в поле ниже.</span>
+    </label>
+    <label class="field">
+      <span class="field-label">JSON импорта</span>
+      <textarea class="textarea mono" name="json" rows="6" placeholder='{"settings":{...}}'></textarea>
+      <span class="help">Неизвестный ключ отклоняет импорт целиком; маски
+      «••••», null и отсутствующие ключи пропускаются (текущие значения
+      сохраняются).</span>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn danger"
+        data-confirm="Импорт перезапишет настройки, перечисленные в файле. Продолжить?">Импортировать</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2><span class="card-icon">🗄️</span>Обслуживание</h2>
+    <p>Логический бэкап базы одним SQL-файлом: пользователи, TOTP-секреты
+    (шифротексты), сессии, настройки и журнал аудита. <strong>master_key в
+    дамп не входит</strong> — восстановление на другую инсталляцию требует
+    того же master_key (подробнее — README, «Бэкап и перенос»).</p>
+  </div>
+  <div class="form-actions">
+    <a class="btn primary" href="/admin/backup">Скачать бэкап</a>
+  </div>
+  <p class="help">Восстановление (в уже мигрированную БД):
+  <code>docker compose exec -T db psql -U twofa -d twofa &lt; backup.sql</code>.
+  Для больших инсталляций снимайте дамп CLI: <code>twofa -dsn ... -backup
+  out.sql</code> (флаг <code>-backup-audit=false</code> исключает журнал
+  событий).</p>
+</section>
 {{end}}

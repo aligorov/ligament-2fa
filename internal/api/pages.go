@@ -104,6 +104,9 @@ func (p *PagesAPI) Register(r chi.Router) {
 	admin.Get("/admin/challenges", p.handleAdminChallenges)
 	admin.Get("/admin/settings", p.handleAdminSettings)
 	admin.Post("/admin/settings", p.handleAdminSettingsPost)
+	admin.Get("/admin/settings/export", p.handlePageSettingsExport)
+	admin.Post("/admin/settings/import", p.handlePageSettingsImport)
+	admin.Get("/admin/backup", p.handlePageBackup)
 	admin.Get("/admin/license", p.handleAdminLicense)
 	admin.Post("/admin/license", p.handleAdminLicensePost)
 }
@@ -145,7 +148,14 @@ func (p *PagesAPI) requirePage(next http.Handler) http.Handler {
 		if mutatingMethod(r.Method) {
 			token := r.Header.Get(csrfHeader)
 			if token == "" {
-				_ = r.ParseForm()
+				// Формы бывают urlencoded и multipart (загрузка файла
+				// импорта): ParseForm тело multipart не разбирает — CSRF-поле
+				// ищется в разобранной multipart-форме.
+				if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+					_ = r.ParseMultipartForm(32 << 20)
+				} else {
+					_ = r.ParseForm()
+				}
 				token = r.PostFormValue("csrf_token")
 			}
 			if subtle.ConstantTimeCompare([]byte(token), []byte(csrf)) != 1 {

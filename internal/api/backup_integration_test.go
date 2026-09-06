@@ -7,9 +7,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -303,5 +307,113 @@ func TestAdminBackupTooLarge(t *testing.T) {
 	hint, _ := body["hint"].(string)
 	if !strings.Contains(hint, "-backup") {
 		t.Fatalf("hint без указания CLI: %q", hint)
+	}
+}
+
+// TestPagesSettingsExportImportBackupUI: страница настроек несёт секции
+// экспорта/импорта и «Обслуживание»; скачивание по сессии (без Bearer);
+// импорт формой (textarea и файлом) с флеш-результатом; бэкап вложением.
+func TestPagesSettingsExportImportBackupUI(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	admin := mkUser(t, ctx, st, "uibackupadmin", func(u *store.User) { u.Role = "admin" })
+	restoreSettings(t, ctx, set, map[string]string{
+		"totp": `{"issuer":"twofa","digits":6,"period":30,"skew":1}`,
+	})
+
+	// Аноним — на /login.
+	c0 := newHTMLClient(t, rt.Handler)
+	rec := c0.get("/admin/settings/export")
+	wantStatus(t, rec, http.StatusFound)
+
+	c := newHTMLClient(t, rt.Handler)
+	rec = c.login(t, admin.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	// Страница настроек: секции и ссылки на месте.
+	rec = c.get("/admin/settings")
+	wantStatus(t, rec, http.StatusOK)
+	wantBody(t, rec,
+		`href="/admin/settings/export"`, "Экспорт настроек",
+		`href="/admin/backup"`, "Скачать бэкап", "Обслуживание",
+		`action="/admin/settings/import"`)
+
+	// Экспорт по сессии: вложение JSON без master_key/admin_token.
+	rec = c.get("/admin/settings/export")
+	wantStatus(t, rec, http.StatusOK)
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") ||
+		!strings.Contains(cd, "ligament-settings-") {
+		t.Fatalf("Content-Disposition = %q", cd)
+	}
+	var exp struct {
+		Settings map[string]json.RawMessage `json:"settings"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &exp); err != nil {
+		t.Fatalf("экспорт: %v", err)
+	}
+	if _, ok := exp.Settings["master_key"]; ok {
+		t.Fatal("master_key в экспорте")
+	}
+	if _, ok := exp.Settings["admin_token"]; ok {
+		t.Fatal("admin_token в экспорте")
+	}
+
+	// Импорт вставленным JSON: 302 с флешем «применено N».
+	imp := map[string]any{"settings": map[string]any{
+		"totp": map[string]any{"issuer": "ui-import", "digits": 6, "period": 30, "skew": 1},
+	}}
+	b, _ := json.Marshal(imp)
+	rec = c.postForm("/admin/settings/import", url.Values{"json": {string(b)}}, true)
+	wantLocation(t, rec, http.StatusFound, "/admin/settings?flash="+url.QueryEscape(
+		"Настройки импортированы: применено 1, пропущено 0.")+"&kind=ok")
+	if set.Get().TOTP.Issuer != "ui-import" {
+		t.Fatalf("импорт формой не применился: %q", set.Get().TOTP.Issuer)
+	}
+
+	// Импорт файлом (multipart): приоритет над textarea.
+	fileBody := `{"settings":{"totp":{"issuer":"file-import","digits":6,"period":30,"skew":1}}}`
+	var mb bytes.Buffer
+	mw := multipart.NewWriter(&mb)
+	fw, _ := mw.CreateFormFile("file", "ligament-settings.json")
+	_, _ = fw.Write([]byte(fileBody))
+	_ = mw.WriteField("json", `{"settings":{"totp":{"issuer":"textarea-ignored"}}}`)
+	_ = mw.WriteField("csrf_token", c.csrfFromPage())
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/admin/settings/import", &mb)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if c.session != nil {
+		req.AddCookie(c.session)
+	}
+	rec = c.do(req)
+	wantStatus(t, rec, http.StatusFound)
+	if set.Get().TOTP.Issuer != "file-import" {
+		t.Fatalf("файл должен быть приоритетнее textarea: %q", set.Get().TOTP.Issuer)
+	}
+
+	// Неизвестный ключ — флеш-ошибка, ничего не применяется.
+	rec = c.postForm("/admin/settings/import", url.Values{
+		"json": {`{"settings":{"totp":{"issuer":"no-apply"},"nope.x":1}}`},
+	}, true)
+	wantStatus(t, rec, http.StatusFound)
+	if !strings.Contains(rec.Header().Get("Location"), "kind=err") {
+		t.Fatalf("неизвестный ключ должен давать флеш-ошибку: %q", rec.Header().Get("Location"))
+	}
+	if set.Get().TOTP.Issuer != "file-import" {
+		t.Fatal("неизвестный ключ должен отклонять импорт целиком")
+	}
+
+	// Бэкап по сессии: вложение SQL.
+	rec = c.get("/admin/backup")
+	wantStatus(t, rec, http.StatusOK)
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") ||
+		!strings.Contains(cd, "ligament-backup-") {
+		t.Fatalf("Content-Disposition = %q", cd)
+	}
+	wantBody(t, rec, "BEGIN;", "COMMIT;", "master_key НЕ входит в дамп", "uibackupadmin")
+
+	// Аудит через html тоже пишется.
+	if adminActionCount(t, st, "settings_export") == 0 || adminActionCount(t, st, "backup_download") == 0 {
+		t.Fatal("аудит export/backup (via html) не записан")
 	}
 }
