@@ -208,7 +208,7 @@ func TestDumpTableOrderFK(t *testing.T) {
 	want := []string{
 		"users", "totp_secrets", "backup_codes", "challenges", "sessions",
 		"settings", "audit_log", "trusted_devices", "webauthn_credentials",
-		"schema_migrations",
+		"oidc_clients", "schema_migrations",
 	}
 	if len(tables) != len(want) {
 		t.Fatalf("таблиц в дампе %d, ожидалось %d", len(tables), len(want))

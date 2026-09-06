@@ -42,7 +42,9 @@ type tableSpec struct {
 
 // tables — порядок таблиц по FK: родители (users) раньше ссылающихся на
 // них детей; settings, audit_log и schema_migrations внешних ключей не
-// имеют. Порядок проверяется TestDumpTableOrderFK.
+// имеют. Порядок проверяется TestDumpTableOrderFK. Одноразовые артефакты
+// OIDC-флоу (oidc_codes/oidc_tokens, TTL 60/300 с) не выгружаются —
+// конфигурация (oidc_clients) переносится, in-flight входы истекают.
 var tables = []tableSpec{
 	{name: "users", order: "id"},
 	{name: "totp_secrets", order: "user_id"},
@@ -53,6 +55,7 @@ var tables = []tableSpec{
 	{name: "audit_log", order: "id"},
 	{name: "trusted_devices", order: "id"},
 	{name: "webauthn_credentials", order: "id"},
+	{name: "oidc_clients", order: "client_id"},
 	{name: "schema_migrations", order: "version"},
 }
 

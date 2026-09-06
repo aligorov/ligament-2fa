@@ -7,9 +7,10 @@
 > для совместимости.
 
 Автономный сервер двухфакторной аутентификации на Go: **RADIUS-сервер для
-MikroTik/RouterOS** (L2TP/PPTP/PPPoE/вход в роутер), **REST API** для
-интеграции сторонних сервисов и **web-интерфейс** (кабинет пользователя +
-админка). Хранение — PostgreSQL.
+MikroTik/RouterOS** (L2TP/PPTP/PPPoE/вход в роутер), **REST API** и
+**OpenID Connect Provider** (вход внешних приложений через Ligament,
+см. «OpenID Connect (OIDC)») для интеграции сторонних сервисов и
+**web-интерфейс** (кабинет пользователя + админка). Хранение — PostgreSQL.
 
 Поддерживаемые факторы: **email**, **SMS**, **TOTP** (Google Authenticator и
 др.), **passkeys** (WebAuthn/FIDO2), **Telegram-push** (подтверждение входа
@@ -243,6 +244,71 @@ IP получает Access-Reject без проверки пароля).
 
 Клиентский IP берётся из RemoteAddr (без X-Forwarded-For — за прокси
 проксируйте RADIUS/HTTP напрямую или пробрасывайте адрес на уровне L4).
+
+## OpenID Connect (OIDC)
+
+Ligament — полноценный **OpenID Connect Provider** (как у облачных 2FA-
+сервисов): внешние приложения (Grafana, Nextcloud, VPN-порталы, self-
+hosted сервисы) направляют пользователей на вход в Ligament — с теми же
+двумя факторами, что и web-интерфейс, — и получают подписанный ID-токен
+(RS256). Поддержан **authorization code flow с PKCE**.
+
+### Подключение приложения
+
+1. **Админ → OIDC** (`/admin/oidc`): создайте клиентское приложение —
+   название, redirect URI (строгое совпадение) и тип.
+   - **Confidential** (серверные приложения) — получите `client_id` и
+     `client_secret` (секрет показывается **один раз**, хранится хешем).
+   - **Public** (SPA, мобильные, CLI) — секрета нет, обязателен PKCE S256.
+   То же через API: `POST /api/v1/admin/oidc/clients` (см. /api/docs).
+2. В приложении укажите **discovery URL** — всё остальное (эндпоинты,
+   ключи) приложение найдёт само:
+
+   ```
+   https://<адрес-сервера>/.well-known/openid-configuration
+   ```
+
+3. Рекомендуйте включить PKCE S256 (для public-клиентов он обязателен).
+
+Пример конфигурации типового приложения (issuer = адрес сервера):
+
+```yaml
+issuer: https://2fa.example.com
+client_id: mfa_aBcD1234
+client_secret: <показан один раз при создании>
+redirect_uri: https://app.example.com/oauth/callback
+scope: openid profile email
+use_pkce: true
+```
+
+### Как проходит вход
+
+`GET /oidc/authorize` → нет web-сессии → `/login?next=…` (пользователь
+входит с паролем и вторым фактором) → страница согласия «Приложение X
+запрашивает вход» → `code` (TTL 60 с, одноразовый) → `POST /oidc/token`
+(TLS-обмен: Basic или form-секрет + PKCE) → **ID-токен** + access-токен
+(TTL 300 с) → `GET /oidc/userinfo` по Bearer-токену.
+
+ID-токен: `iss` (настройка `server.domain`, иначе scheme://host запроса —
+укажите домен за HTTPS-прокси), `sub` (UUID пользователя), `aud`, `exp`
+(5 мин), `iat`, `auth_time`, `nonce`, `amr` (`["pwd","mfa"]`), `groups`
+([роль]); `preferred_username`/`name` — по scope `profile`,
+`email`/`email_verified` — по scope `email`. Публичный ключ проверки —
+`/.well-known/jwks.json`; ключ подписи (RSA-2048) генерируется при первом
+старте и хранится в настройках (`oidc.keys`, не экспортируется).
+
+Эндпоинты: discovery и JWKS публичны; `authorize` — web-сессия
+Ligament; `token` — учётные данные клиента; `userinfo` — Bearer.
+
+### Ограничения v1
+
+- **Нет refresh-токенов** (короткий access-токен + повторный вход) и
+  **implicit-флоу** — только authorization code + PKCE.
+- Rate-limit на `/oidc/token` не заведён отдельной корзиной — защищают
+  одноразовость кода, короткий TTL и fail2ban всего HTTP.
+- Consent запрашивается на каждый вход (запоминание согласия — v2).
+- Ротация ключа подписи не реализована (поле `previous` в `oidc.keys`
+  зарезервировано); смена ключа = регенерация `oidc.keys` в БД.
 
 ## MikroTik (RouterOS)
 
