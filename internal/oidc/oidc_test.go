@@ -301,6 +301,12 @@ func TestClientSecretHash(t *testing.T) {
 	if !strings.HasPrefix(NewClientID(), "mfa_") {
 		t.Errorf("client_id без префикса mfa_: %q", NewClientID())
 	}
+
+	auth0Sec := "60Op4HFM0I8ajz0WdiStAbziZ-VFQttXuxixHHs2R7r7-CW8GR79l-mmLqMhc-Sa"
+	auth0Hash := HashClientSecret(auth0Sec)
+	if !VerifyClientSecret(auth0Hash, auth0Sec) {
+		t.Errorf("Auth0 secret verification failed")
+	}
 }
 
 // TestValidateAuthorize: таблица вердиктов валидации запроса authorize.

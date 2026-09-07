@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/md5"
-	"encoding/binary"
 	"testing"
 
 	"layeh.com/radius"
@@ -125,31 +124,33 @@ func TestMessageAuthenticatorVerify(t *testing.T) {
 }
 
 // verifyResponseMA — тестовый клиентский хелпер: проверяет Message-
-// Authenticator ответа по RFC 3579: HMAC по ответу с нулевым атрибутом и
-// Request Authenticator в поле Authenticator (при проверке клиент подстав-
-// ляет Request Authenticator — поле ответа уже занято response-hash).
+// Authenticator ответа по RFC 3579 §3.2 / RFC 2869 §5.14: HMAC по ответу с
+// нулевым атрибутом MA и Request Authenticator в поле Authenticator (при
+// проверке клиент/NAS подставляет Request Authenticator).
 func verifyResponseMA(req, resp *radius.Packet) bool {
-	// RFC 2869 §5.14: HMAC по пакету с Authenticator=0 (для ответов —
-	// Response Authenticator ещё не вычислен) и MA=0; поля req для
-	// ответной подписи не участвуют.
 	attr, ok := resp.Attributes.Lookup(messageAuthenticatorType)
 	if !ok || len(attr) != macSize {
 		return false
 	}
-	buf := []byte{byte(resp.Code), byte(resp.Identifier), 0, 0}
-	buf = append(buf, make([]byte, 16)...)
-	for _, a := range resp.Attributes {
-		data := a.Attribute
-		if a.Type == messageAuthenticatorType {
-			data = make([]byte, macSize)
+	saved := resp.Authenticator
+	resp.Authenticator = req.Authenticator
+	defer func() { resp.Authenticator = saved }()
+	for _, avp := range resp.Attributes {
+		if avp.Type != messageAuthenticatorType {
+			continue
 		}
-		buf = append(buf, byte(a.Type), byte(len(data)+2))
-		buf = append(buf, data...)
+		orig := avp.Attribute
+		avp.Attribute = make(radius.Attribute, macSize)
+		b, err := resp.MarshalBinary()
+		avp.Attribute = orig
+		if err != nil {
+			return false
+		}
+		mac := hmac.New(md5.New, resp.Secret)
+		mac.Write(b)
+		return hmac.Equal(mac.Sum(nil), orig)
 	}
-	binary.BigEndian.PutUint16(buf[2:4], uint16(len(buf)))
-	mac := hmac.New(md5.New, resp.Secret)
-	mac.Write(buf)
-	return hmac.Equal(mac.Sum(nil), attr)
+	return false
 }
 
 func TestMessageAuthenticatorResponseSignature(t *testing.T) {
@@ -314,42 +315,61 @@ func decryptMSMPPE(t *testing.T, resp, req *radius.Packet, vendorType byte) []by
 	return nil
 }
 
-// TestResponseMAVerifiedByNAS: Message-Authenticator ответа обязана
-// сходиться при пересчёте СТРОГИМ клиентом (UniFi/hostapd): по RFC 2869
-// HMAC берётся по пакету с обнулёнными Authenticator и MA. Регрессия на
-// баг «MA поверх финального Authenticator» (UniFi молча ронял Challenge).
+// TestResponseMAVerifiedByNAS: Message-Authenticator ответа обязан
+// сходиться при пересчёте клиентом/NAS (UniFi/hostapd): по RFC 2869 §5.14
+// HMAC считается по пакету с Request Authenticator в заголовке и обнулённым MA.
+// Регрессия на баг: вычисление с нулями в заголовке или поверх финального
+// Response Authenticator заставляло NAS молча ронять Challenge.
 func TestResponseMAVerifiedByNAS(t *testing.T) {
 	secret := []byte("s3cret")
-	resp := radius.New(radius.CodeAccessChallenge, secret)
+	req := radius.New(radius.CodeAccessRequest, secret)
+	resp := req.Response(radius.CodeAccessChallenge)
 	resp.Attributes.Add(radius.Type(24), testAttr(t, 24, []byte("state-abc")))
 	resp.Attributes.Add(radius.Type(79), testAttr(t, 79, []byte{2, 1, 0, 6, 21, 0x20}))
 	forceResponseMessageAuthenticator(resp)
 
-	// Пересчёт руками: Authenticator=0, MA=0.
-	var ma radius.Attribute
-	for _, a := range resp.Attributes {
-		if a.Type == messageAuthenticatorType {
-			ma = a.Attribute
+	// Симуляция проверки на стороне NAS после получения пакета:
+	// Ответ кодируется в wire-формат (layeh вычисляет Response Authenticator в 4..20)
+	encoded, err := resp.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	// NAS проверяет Message-Authenticator по RFC 2869 §5.14:
+	// 1. Копирует пакет
+	verifyBuf := make([]byte, len(encoded))
+	copy(verifyBuf, encoded)
+	// 2. Подставляет исходный Request Authenticator в заголовок (байты 4..20)
+	copy(verifyBuf[4:20], req.Authenticator[:])
+	// 3. Находит Message-Authenticator, запоминает и обнуляет его значение
+	var receivedMA []byte
+	pos := 20
+	for pos+2 <= len(verifyBuf) {
+		aType := verifyBuf[pos]
+		aLen := int(verifyBuf[pos+1])
+		if aLen < 2 || pos+aLen > len(verifyBuf) {
+			break
 		}
-	}
-	if len(ma) != 16 {
-		t.Fatalf("MA отсутствует/короткая: %d", len(ma))
-	}
-	buf := []byte{byte(resp.Code), byte(resp.Identifier), 0, 0}
-	buf = append(buf, make([]byte, 16)...)
-	for _, a := range resp.Attributes {
-		attr := a.Attribute
-		if a.Type == messageAuthenticatorType {
-			attr = make([]byte, 16)
+		if aType == byte(messageAuthenticatorType) {
+			receivedMA = append([]byte(nil), verifyBuf[pos+2:pos+aLen]...)
+			for i := pos + 2; i < pos+aLen; i++ {
+				verifyBuf[i] = 0
+			}
+			break
 		}
-		buf = append(buf, byte(a.Type), byte(len(attr)+2))
-		buf = append(buf, attr...)
+		pos += aLen
 	}
-	binary.BigEndian.PutUint16(buf[2:4], uint16(len(buf)))
+	if len(receivedMA) != 16 {
+		t.Fatalf("MA не найден в пакете: %d", len(receivedMA))
+	}
+
+	// 4. Считает HMAC-MD5 по verifyBuf с секретом
 	mac := hmac.New(md5.New, secret)
-	mac.Write(buf)
-	if !hmac.Equal(mac.Sum(nil), ma) {
-		t.Fatal("MA ответа не сходится при пересчёте по RFC (UniFi отбросит пакет)")
+	mac.Write(verifyBuf)
+	expectedMA := mac.Sum(nil)
+
+	if !hmac.Equal(expectedMA, receivedMA) {
+		t.Fatal("MA ответа не сходится при пересчёте по RFC 2869 на стороне NAS")
 	}
 }
 
