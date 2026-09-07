@@ -1865,20 +1865,6 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Кнопка «Обновить сертификат» (name=acme_renew value=true).
-	if r.PostFormValue("acme_renew") != "" {
-		if p.admin == nil || p.admin.acme == nil {
-			redirectFlash(w, r, "/admin/settings", "ACME не инициализирован.", false)
-			return
-		}
-		if err := p.admin.acme.Renew(ctx); err != nil {
-			redirectFlash(w, r, "/admin/settings", "Ошибка обновления сертификата: "+err.Error(), false)
-			return
-		}
-		p.admin.audit(ctx, "acme_cert_renewed", map[string]any{"via": "html"})
-		redirectFlash(w, r, "/admin/settings", "Сертификат Let's Encrypt успешно получен и обновлён!", true)
-		return
-	}
 
 	fields, ok := settingsForm[r.PostFormValue("section")]
 	if !ok {
@@ -1976,6 +1962,19 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	p.admin.audit(ctx, "settings_update", map[string]any{"keys": changed, "via": "html"})
+	if r.PostFormValue("acme_renew") != "" {
+		if p.admin == nil || p.admin.acme == nil {
+			redirectFlash(w, r, "/admin/settings", "ACME не инициализирован.", false)
+			return
+		}
+		if err := p.admin.acme.Renew(ctx); err != nil {
+			redirectFlash(w, r, "/admin/settings", "Настройки сохранены, но ошибка обновления сертификата: "+err.Error(), false)
+			return
+		}
+		p.admin.audit(ctx, "acme_cert_renewed", map[string]any{"via": "html"})
+		redirectFlash(w, r, "/admin/settings", "Сертификат Let's Encrypt успешно получен и обновлён!", true)
+		return
+	}
 	redirectFlash(w, r, "/admin/settings", "Настройки сохранены.", true)
 }
 
