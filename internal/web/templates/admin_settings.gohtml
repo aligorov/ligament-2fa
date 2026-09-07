@@ -539,24 +539,58 @@
       <textarea class="textarea" name="ldap.role_map" rows="4">{{.LDAPRoleMap}}</textarea>
       <span class="help">Объект «DN или CN группы → роль» (admin/user): {"CN=VPN-Admins,OU=Groups,DC=example,DC=com":"admin"}. Роль синхронизируется при каждом входе.</span>
     </label>
-    <label class="field">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.25rem;">
-        <span class="field-label" style="margin-bottom:0;">RADIUS-атрибуты по группам AD (JSON)</span>
-        <button type="button" class="btn small" data-ldap-group-radius-example style="padding:0.15rem 0.5rem; font-size:0.8rem; cursor:pointer;">Вставить пример</button>
+    <div class="field group-radius-section" id="gr-section">
+      <div class="field-header-row">
+        <div>
+          <span class="field-label" style="font-size: 1rem;">🎯 RADIUS-атрибуты по группам Active Directory <span class="badge ok">визуальный редактор</span></span>
+          <span class="help">Автоматическая выдача параметров (Filter-Id, VLAN, права MikroTik, пулы, таймауты) в Access-Accept для участников групп AD. Никакого ручного JSON — управляйте правилами через кнопки и поля ниже.</span>
+        </div>
       </div>
-      <textarea class="textarea" name="ldap.group_radius_map" rows="6" placeholder='{
-  "VPN-Users": {
-    "Filter-Id": "vpn_allow",
-    "Mikrotik-Group": "vpn",
-    "Session-Timeout": "28800"
-  },
-  "WiFi-Staff": {
-    "Filter-Id": "staff_access",
-    "Session-Timeout": "86400"
-  }
-}'>{{.LDAPGroupRadiusMap}}</textarea>
-      <span class="help">Сопоставление групп AD с атрибутами ответа <code>Access-Accept</code> для VPN / Wi-Fi. Ключ — короткое имя группы (CN, напр. <code>"VPN-Users"</code>) или полный DN. Популярные атрибуты: <code>Filter-Id</code> (профиль/ACL), <code>Mikrotik-Group</code> (группа прав RouterOS), <code>Session-Timeout</code> (секунды), <code>Framed-Pool</code>. При совпадении нескольких групп атрибуты объединяются. Приоритет: ручной <code>radius_reply</code> в карточке пользователя → группы AD → глобальные reply-атрибуты RADIUS.</span>
-    </label>
+
+      <div class="group-radius-presets-bar">
+        <span class="presets-title muted">Быстрые шаблоны:</span>
+        <button type="button" class="btn sm secondary" data-gr-preset="vpn">➕ VPN-доступ (Filter-Id)</button>
+        <button type="button" class="btn sm secondary" data-gr-preset="mikrotik">➕ MikroTik Full Admin</button>
+        <button type="button" class="btn sm secondary" data-gr-preset="wifi">➕ Wi-Fi Корпоративный VLAN</button>
+        <button type="button" class="btn sm primary" data-gr-add-group style="margin-left: auto;">➕ Добавить группу AD</button>
+      </div>
+
+      <!-- Список карточек групп -->
+      <div id="gr-groups-container" class="gr-groups-container"></div>
+
+      <!-- Состояние если правил пока нет -->
+      <div id="gr-empty-state" class="gr-empty-box" style="display: none;">
+        <div class="gr-empty-icon">📁</div>
+        <div class="gr-empty-title">Правила для групп пока не добавлены</div>
+        <div class="gr-empty-desc muted">Пользователи будут получать стандартные глобальные атрибуты RADIUS. Чтобы настроить специальные права сетевого доступа, нажмите <b>«Добавить группу AD»</b> или выберите один из быстрых шаблонов выше.</div>
+      </div>
+
+      <!-- Скрытое поле для отправки в форму (name="ldap.group_radius_map") -->
+      <textarea name="ldap.group_radius_map" id="ldap-group-radius-raw" style="display:none;">{{.LDAPGroupRadiusMap}}</textarea>
+
+      <!-- Автодополнение для стандартных RADIUS-атрибутов -->
+      <datalist id="radius-common-attrs">
+        <option value="Filter-Id">Filter-Id — профиль / ACL фаервола (Cisco, Fortinet, OpenVPN)</option>
+        <option value="Mikrotik-Group">Mikrotik-Group — группа прав в RouterOS (full, read, vpn)</option>
+        <option value="Session-Timeout">Session-Timeout — максимальное время сессии в секундах (напр. 28800)</option>
+        <option value="Idle-Timeout">Idle-Timeout — таймаут неактивности в секундах (напр. 3600)</option>
+        <option value="Framed-Pool">Framed-Pool — имя пула IP-адресов VPN / DHCP</option>
+        <option value="Framed-IP-Address">Framed-IP-Address — фиксированный IP-адрес</option>
+        <option value="Tunnel-Type">Tunnel-Type — тип туннеля для VLAN (значение: 13)</option>
+        <option value="Tunnel-Medium-Type">Tunnel-Medium-Type — среда туннеля 802 (значение: 6)</option>
+        <option value="Tunnel-Private-Group-Id">Tunnel-Private-Group-Id — номер VLAN (напр. 100)</option>
+        <option value="Cisco-AVPair">Cisco-AVPair — атрибуты авторизации Cisco</option>
+        <option value="Ascend-Data-Filter">Ascend-Data-Filter — фильтр пакетов Lucent/Ascend</option>
+        <option value="Class">Class — класс биллинга / тарификации</option>
+        <option value="Acct-Interim-Interval">Acct-Interim-Interval — интервал промежуточного аккаунтинга</option>
+      </datalist>
+
+      <!-- Сворачиваемый блок просмотра готового JSON -->
+      <details class="gr-debug-details">
+        <summary class="muted" style="cursor: pointer; font-size: 0.8rem; user-select: none;">🔍 Показать сгенерированный JSON (для проверки)</summary>
+        <pre id="gr-json-preview" style="margin-top: 0.5rem; max-height: 150px; overflow-y: auto; font-size: 0.8rem;"></pre>
+      </details>
+    </div>
     <div class="field">
       <span class="field-label">Бэкенд</span>
       <label class="check"><input type="checkbox" name="ldap.enabled" value="1"{{if .S.LDAP.Enabled}} checked{{end}}> <span>Включить проверку пароля в LDAP/AD</span></label>

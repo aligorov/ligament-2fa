@@ -272,6 +272,7 @@ func TestRenderPages(t *testing.T) {
 				"нужен перезапуск", "•••• (задано)", "введите новое, чтобы изменить",
 				`action="/admin/settings"`, "Перегенерировать секрет",
 				"smtp.example.com", "2fa.example.com", "twofa",
+				"gr-section", "gr-groups-container", "radius-common-attrs",
 			},
 		},
 		{
@@ -662,6 +663,32 @@ func TestAppJSSMSPreset(t *testing.T) {
 	for _, w := range []string{"data-sms-preset", "sms.gateway", "data-config", "JSON.stringify"} {
 		if !strings.Contains(js, w) {
 			t.Errorf("app.js: нет %q (обработчик выбора пресета)", w)
+		}
+	}
+}
+
+// TestAppJSGroupRadiusBuilder — app.js содержит интерактивный конструктор
+// сопоставления групп AD с RADIUS-атрибутами без необходимости ручного ввода JSON.
+func TestAppJSGroupRadiusBuilder(t *testing.T) {
+	rec := httptest.NewRecorder()
+	http.FileServer(Static()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /app.js: статус %d, ожидался 200", rec.Code)
+	}
+	js := rec.Body.String()
+	for _, w := range []string{
+		"initGroupRadiusBuilder",
+		"gr-groups-container",
+		"ldap-group-radius-raw",
+		"gr-empty-state",
+		"createGroupCard",
+		"createAttrRow",
+		"data-gr-preset",
+		"data-gr-add-group",
+		"Filter-Id",
+	} {
+		if !strings.Contains(js, w) {
+			t.Errorf("app.js: нет %q (интерактивный конструктор групп RADIUS)", w)
 		}
 	}
 }
