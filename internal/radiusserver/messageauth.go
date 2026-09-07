@@ -10,6 +10,7 @@ package radiusserver
 import (
 	"crypto/hmac"
 	"crypto/md5"
+	"encoding/binary"
 	"layeh.com/radius"
 )
 
@@ -80,21 +81,29 @@ func signEAPResponseMessageAuthenticator(req, resp *radius.Packet) {
 	forceResponseMessageAuthenticator(resp)
 }
 
-// forceResponseMessageAuthenticator добавляет в ответ нулевой
-// Message-Authenticator, кодирует пакет и вписывает HMAC-MD5 секрета
-// (Request Authenticator уже стоит в поле Authenticator ответа). Повторная
-// подпись заменяет предыдущий атрибут, а не дублирует его.
+// forceResponseMessageAuthenticator вписывает в ответ корректный
+// Message-Authenticator (RFC 2869 §5.14 / RFC 3579 §3.2): HMAC-MD5 по
+// пакету, в котором ПОЛЕ Authenticator (16 байт) и сам атрибут MA
+// обнулены — независимо от того, какой Response Authenticator будет
+// вычислен при финальном кодировании (layeh считает его ПОСЛЕ, с уже
+// готовой MA). Повторная подпись заменяет атрибут, а не дублирует.
+// Нарушение порядка (MA поверх ненулевого Authenticator) заставляет
+// строгие NAS (UniFi/hostapd) молча отбрасывать Challenge.
 func forceResponseMessageAuthenticator(resp *radius.Packet) {
 	resp.Attributes.Del(messageAuthenticatorType)
 	resp.Add(messageAuthenticatorType, make(radius.Attribute, macSize))
-	b, err := resp.MarshalBinary()
-	if err != nil {
-		// Снять заглушку, чтобы не отправлять нулевой атрибут.
-		resp.Attributes.Del(messageAuthenticatorType)
-		return
+
+	buf := make([]byte, 0, 64)
+	buf = append(buf, byte(resp.Code), byte(resp.Identifier), 0, 0)
+	buf = append(buf, make([]byte, 16)...) // Authenticator = нули
+	for _, a := range resp.Attributes {
+		buf = append(buf, byte(a.Type), byte(len(a.Attribute)+2))
+		buf = append(buf, a.Attribute...)
 	}
+	binary.BigEndian.PutUint16(buf[2:4], uint16(len(buf)))
+
 	mac := hmac.New(md5.New, resp.Secret)
-	mac.Write(b)
+	mac.Write(buf)
 	sum := mac.Sum(nil)
 	for i := len(resp.Attributes) - 1; i >= 0; i-- {
 		if resp.Attributes[i].Type == messageAuthenticatorType {

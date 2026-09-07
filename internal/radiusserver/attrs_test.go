@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/md5"
+	"encoding/binary"
 	"testing"
 
 	"layeh.com/radius"
@@ -128,29 +129,27 @@ func TestMessageAuthenticatorVerify(t *testing.T) {
 // Request Authenticator в поле Authenticator (при проверке клиент подстав-
 // ляет Request Authenticator — поле ответа уже занято response-hash).
 func verifyResponseMA(req, resp *radius.Packet) bool {
+	// RFC 2869 §5.14: HMAC по пакету с Authenticator=0 (для ответов —
+	// Response Authenticator ещё не вычислен) и MA=0; поля req для
+	// ответной подписи не участвуют.
 	attr, ok := resp.Attributes.Lookup(messageAuthenticatorType)
 	if !ok || len(attr) != macSize {
 		return false
 	}
-	saved := resp.Authenticator
-	resp.Authenticator = req.Authenticator
-	defer func() { resp.Authenticator = saved }()
-	for _, avp := range resp.Attributes {
-		if avp.Type != messageAuthenticatorType {
-			continue
+	buf := []byte{byte(resp.Code), byte(resp.Identifier), 0, 0}
+	buf = append(buf, make([]byte, 16)...)
+	for _, a := range resp.Attributes {
+		data := a.Attribute
+		if a.Type == messageAuthenticatorType {
+			data = make([]byte, macSize)
 		}
-		orig := avp.Attribute
-		avp.Attribute = make(radius.Attribute, macSize)
-		b, err := resp.MarshalBinary()
-		avp.Attribute = orig
-		if err != nil {
-			return false
-		}
-		mac := hmac.New(md5.New, resp.Secret)
-		mac.Write(b)
-		return hmac.Equal(mac.Sum(nil), orig)
+		buf = append(buf, byte(a.Type), byte(len(data)+2))
+		buf = append(buf, data...)
 	}
-	return false
+	binary.BigEndian.PutUint16(buf[2:4], uint16(len(buf)))
+	mac := hmac.New(md5.New, resp.Secret)
+	mac.Write(buf)
+	return hmac.Equal(mac.Sum(nil), attr)
 }
 
 func TestMessageAuthenticatorResponseSignature(t *testing.T) {
@@ -313,4 +312,53 @@ func decryptMSMPPE(t *testing.T, resp, req *radius.Packet, vendorType byte) []by
 	}
 	t.Fatalf("VSA Microsoft c типом %d не найден", vendorType)
 	return nil
+}
+
+// TestResponseMAVerifiedByNAS: Message-Authenticator ответа обязана
+// сходиться при пересчёте СТРОГИМ клиентом (UniFi/hostapd): по RFC 2869
+// HMAC берётся по пакету с обнулёнными Authenticator и MA. Регрессия на
+// баг «MA поверх финального Authenticator» (UniFi молча ронял Challenge).
+func TestResponseMAVerifiedByNAS(t *testing.T) {
+	secret := []byte("s3cret")
+	resp := radius.New(radius.CodeAccessChallenge, secret)
+	resp.Attributes.Add(radius.Type(24), testAttr(t, 24, []byte("state-abc")))
+	resp.Attributes.Add(radius.Type(79), testAttr(t, 79, []byte{2, 1, 0, 6, 21, 0x20}))
+	forceResponseMessageAuthenticator(resp)
+
+	// Пересчёт руками: Authenticator=0, MA=0.
+	var ma radius.Attribute
+	for _, a := range resp.Attributes {
+		if a.Type == messageAuthenticatorType {
+			ma = a.Attribute
+		}
+	}
+	if len(ma) != 16 {
+		t.Fatalf("MA отсутствует/короткая: %d", len(ma))
+	}
+	buf := []byte{byte(resp.Code), byte(resp.Identifier), 0, 0}
+	buf = append(buf, make([]byte, 16)...)
+	for _, a := range resp.Attributes {
+		attr := a.Attribute
+		if a.Type == messageAuthenticatorType {
+			attr = make([]byte, 16)
+		}
+		buf = append(buf, byte(a.Type), byte(len(attr)+2))
+		buf = append(buf, attr...)
+	}
+	binary.BigEndian.PutUint16(buf[2:4], uint16(len(buf)))
+	mac := hmac.New(md5.New, secret)
+	mac.Write(buf)
+	if !hmac.Equal(mac.Sum(nil), ma) {
+		t.Fatal("MA ответа не сходится при пересчёте по RFC (UniFi отбросит пакет)")
+	}
+}
+
+// testAttr — radius.Attribute по типу и данным (в тестах layeh конструктора нет).
+func testAttr(t *testing.T, typ radius.Type, data []byte) radius.Attribute {
+	t.Helper()
+	a := make(radius.Attribute, len(data)+2)
+	a[0] = byte(typ)
+	a[1] = byte(len(a))
+	copy(a[2:], data)
+	return a
 }
