@@ -2141,8 +2141,13 @@ func (p *PagesAPI) handleAdminOIDCClientCreate(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	customID := strings.TrimSpace(r.PostFormValue("client_id"))
+	if customID == "" {
+		customID = oidc.NewClientID()
+	}
+
 	c := &store.OIDCClient{
-		ClientID:     oidc.NewClientID(),
+		ClientID:     customID,
 		Name:         name,
 		RedirectURIs: uris,
 		IsPublic:     isPublic,
@@ -2152,7 +2157,10 @@ func (p *PagesAPI) handleAdminOIDCClientCreate(w http.ResponseWriter, r *http.Re
 		OneTimeClientID: c.ClientID,
 	}
 	if !isPublic {
-		secret := oidc.NewClientSecret()
+		secret := strings.TrimSpace(r.PostFormValue("client_secret"))
+		if secret == "" {
+			secret = oidc.NewClientSecret()
+		}
 		c.ClientSecretHash = oidc.HashClientSecret(secret)
 		d.OneTimeSecret = secret
 	}

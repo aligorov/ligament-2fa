@@ -966,13 +966,15 @@ func (a *AdminAPI) handleOIDCClientsList(w http.ResponseWriter, r *http.Request)
 
 type oidcClientCreateReq struct {
 	Name         string   `json:"name"`
+	ClientID     string   `json:"client_id"`
+	ClientSecret string   `json:"client_secret"`
 	RedirectURIs []string `json:"redirect_uris"`
 	IsPublic     bool     `json:"is_public"`
 }
 
 // handleOIDCClientCreate — POST /api/v1/admin/oidc/clients {name,
-// redirect_uris, is_public}: генерирует client_id и client_secret; секрет
-// возвращается ровно один раз (в БД — только хеш).
+// redirect_uris, is_public, client_id, client_secret}: генерирует client_id и client_secret (если не заданы);
+// секрет возвращается ровно один раз (в БД — только хеш).
 func (a *AdminAPI) handleOIDCClientCreate(w http.ResponseWriter, r *http.Request) {
 	var req oidcClientCreateReq
 	if !decodeJSON(w, r, &req) {
@@ -987,8 +989,12 @@ func (a *AdminAPI) handleOIDCClientCreate(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "bad_redirect_uri")
 		return
 	}
+	cid := strings.TrimSpace(req.ClientID)
+	if cid == "" {
+		cid = oidc.NewClientID()
+	}
 	c := &store.OIDCClient{
-		ClientID:     oidc.NewClientID(),
+		ClientID:     cid,
 		Name:         strings.TrimSpace(req.Name),
 		RedirectURIs: uris,
 		IsPublic:     req.IsPublic,
@@ -998,7 +1004,10 @@ func (a *AdminAPI) handleOIDCClientCreate(w http.ResponseWriter, r *http.Request
 		"redirect_uris": uris, "is_public": c.IsPublic,
 	}
 	if !c.IsPublic {
-		secret := oidc.NewClientSecret()
+		secret := strings.TrimSpace(req.ClientSecret)
+		if secret == "" {
+			secret = oidc.NewClientSecret()
+		}
 		c.ClientSecretHash = oidc.HashClientSecret(secret)
 		// Секрет показывается один раз — только в ответе создания.
 		resp["client_secret"] = secret
