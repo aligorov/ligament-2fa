@@ -422,7 +422,11 @@ func (s *SessionAPI) twoFactorMethods(ctx context.Context, user *store.User) []s
 	if creds, err := s.st.WACredListForUser(ctx, user.ID); err == nil && len(creds) > 0 {
 		add("webauthn")
 	}
-	for _, ch := range user.PreferChannels {
+	prefer := user.PreferChannels
+	if len(prefer) == 0 && s.m != nil {
+		prefer = s.m.Get().Policy.DefaultPrefer
+	}
+	for _, ch := range prefer {
 		switch ch {
 		case channel.Email:
 			if user.Email != "" {

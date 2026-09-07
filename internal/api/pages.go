@@ -445,9 +445,14 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					if errors.Is(err, auth.ErrCooldown) {
 						info = "Код уже был отправлен ранее, подождите перед повторным запросом."
+					} else {
+						slog.Warn("pages: не удалось запустить 2FA-челлендж", "user", username, "error", err)
+						info = "Не удалось доставить код. Проверьте настройки каналов связи."
 					}
 				} else if ch != nil {
 					switch ch.Channel {
+					case channel.TOTP:
+						info = "Код из приложения-аутентификатора (TOTP)."
 					case channel.Telegram:
 						info = "Код отправлен в Telegram."
 					case channel.Email:
