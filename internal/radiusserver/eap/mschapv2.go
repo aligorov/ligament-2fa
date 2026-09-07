@@ -3,7 +3,9 @@
 package eap
 
 import (
+	"bytes"
 	"crypto/des"
+	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
@@ -124,24 +126,176 @@ func BuildResultTLV(code Code, id byte, success bool) []byte {
 	return Build(code, id, data)
 }
 
-// ParseResultTLV проверяет, является ли EAP-пакет успешным Result TLV.
+// BuildCryptobindingTLV создаёт 60-байтный Cryptobinding TLV (Type 12) для PEAPv0 ([MS-PEAP] §2.2.8.2).
+// nonce — 32 случайных байта. cmk — 20-байтный Compound MAC Key.
+func BuildCryptobindingTLV(nonce []byte, cmk []byte) []byte {
+	tlv := make([]byte, 60)
+	binary.BigEndian.PutUint16(tlv[0:2], 12) // Type 12 = Cryptobinding TLV
+	binary.BigEndian.PutUint16(tlv[2:4], 56) // Length = 56
+	tlv[4] = 0                              // Reserved
+	tlv[5] = 0                              // Version = 0 (PEAPv0)
+	tlv[6] = 0                              // RecvVersion = 0
+	tlv[7] = 0                              // SubType = 0 (Request)
+	copy(tlv[8:40], nonce)                  // 32-byte Nonce
+	// tlv[40:60] — Compound_MAC, инициализированный нулями
+
+	// Compound_MAC: HMAC-SHA1-160(CMK, cryptobinding TLV (60 байт с нулями в MAC) | EAP_TYPE_PEAP (0x19))
+	h := hmac.New(sha1.New, cmk)
+	h.Write(tlv)
+	h.Write([]byte{byte(TypePEAP)}) // TypePEAP = 25 (0x19)
+	mac := h.Sum(nil)
+	copy(tlv[40:60], mac)
+	return tlv
+}
+
+// BuildPEAPResultAndCryptoRequest собирает внутренний EAP-пакет с Result TLV (Success)
+// и Cryptobinding TLV Request ([MS-PEAP] §3.1.5.5).
+func BuildPEAPResultAndCryptoRequest(innerReqID byte, nonce []byte, cmk []byte) []byte {
+	if len(cmk) == 0 {
+		return BuildResultTLV(CodeRequest, innerReqID, true)
+	}
+	resTLV := make([]byte, 6)
+	binary.BigEndian.PutUint16(resTLV[0:2], 0x8001) // Result TLV, mandatory
+	binary.BigEndian.PutUint16(resTLV[2:4], 2)      // Length 2
+	binary.BigEndian.PutUint16(resTLV[4:6], 1)      // Status 1 (Success)
+
+	cryptoTLV := BuildCryptobindingTLV(nonce, cmk)
+	data := make([]byte, 1+len(resTLV)+len(cryptoTLV))
+	data[0] = byte(TypeTLV)
+	copy(data[1:], resTLV)
+	copy(data[1+len(resTLV):], cryptoTLV)
+	return Build(CodeRequest, innerReqID, data)
+}
+
+// ParseResultTLV сканирует все TLV внутри пакета TypeTLV и проверяет,
+// присутствует ли Result TLV со статусом Success (1).
 func ParseResultTLV(data []byte) (bool, error) {
-	if len(data) < 7 {
-		return false, errors.New("eap: Result TLV короче 7 байт")
+	if len(data) < 1 {
+		return false, errors.New("eap: пустые TLV-данные")
 	}
 	if Type(data[0]) != TypeTLV {
 		return false, fmt.Errorf("eap: тип %d не TLV", data[0])
 	}
-	tlvType := binary.BigEndian.Uint16(data[1:3])
-	if tlvType != 0x8001 && tlvType != 0x0001 {
-		return false, fmt.Errorf("eap: неверный TLV Type 0x%04X", tlvType)
+	pos := data[1:]
+	for len(pos) >= 4 {
+		tlvType := binary.BigEndian.Uint16(pos[0:2]) & 0x3fff // маскируем mandatory-бит 0x8000
+		tlvLen := int(binary.BigEndian.Uint16(pos[2:4]))
+		pos = pos[4:]
+		if len(pos) < tlvLen {
+			break
+		}
+		if tlvType == 1 { // Result TLV
+			if tlvLen >= 2 {
+				status := binary.BigEndian.Uint16(pos[:2])
+				return status == 1, nil
+			}
+		}
+		pos = pos[tlvLen:]
 	}
-	tlvLen := binary.BigEndian.Uint16(data[3:5])
-	if tlvLen != 2 {
-		return false, fmt.Errorf("eap: неверная TLV Length %d", tlvLen)
+	return false, errors.New("eap: Result TLV не найден")
+}
+
+// GetMasterKey (RFC 3079 §3.4): вычисляет 16-байтный MasterKey из PasswordHashHash и NTResponse.
+// PasswordHashHash = MD4(ntHash).
+func GetMasterKey(ntHash []byte, ntResponse []byte) []byte {
+	hMD4 := md4.New()
+	hMD4.Write(ntHash)
+	passwordHashHash := hMD4.Sum(nil)
+
+	magic1 := []byte("This is the MPPE Master Key")
+	h := sha1.New()
+	h.Write(passwordHashHash)
+	h.Write(ntResponse)
+	h.Write(magic1)
+	digest := h.Sum(nil)
+	res := make([]byte, 16)
+	copy(res, digest[:16])
+	return res
+}
+
+// GetAsymmetricStartKey (RFC 3079 §3.4): вычисляет 16-байтный SessionKey (Send или Recv)
+// из MasterKey.
+func GetAsymmetricStartKey(masterKey []byte, isSend bool, isServer bool) []byte {
+	magic2 := []byte("On the client side, this is the send key; on the server side, it is the receive key.")
+	magic3 := []byte("On the client side, this is the receive key; on the server side, it is the send key.")
+	pad1 := make([]byte, 40)
+	pad2 := bytes.Repeat([]byte{0xf2}, 40)
+
+	var magic []byte
+	if isSend {
+		if isServer {
+			magic = magic3
+		} else {
+			magic = magic2
+		}
+	} else {
+		if isServer {
+			magic = magic2
+		} else {
+			magic = magic3
+		}
 	}
-	val := binary.BigEndian.Uint16(data[5:7])
-	return val == 1, nil
+
+	h := sha1.New()
+	h.Write(masterKey)
+	h.Write(pad1)
+	h.Write(magic)
+	h.Write(pad2)
+	digest := h.Sum(nil)
+	res := make([]byte, 16)
+	copy(res, digest[:16])
+	return res
+}
+
+// DerivePEAPISK (hostapd eap_mschapv2_getKey / [MS-PEAP]): вычисляет 32-байтный ISK
+// (Inner Session Key): Server RecvKey (16 байт) || Server SendKey (16 байт).
+func DerivePEAPISK(ntHash []byte, ntResponse []byte) []byte {
+	masterKey := GetMasterKey(ntHash, ntResponse)
+	recvKey := GetAsymmetricStartKey(masterKey, false, true)
+	sendKey := GetAsymmetricStartKey(masterKey, true, true)
+	isk := make([]byte, 32)
+	copy(isk[:16], recvKey)
+	copy(isk[16:], sendKey)
+	return isk
+}
+
+// PEAPPRFPlus реализует PRF+ для PEAPv0 (hostapd peap_prfplus / [MS-PEAP]).
+// PRF+(K, S, LEN) = T1 | T2 | ... | Tn
+// T1 = HMAC-SHA1(K, S | 0x01 | 0x00 | 0x00)
+// T2 = HMAC-SHA1(K, T1 | S | 0x02 | 0x00 | 0x00)
+// ...
+// Tn = HMAC-SHA1(K, Tn-1 | S | n | 0x00 | 0x00)
+func PEAPPRFPlus(key []byte, label string, seed []byte, outLen int) []byte {
+	out := make([]byte, 0, outLen)
+	var counter byte
+	var prevHash []byte
+	for len(out) < outLen {
+		counter++
+		h := hmac.New(sha1.New, key)
+		if len(prevHash) > 0 {
+			h.Write(prevHash)
+		}
+		h.Write([]byte(label))
+		h.Write(seed)
+		h.Write([]byte{counter, 0x00, 0x00})
+		prevHash = h.Sum(nil)
+		out = append(out, prevHash...)
+	}
+	return out[:outLen]
+}
+
+// DerivePEAPCMK вычисляет IPMK (40 байт) и CMK (20 байт) из Tunnel Key (TK) и ISK.
+// TK — первые 40 октетов TLS keying material (экспортированных с "client EAP encryption").
+func DerivePEAPCMK(tk []byte, isk []byte) (ipmk []byte, cmk []byte) {
+	imck := PEAPPRFPlus(tk[:40], "Inner Methods Compound Keys", isk, 60)
+	return imck[:40], imck[40:60]
+}
+
+// DerivePEAPCSK вычисляет 128-байтный Compound Session Key (CSK) из IPMK ([MS-PEAP] §3.1.5.5):
+// CSK = PRF+(IPMK, "Session Key Generating Function", "\x00", 128).
+// Первые 64 байта используются для MS-MPPE: Recv-Key (32 байта) и Send-Key (32 байта).
+func DerivePEAPCSK(ipmk []byte) []byte {
+	return PEAPPRFPlus(ipmk, "Session Key Generating Function", []byte{0x00}, 128)
 }
 
 // ---- Криптография RFC 2759 ----

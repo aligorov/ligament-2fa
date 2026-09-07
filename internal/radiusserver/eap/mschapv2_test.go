@@ -2,6 +2,7 @@ package eap
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"testing"
 )
@@ -108,3 +109,76 @@ func TestPEAPRoundtrip(t *testing.T) {
 		t.Fatalf("Payload = %s, want %s", peapPkt.Payload, payload)
 	}
 }
+
+// TestRFC3079KeyDerivation проверяет деривацию ключей по RFC 3079 Section 3.5.3.
+func TestRFC3079KeyDerivation(t *testing.T) {
+	ntHash, _ := hex.DecodeString("44EBBA8D5312B8D611474411F56989AE")
+	ntResp, _ := hex.DecodeString("82309ECD8D708B5EA08FAA3981CD83544233114A3D85D6DF")
+	expectedMasterKey, _ := hex.DecodeString("FDECE3717A8C838CB388E527AE3CDD31")
+	// SendStartKey128 (Client Send / Server Recv): magic3
+	expectedSendStartKey, _ := hex.DecodeString("8B7CDC149B993A1BA118CB153F56DCCB")
+
+	masterKey := GetMasterKey(ntHash, ntResp)
+	if !bytes.Equal(masterKey, expectedMasterKey) {
+		t.Fatalf("MasterKey = %X, want %X", masterKey, expectedMasterKey)
+	}
+
+	sendStartKey := GetAsymmetricStartKey(masterKey, true, true)
+	if !bytes.Equal(sendStartKey, expectedSendStartKey) {
+		t.Fatalf("SendStartKey = %X, want %X", sendStartKey, expectedSendStartKey)
+	}
+
+	isk := DerivePEAPISK(ntHash, ntResp)
+	if len(isk) != 32 {
+		t.Fatalf("ISK len = %d, want 32", len(isk))
+	}
+
+	tk := bytes.Repeat([]byte{0x42}, 40)
+	ipmk, cmk := DerivePEAPCMK(tk, isk)
+	if len(ipmk) != 40 || len(cmk) != 20 {
+		t.Fatalf("DerivePEAPCMK: ipmk=%d, cmk=%d", len(ipmk), len(cmk))
+	}
+
+	csk := DerivePEAPCSK(ipmk)
+	if len(csk) != 128 {
+		t.Fatalf("DerivePEAPCSK: csk len = %d, want 128", len(csk))
+	}
+}
+
+// TestCryptobindingTLV проверяет сборку и разбор Result TLV + Cryptobinding TLV.
+func TestCryptobindingTLV(t *testing.T) {
+	nonce := bytes.Repeat([]byte{0x01}, 32)
+	cmk := bytes.Repeat([]byte{0x02}, 20)
+
+	pkt := BuildPEAPResultAndCryptoRequest(1, nonce, cmk)
+	p, err := Parse(pkt)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p.Type() != TypeTLV {
+		t.Fatalf("Type = %d, want TypeTLV", p.Type())
+	}
+
+	ok, err := ParseResultTLV(p.Data)
+	if err != nil || !ok {
+		t.Fatalf("ParseResultTLV: ok=%v, err=%v", ok, err)
+	}
+
+	// Проверяем, что Cryptobinding TLV имеет правильную структуру:
+	// p.Data[0] = TypeTLV (33)
+	// p.Data[1..6] = Result TLV (6 байт)
+	// p.Data[7..66] = Cryptobinding TLV (60 байт)
+	if len(p.Data) != 1+6+60 {
+		t.Fatalf("len(p.Data) = %d, want %d", len(p.Data), 1+6+60)
+	}
+	cryptoTLV := p.Data[7:]
+	tlvType := binary.BigEndian.Uint16(cryptoTLV[0:2])
+	if tlvType != 12 {
+		t.Fatalf("Cryptobinding TLV Type = %d, want 12", tlvType)
+	}
+	tlvLen := binary.BigEndian.Uint16(cryptoTLV[2:4])
+	if tlvLen != 56 {
+		t.Fatalf("Cryptobinding TLV Len = %d, want 56", tlvLen)
+	}
+}
+

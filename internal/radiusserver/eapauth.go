@@ -430,7 +430,7 @@ func (s *Server) handlePEAP(w radius.ResponseWriter, r *radius.Request,
 		// В PEAPv0 внутренние пакеты MS-CHAPv2 (26) и Identity (1) передаются без
 		// 4-байтового EAP-заголовка Code/ID/Length (draft-kamath-pppext-peapv0-00 §2.1,
 		// hostapd eap_server_peap.c). Result TLV (33) передаётся с полным EAP-заголовком.
-		if len(app) >= 1 && (eap.Type(app[0]) == eap.TypeMSCHAPv2 || eap.Type(app[0]) == eap.TypeIdentity) {
+		if len(app) >= 1 && (eap.Type(app[0]) == eap.TypeMSCHAPv2 || eap.Type(app[0]) == eap.TypeIdentity || eap.Type(app[0]) == eap.TypeTLV) {
 			synthesized := make([]byte, 4+len(app))
 			synthesized[0] = byte(eap.CodeResponse)
 			synthesized[1] = sess.innerReqID
@@ -652,7 +652,18 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 			}
 		}
 
-		// Аутентификация успешна! Отправляем inner MS-CHAPv2 Success с эталонным AuthenticatorResponse
+		// Аутентификация успешна!
+		// Вычисляем ISK, CMK, IPMK и CSK для Cryptobinding и MPPE ([MS-PEAP] §3.1.5.5):
+		if len(sess.keyBlock) >= 40 {
+			isk := eap.DerivePEAPISK(eap.NTHash(matched.pwdString), resp.NTResponse[:])
+			ipmk, cmk := eap.DerivePEAPCMK(sess.keyBlock[:40], isk)
+			sess.peapCMK = cmk
+			csk := eap.DerivePEAPCSK(ipmk)
+			sess.keyBlock = csk[:64] // обновляем keyBlock на CSK[:64] для MS-MPPE ключей!
+			slog.Info("radius: PEAP Cryptobinding и CSK ключи сформированы", "user", username)
+		}
+
+		// Отправляем inner MS-CHAPv2 Success с эталонным AuthenticatorResponse
 		sess.innerReqID++
 		sess.innerState = peapStateSuccess
 		succPkt := eap.BuildMSCHAPv2Success(sess.innerReqID, resp.ID, matched.authResp)
@@ -660,27 +671,42 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 			s.failEAP(w, r, sess, "отправка MS-CHAPv2 Success: "+err.Error())
 			return
 		}
+		slog.Info("radius: MS-CHAPv2 пароль верен, отправка inner Success", "user", username, "remote", srcIP)
 		s.pumpPEAP(w, r, sess, nil)
 
 	case peapStateSuccess:
-		// Клиент прислал Success ACK (Type 26) либо сразу Result TLV (Type 33)
+		// Проверяем, прислал ли клиент сразу Result TLV (Type 33)
 		if innerPkt.Type() == eap.TypeTLV {
 			if ok, _ := eap.ParseResultTLV(innerPkt.Data); ok {
+				slog.Info("radius: клиент сразу прислал Result TLV Success", "user", sess.outerIdentity)
 				s.finishPEAP(w, r, sess, outerEAPID, sess.outerIdentity, srcIP)
 				return
 			}
 		}
+
+		// Клиент прислал Success ACK (Type 26).
+		// Отправляем EAP-Request/TLV с Result TLV (Success) и Cryptobinding TLV Request!
 		sess.innerReqID++
 		sess.innerState = peapStateTLV
-		tlvReq := eap.BuildResultTLV(eap.CodeRequest, sess.innerReqID, true)
+		var nonce [32]byte
+		_, _ = rand.Read(nonce[:])
+		tlvReq := eap.BuildPEAPResultAndCryptoRequest(sess.innerReqID, nonce[:], sess.peapCMK)
 		if err := sess.writeInner(tlvReq); err != nil {
-			s.failEAP(w, r, sess, "отправка Result TLV: "+err.Error())
+			s.failEAP(w, r, sess, "отправка Result+Crypto TLV: "+err.Error())
 			return
 		}
+		slog.Info("radius: получен MS-CHAPv2 Success ACK, отправка Result+Cryptobinding TLV", "user", sess.outerIdentity)
 		s.pumpPEAP(w, r, sess, nil)
 
 	case peapStateTLV:
 		// Завершающий шаг: клиент прислал Result TLV Response
+		if innerPkt.Type() == eap.TypeTLV {
+			if ok, err := eap.ParseResultTLV(innerPkt.Data); err == nil && !ok {
+				s.failEAP(w, r, sess, "клиент отклонил Result TLV")
+				return
+			}
+		}
+		slog.Info("radius: получен Result TLV Response, завершение PEAP", "user", sess.outerIdentity)
 		s.finishPEAP(w, r, sess, outerEAPID, sess.outerIdentity, srcIP)
 
 	case peapStateFailed:
