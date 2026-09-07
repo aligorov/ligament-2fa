@@ -199,8 +199,9 @@ type LDAPSettings struct {
 	GroupBaseDN  string // пусто — base_dn
 	GroupFilter  string // {dn} заменяется на DN пользователя
 	Attrs        LDAPAttrs
-	AllowGroups  []string          // пусто — все найденные в каталоге
-	RoleMap      map[string]string // DN или CN группы → роль (admin/user)
+	AllowGroups    []string                     // пусто — все найденные в каталоге
+	RoleMap        map[string]string            // DN или CN группы → роль (admin/user)
+	GroupRadiusMap map[string]map[string]string // DN или CN группы → RADIUS reply-атрибуты
 }
 
 // LDAPAttrs — имена LDAP-атрибутов, из которых берутся контакты
@@ -281,6 +282,7 @@ func defaultT() *T {
 	t.LDAP.Attrs.DisplayName = "displayName"
 	t.LDAP.AllowGroups = []string{}
 	t.LDAP.RoleMap = map[string]string{}
+	t.LDAP.GroupRadiusMap = map[string]map[string]string{}
 	t.Policy.CodeTTL = 5 * time.Minute
 	t.Policy.ResendCooldown = 60 * time.Second
 	t.Policy.PushCooldown = 30 * time.Second
@@ -429,6 +431,18 @@ func parseStringMap(raw json.RawMessage, def map[string]string) map[string]strin
 	var m map[string]string
 	if err := json.Unmarshal(raw, &m); err != nil {
 		log.Printf("settings: значение %s не объект строк — использую дефолт %v", raw, def)
+		return def
+	}
+	return m
+}
+
+func parseStringMapMap(raw json.RawMessage, def map[string]map[string]string) map[string]map[string]string {
+	if isNullJSON(raw) {
+		return def
+	}
+	var m map[string]map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		log.Printf("settings: значение %s не объект объектов строк — использую дефолт %v", raw, def)
 		return def
 	}
 	return m
@@ -621,6 +635,7 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.LDAP.Attrs.DisplayName = parseString(ldAttrs["display_name"], def.LDAP.Attrs.DisplayName)
 	t.LDAP.AllowGroups = parseStrings(ld["allow_groups"], def.LDAP.AllowGroups)
 	t.LDAP.RoleMap = parseStringMap(ld["role_map"], def.LDAP.RoleMap)
+	t.LDAP.GroupRadiusMap = parseStringMapMap(ld["group_radius_map"], def.LDAP.GroupRadiusMap)
 
 	pol := fields(raw["policy"])
 	t.Policy.CodeTTL = parseDur(pol["code_ttl"], def.Policy.CodeTTL)
@@ -1032,8 +1047,9 @@ func (t *T) masked() map[string]any {
 				"phone":        t.LDAP.Attrs.Phone,
 				"display_name": t.LDAP.Attrs.DisplayName,
 			},
-			"allow_groups": t.LDAP.AllowGroups,
-			"role_map":     t.LDAP.RoleMap,
+			"allow_groups":     t.LDAP.AllowGroups,
+			"role_map":         t.LDAP.RoleMap,
+			"group_radius_map": t.LDAP.GroupRadiusMap,
 		},
 		"policy": map[string]any{
 			"code_ttl":                t.Policy.CodeTTL.String(),

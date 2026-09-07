@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -96,6 +97,8 @@ func (v *LdapVerifier) Enabled() bool {
 // ldapAuthResult — пользователь каталога после успешной проверки пароля.
 type ldapAuthResult struct {
 	dn, email, phone, displayName, role string
+	groups                              []string
+	radiusReply                         map[string]string
 }
 
 // ldapOpTimeout — безусловный потолок LDAP-операций (dial + сервисный
@@ -132,7 +135,7 @@ func (v *LdapVerifier) Verify(ctx context.Context, username, password string) (*
 		}
 		return nil, err
 	}
-	return v.syncUser(ctx, username, res)
+	return v.syncUser(ctx, username, res, t.LDAP)
 }
 
 // authenticate — протокольная часть: соединение, сервисный bind (при
@@ -194,9 +197,9 @@ func (v *LdapVerifier) authenticate(ctx context.Context, cfg settings.LDAPSettin
 		displayName: entry.GetAttributeValue(cfg.Attrs.DisplayName),
 	}
 
-	// Группы нужны только для allow-list и role_map.
+	// Группы нужны для allow-list, role_map и group_radius_map.
 	groups := []string{}
-	if len(cfg.AllowGroups) > 0 || len(cfg.RoleMap) > 0 {
+	if len(cfg.AllowGroups) > 0 || len(cfg.RoleMap) > 0 || len(cfg.GroupRadiusMap) > 0 {
 		base := cfg.GroupBaseDN
 		if base == "" {
 			base = cfg.BaseDN
@@ -220,7 +223,9 @@ func (v *LdapVerifier) authenticate(ctx context.Context, cfg settings.LDAPSettin
 		slog.InfoContext(ctx, "auth/ldap: пользователь не в allow_groups", "username", username)
 		return nil, store.ErrNotFound
 	}
+	res.groups = groups
 	res.role = resolveRole(groups, cfg.RoleMap)
+	res.radiusReply = ResolveGroupRadiusAttrs(groups, cfg.GroupRadiusMap)
 
 	// Проверка пароля: bind от имени пользователя. Неверные учётные данные —
 	// ожидаемый 49-й код; прочие ошибки каталога — внутренние.
@@ -240,7 +245,7 @@ func (v *LdapVerifier) authenticate(ctx context.Context, cfg settings.LDAPSettin
 // (email/phone/display_name/role; telegram_chat_id, TOTP, prefer-каналы и
 // пр. не трогаются). Локальный пользователь с тем же именем НЕ
 // конвертируется (двойной источник пароля запрещён).
-func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapAuthResult) (*store.User, error) {
+func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapAuthResult, cfg settings.LDAPSettings) (*store.User, error) {
 	u, err := v.st.UserByUsername(ctx, username)
 	create := false
 	switch {
@@ -275,9 +280,18 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 	u.Phone = res.phone
 	u.DisplayName = res.displayName
 	u.Role = res.role
+	if len(cfg.GroupRadiusMap) > 0 {
+		if !reflect.DeepEqual(u.RadiusReply, res.radiusReply) {
+			u.RadiusReply = res.radiusReply
+			changed = true
+		}
+	}
 	// Новая запись сохраняется всегда — даже с нулевыми атрибутами (иначе
 	// Verify вернёт «фантома» с пустым ID); существующая — только при изменениях.
 	if create {
+		if len(cfg.GroupRadiusMap) > 0 {
+			u.RadiusReply = res.radiusReply
+		}
 		if err := v.st.UserCreate(ctx, u); err != nil {
 			var pgErr *pgconn.PgError
 			if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
@@ -303,8 +317,12 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 			}
 			u = raced
 			if u.Email != res.email || u.Phone != res.phone ||
-				u.DisplayName != res.displayName || u.Role != res.role {
+				u.DisplayName != res.displayName || u.Role != res.role ||
+				(len(cfg.GroupRadiusMap) > 0 && !reflect.DeepEqual(u.RadiusReply, res.radiusReply)) {
 				u.Email, u.Phone, u.DisplayName, u.Role = res.email, res.phone, res.displayName, res.role
+				if len(cfg.GroupRadiusMap) > 0 {
+					u.RadiusReply = res.radiusReply
+				}
 				if err := v.st.UserUpdate(ctx, u); err != nil {
 					return nil, fmt.Errorf("auth/ldap: синхронизация %q: %w", username, err)
 				}
@@ -443,3 +461,28 @@ func resolveRole(groups []string, roleMap map[string]string) string {
 	}
 	return "user"
 }
+
+// ResolveGroupRadiusAttrs вычисляет RADIUS reply-атрибуты по группам пользователя
+// и group_radius_map (ключ — полный DN или CN группы).
+// Если пользователь входит в несколько групп, атрибуты объединяются.
+func ResolveGroupRadiusAttrs(groups []string, groupMap map[string]map[string]string) map[string]string {
+	if len(groups) == 0 || len(groupMap) == 0 {
+		return nil
+	}
+	var out map[string]string
+	for _, g := range groups {
+		cn := groupCN(g)
+		for key, attrs := range groupMap {
+			if dnEqual(g, key) || strings.EqualFold(cn, key) {
+				if out == nil {
+					out = make(map[string]string, len(attrs))
+				}
+				for attrK, attrV := range attrs {
+					out[attrK] = attrV
+				}
+			}
+		}
+	}
+	return out
+}
+

@@ -289,7 +289,7 @@ func (s *Server) finishInnerPAP(w radius.ResponseWriter, r *radius.Request,
 	}
 	// Обычные reply-атрибуты — как в PAP-пути.
 	attrs := s.m.Get().Radius.ReplyAttributes
-	if user, err := s.st.UserByUsername(ctx, inner.UserName); err == nil && user.RadiusReply != nil {
+	if user, err := s.st.UserByUsername(ctx, inner.UserName); err == nil && len(user.RadiusReply) > 0 {
 		attrs = user.RadiusReply
 	}
 	applyReplyAttrs(resp, attrs)
@@ -665,7 +665,7 @@ func (s *Server) finishPEAP(w radius.ResponseWriter, r *radius.Request,
 	}
 
 	attrs := s.m.Get().Radius.ReplyAttributes
-	if user, err := s.st.UserByUsername(r.Context(), username); err == nil && user.RadiusReply != nil {
+	if user, err := s.st.UserByUsername(r.Context(), username); err == nil && len(user.RadiusReply) > 0 {
 		attrs = user.RadiusReply
 	}
 	applyReplyAttrs(resp, attrs)

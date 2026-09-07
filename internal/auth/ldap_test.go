@@ -124,6 +124,55 @@ func TestLdapResolveRole(t *testing.T) {
 	}
 }
 
+// ---- group_radius_map ----
+
+func TestResolveGroupRadiusAttrs(t *testing.T) {
+	groupMap := map[string]map[string]string{
+		"CN=VPN-Users,OU=Groups,DC=example,DC=com": {
+			"Filter-Id":       "vpn_users_filter",
+			"Session-Timeout": "28800",
+		},
+		"wifi-staff": {
+			"Mikrotik-Group": "staff_access",
+			"Framed-Pool":    "pool_staff",
+		},
+	}
+
+	// 1. Совпадение по полному DN (регистронезависимо)
+	attrs := ResolveGroupRadiusAttrs([]string{"cn=vpn-users,ou=groups,dc=example,dc=com"}, groupMap)
+	if attrs == nil || attrs["Filter-Id"] != "vpn_users_filter" || attrs["Session-Timeout"] != "28800" {
+		t.Fatalf("attrs по DN = %v, want Filter-Id и Session-Timeout", attrs)
+	}
+
+	// 2. Совпадение по короткому имени CN
+	attrs = ResolveGroupRadiusAttrs([]string{"CN=WiFi-Staff,OU=Wireless,DC=corp,DC=net"}, groupMap)
+	if attrs == nil || attrs["Mikrotik-Group"] != "staff_access" || attrs["Framed-Pool"] != "pool_staff" {
+		t.Fatalf("attrs по CN = %v, want Mikrotik-Group и Framed-Pool", attrs)
+	}
+
+	// 3. Объединение нескольких групп
+	attrs = ResolveGroupRadiusAttrs([]string{
+		"CN=VPN-Users,OU=Groups,DC=example,DC=com",
+		"CN=WiFi-Staff,OU=Wireless,DC=corp,DC=net",
+	}, groupMap)
+	if len(attrs) != 4 || attrs["Filter-Id"] != "vpn_users_filter" || attrs["Mikrotik-Group"] != "staff_access" {
+		t.Fatalf("слияние атрибутов = %v, want 4 атрибута", attrs)
+	}
+
+	// 4. Без совпадений
+	if attrs := ResolveGroupRadiusAttrs([]string{"CN=Guests,DC=example,DC=com"}, groupMap); attrs != nil {
+		t.Fatalf("attrs для чужой группы = %v, want nil", attrs)
+	}
+
+	// 5. Пустые входные данные
+	if attrs := ResolveGroupRadiusAttrs(nil, groupMap); attrs != nil {
+		t.Fatalf("attrs для nil groups = %v, want nil", attrs)
+	}
+	if attrs := ResolveGroupRadiusAttrs([]string{"CN=VPN-Users,OU=Groups,DC=example,DC=com"}, nil); attrs != nil {
+		t.Fatalf("attrs для nil groupMap = %v, want nil", attrs)
+	}
+}
+
 // ---- фейковое соединение ----
 
 // fakeLdapConn — соединение-двойник: bind по карте DN→пароль, поиск —

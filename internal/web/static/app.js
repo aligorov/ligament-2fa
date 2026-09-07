@@ -58,4 +58,27 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   }
+
+  // Пример сопоставления групп AD с RADIUS-атрибутами: вставка готового JSON по кнопке.
+  const groupExBtn = document.querySelector("[data-ldap-group-radius-example]");
+  if (groupExBtn) {
+    const area = document.querySelector('textarea[name="ldap.group_radius_map"]');
+    groupExBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (area) {
+        area.value = JSON.stringify({
+          "VPN-Users": {
+            "Filter-Id": "vpn_allow",
+            "Mikrotik-Group": "vpn",
+            "Session-Timeout": "28800"
+          },
+          "WiFi-Staff": {
+            "Filter-Id": "staff_access",
+            "Session-Timeout": "86400"
+          }
+        }, null, 2);
+      }
+    });
+  }
 });
+

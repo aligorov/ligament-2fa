@@ -539,6 +539,24 @@
       <textarea class="textarea" name="ldap.role_map" rows="4">{{.LDAPRoleMap}}</textarea>
       <span class="help">Объект «DN или CN группы → роль» (admin/user): {"CN=VPN-Admins,OU=Groups,DC=example,DC=com":"admin"}. Роль синхронизируется при каждом входе.</span>
     </label>
+    <label class="field">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.25rem;">
+        <span class="field-label" style="margin-bottom:0;">RADIUS-атрибуты по группам AD (JSON)</span>
+        <button type="button" class="btn small" data-ldap-group-radius-example style="padding:0.15rem 0.5rem; font-size:0.8rem; cursor:pointer;">Вставить пример</button>
+      </div>
+      <textarea class="textarea" name="ldap.group_radius_map" rows="6" placeholder='{
+  "VPN-Users": {
+    "Filter-Id": "vpn_allow",
+    "Mikrotik-Group": "vpn",
+    "Session-Timeout": "28800"
+  },
+  "WiFi-Staff": {
+    "Filter-Id": "staff_access",
+    "Session-Timeout": "86400"
+  }
+}'>{{.LDAPGroupRadiusMap}}</textarea>
+      <span class="help">Сопоставление групп AD с атрибутами ответа <code>Access-Accept</code> для VPN / Wi-Fi. Ключ — короткое имя группы (CN, напр. <code>"VPN-Users"</code>) или полный DN. Популярные атрибуты: <code>Filter-Id</code> (профиль/ACL), <code>Mikrotik-Group</code> (группа прав RouterOS), <code>Session-Timeout</code> (секунды), <code>Framed-Pool</code>. При совпадении нескольких групп атрибуты объединяются. Приоритет: ручной <code>radius_reply</code> в карточке пользователя → группы AD → глобальные reply-атрибуты RADIUS.</span>
+    </label>
     <div class="field">
       <span class="field-label">Бэкенд</span>
       <label class="check"><input type="checkbox" name="ldap.enabled" value="1"{{if .S.LDAP.Enabled}} checked{{end}}> <span>Включить проверку пароля в LDAP/AD</span></label>

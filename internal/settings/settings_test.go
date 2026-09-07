@@ -255,13 +255,17 @@ func TestBuildTLDAP(t *testing.T) {
 	if len(def.LDAP.RoleMap) != 0 {
 		t.Errorf("ldap.role_map дефолт = %v, ожидался пустой", def.LDAP.RoleMap)
 	}
+	if len(def.LDAP.GroupRadiusMap) != 0 {
+		t.Errorf("ldap.group_radius_map дефолт = %v, ожидался пустой", def.LDAP.GroupRadiusMap)
+	}
 
 	// Полный разбор.
 	raw := json.RawMessage(`{"enabled":true,"url":"ldaps://dc1.example.com:636","starttls":true,` +
 		`"bind_dn":"CN=svc,DC=example,DC=com","bind_password":"pw","base_dn":"DC=example,DC=com",` +
 		`"user_filter":"(uid={login})","group_base_dn":"OU=Groups,DC=example,DC=com",` +
 		`"group_filter":"(member={dn})","attrs":{"email":"mail","phone":"mobile","display_name":"cn"},` +
-		`"allow_groups":["CN=VPN-Users,DC=example,DC=com"],"role_map":{"CN=VPN-Admins,DC=example,DC=com":"admin"}}`)
+		`"allow_groups":["CN=VPN-Users,DC=example,DC=com"],"role_map":{"CN=VPN-Admins,DC=example,DC=com":"admin"},` +
+		`"group_radius_map":{"VPN-Users":{"Filter-Id":"vpn","Session-Timeout":"3600"}}}`)
 	snap := buildT(map[string]json.RawMessage{"ldap": raw})
 	if !snap.LDAP.Enabled || !snap.LDAP.StartTLS || snap.LDAP.URL != "ldaps://dc1.example.com:636" ||
 		snap.LDAP.BindDN != "CN=svc,DC=example,DC=com" || snap.LDAP.BindPassword != "pw" ||
@@ -278,13 +282,16 @@ func TestBuildTLDAP(t *testing.T) {
 	if snap.LDAP.RoleMap["CN=VPN-Admins,DC=example,DC=com"] != "admin" {
 		t.Errorf("ldap.role_map = %v", snap.LDAP.RoleMap)
 	}
+	if snap.LDAP.GroupRadiusMap["VPN-Users"]["Filter-Id"] != "vpn" || snap.LDAP.GroupRadiusMap["VPN-Users"]["Session-Timeout"] != "3600" {
+		t.Errorf("ldap.group_radius_map = %v", snap.LDAP.GroupRadiusMap)
+	}
 
 	// Битые поля откатываются к дефолтам, валидные сохраняются.
 	snap = buildT(map[string]json.RawMessage{
-		"ldap": json.RawMessage(`{"enabled":"да","url":42,"attrs":{"email":7},"allow_groups":"nope","role_map":[1]}`),
+		"ldap": json.RawMessage(`{"enabled":"да","url":42,"attrs":{"email":7},"allow_groups":"nope","role_map":[1],"group_radius_map":"bad"}`),
 	})
 	if snap.LDAP.Enabled || snap.LDAP.URL != "" || snap.LDAP.Attrs.Email != "mail" ||
-		len(snap.LDAP.AllowGroups) != 0 || len(snap.LDAP.RoleMap) != 0 {
+		len(snap.LDAP.AllowGroups) != 0 || len(snap.LDAP.RoleMap) != 0 || len(snap.LDAP.GroupRadiusMap) != 0 {
 		t.Errorf("ldap после битых полей = %+v, ожидались дефолты", snap.LDAP)
 	}
 }

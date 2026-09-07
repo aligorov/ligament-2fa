@@ -195,11 +195,12 @@ type AdminSettingsData struct {
 	SMSGatewayJSON   string            // сырой JSON sms.gateway для textarea
 	SMSPresetsJSON   string            // сырой JSON sms.presets для textarea
 	SMSPresetChoices []SMSPresetChoice // пресеты шлюзов для select (заполняют textarea через JS)
-	ReplyAttrsJSON   string            // radius.reply_attributes для textarea
-	LDAPAllowGroups  string            // ldap.allow_groups (JSON) для textarea
-	LDAPRoleMap      string            // ldap.role_map (JSON) для textarea
-	OneTimeValue     string            // новое значение секрета (показ один раз)
-	OneTimeLabel     string            // ключ секрета (admin_token / radius.secret)
+	ReplyAttrsJSON     string            // radius.reply_attributes для textarea
+	LDAPAllowGroups    string            // ldap.allow_groups (JSON) для textarea
+	LDAPRoleMap        string            // ldap.role_map (JSON) для textarea
+	LDAPGroupRadiusMap string            // ldap.group_radius_map (JSON) для textarea
+	OneTimeValue       string            // новое значение секрета (показ один раз)
+	OneTimeLabel       string            // ключ секрета (admin_token / radius.secret)
 }
 
 // ErrorData — страница ошибки (код + сообщение по-русски).

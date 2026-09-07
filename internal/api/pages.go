@@ -1561,7 +1561,7 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 			replyJSON = string(b)
 		}
 	}
-	allowJSON, roleJSON := "", ""
+	allowJSON, roleJSON, groupRadiusJSON := "", "", ""
 	if t.LDAP.AllowGroups != nil {
 		if b, err := json.MarshalIndent(t.LDAP.AllowGroups, "", "  "); err == nil {
 			allowJSON = string(b)
@@ -1570,6 +1570,11 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 	if t.LDAP.RoleMap != nil {
 		if b, err := json.MarshalIndent(t.LDAP.RoleMap, "", "  "); err == nil {
 			roleJSON = string(b)
+		}
+	}
+	if t.LDAP.GroupRadiusMap != nil {
+		if b, err := json.MarshalIndent(t.LDAP.GroupRadiusMap, "", "  "); err == nil {
+			groupRadiusJSON = string(b)
 		}
 	}
 	return web.AdminSettingsData{
@@ -1581,12 +1586,13 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 		LDAPPasswordSet: t.LDAP.BindPassword != "",
 		// SEC-004: сырой JSON шлюза содержит креды — в textarea рендерится
 		// маскированное дерево; POST с масками мерж оставляет без изменений.
-		SMSGatewayJSON:   settings.MaskedJSONTree(t.SMS),
-		SMSPresetsJSON:   settings.MaskedJSONTree(t.SMSPresets),
-		SMSPresetChoices: smsPresetChoices(),
-		ReplyAttrsJSON:   replyJSON,
-		LDAPAllowGroups:  allowJSON,
-		LDAPRoleMap:      roleJSON,
+		SMSGatewayJSON:     settings.MaskedJSONTree(t.SMS),
+		SMSPresetsJSON:     settings.MaskedJSONTree(t.SMSPresets),
+		SMSPresetChoices:   smsPresetChoices(),
+		ReplyAttrsJSON:     replyJSON,
+		LDAPAllowGroups:    allowJSON,
+		LDAPRoleMap:        roleJSON,
+		LDAPGroupRadiusMap: groupRadiusJSON,
 	}
 }
 
@@ -1744,6 +1750,7 @@ var settingsForm = map[string][]settingsField{
 		{name: "ldap.attrs.display_name", key: "ldap", kind: 'n'},
 		{name: "ldap.allow_groups", key: "ldap", kind: 'j'},
 		{name: "ldap.role_map", key: "ldap", kind: 'j'},
+		{name: "ldap.group_radius_map", key: "ldap", kind: 'j'},
 	},
 	"policy": {
 		{name: "policy.code_ttl", key: "policy"},
