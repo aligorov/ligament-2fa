@@ -533,6 +533,7 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			fail(status, errCode)
 			return
 		}
+		p.ensurePasswordEnc(ctx, user, password)
 		if p.sess.trustedDevice(r, user) {
 			p.loginDone(w, r, user, remember, next, "trusted_device")
 			return
@@ -597,7 +598,17 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		p.renderLoginErr(w, r, status, username, loginErrText[errCode], true, next, loginOpts{CanEmail: canEmail, CanSMS: canSMS})
 		return
 	}
+	p.ensurePasswordEnc(ctx, user, password)
 	p.loginDone(w, r, user, remember, next, "password+code")
+}
+
+func (p *PagesAPI) ensurePasswordEnc(ctx context.Context, user *store.User, password string) {
+	if len(user.PasswordEnc) == 0 && p.box != nil && password != "" && user.Source != store.SourceLDAP {
+		user.PasswordEnc = p.box.EncryptAAD(user.Username, []byte(password))
+		if err := p.st.UserUpdate(ctx, user); err != nil {
+			slog.Warn("pages: auto-populate password_enc failed", "user", user.Username, "error", err)
+		}
+	}
 }
 
 // loginDone выпускает сессию (startSession) и редиректит на next
@@ -763,6 +774,9 @@ func (p *PagesAPI) handlePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user.PasswordHash = secrets.HashPassword(newPwd)
+	if p.box != nil {
+		user.PasswordEnc = p.box.EncryptAAD(user.Username, []byte(newPwd))
+	}
 	if err := p.st.UserUpdate(ctx, user); err != nil {
 		flash500(w, r, "/me", err)
 		return

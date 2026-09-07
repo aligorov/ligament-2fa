@@ -84,6 +84,7 @@ func main() {
 	addrFlag := flag.String("addr", "", "адрес HTTP-слушателя (переопределяет listen.http)")
 	backupFlag := flag.String("backup", "", "логический дамп БД в SQL: путь файла или «-» (stdout); восстановление — psql (README «Бэкап и перенос»)")
 	backupAuditFlag := flag.Bool("backup-audit", true, "включать audit_log в дамп -backup (false — переносить без журнала событий)")
+	setPassFlag := flag.String("set-password", "", "установить пароль пользователя: -set-password username:password")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
@@ -137,6 +138,27 @@ func main() {
 	if err := bootstrapAdmin(ctx, st, box); err != nil {
 		slog.Error("main: бутстрап администратора", "error", err)
 		os.Exit(1)
+	}
+
+	if *setPassFlag != "" {
+		parts := strings.SplitN(*setPassFlag, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			slog.Error("main: формат флага: -set-password username:password")
+			os.Exit(1)
+		}
+		u, err := st.UserByUsername(ctx, parts[0])
+		if err != nil {
+			slog.Error("main: пользователь не найден", "user", parts[0], "error", err)
+			os.Exit(1)
+		}
+		u.PasswordHash = secrets.HashPassword(parts[1])
+		u.PasswordEnc = box.EncryptAAD(u.Username, []byte(parts[1]))
+		if err := st.UserUpdate(ctx, u); err != nil {
+			slog.Error("main: сохранение пароля", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("main: пароль пользователя успешно обновлен", "user", u.Username)
+		return
 	}
 
 	// Лицензирование: первый старт отмечает начало 30-дневного демо
