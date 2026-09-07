@@ -79,6 +79,11 @@ func (c *Core) senderFor(ch channel.Channel) delivery.Sender {
 	return c.senders[ch]
 }
 
+// HasSender сообщает, зарегистрирован ли отправитель для данного канала.
+func (c *Core) HasSender(ch channel.Channel) bool {
+	return c.senderFor(ch) != nil
+}
+
 // pushNotifier возвращает текущий push-нотификатор (nil — недоступен).
 func (c *Core) pushNotifier() PushNotifier {
 	c.mu.RLock()

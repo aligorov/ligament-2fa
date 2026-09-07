@@ -290,7 +290,21 @@ func (s *SessionAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.core != nil {
-		_, _ = s.core.StartWithMeta(ctx, user, purposeAPI, ip, r.UserAgent())
+		var autoChannels []channel.Channel
+		prefer := user.PreferChannels
+		if len(prefer) == 0 && s.m != nil {
+			prefer = s.m.Get().Policy.DefaultPrefer
+		}
+		for _, c := range prefer {
+			if c != channel.SMS {
+				autoChannels = append(autoChannels, c)
+			}
+		}
+		if len(autoChannels) > 0 {
+			slim := *user
+			slim.PreferChannels = autoChannels
+			_, _ = s.core.StartWithMeta(ctx, &slim, purposeAPI, ip, r.UserAgent())
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"two_factor": "required", "methods": methods})
 }

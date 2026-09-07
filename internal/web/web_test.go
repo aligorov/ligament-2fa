@@ -136,6 +136,12 @@ func TestRenderPages(t *testing.T) {
 			want: []string{"Вход", `action="/login"`, "Введите код второго фактора.", "Код отправлен в Telegram.", `value="vasya"`},
 		},
 		{
+			name: "login_need_code_sms",
+			tmpl: "login",
+			data: LoginData{BaseData: BaseData{Title: "Вход"}, NeedCode: true, CanSMS: true, Prefill: "vasya"},
+			want: []string{"Вход", `action="/login"`, "Введите код второго фактора.", "Отправить код по SMS", `value="send_sms"`},
+		},
+		{
 			name: "me_profile",
 			tmpl: "me_profile",
 			data: MeProfileData{BaseData: base("Профиль"), User: testUser(),
