@@ -420,11 +420,11 @@ func (s *Server) handlePEAP(w radius.ResponseWriter, r *radius.Request,
 		sess.pendingInner = nil
 
 		if len(app) == 0 {
-			slog.Debug("radius: peap app is empty, pumping", "innerState", sess.innerState)
+			slog.Info("radius: inner PEAP данные пусты, pumping", "innerState", sess.innerState, "user", sess.outerIdentity)
 			s.pumpPEAP(w, r, sess, nil)
 			return
 		}
-		slog.Debug("radius: peap app received", "len", len(app), "app0", app[0], "innerState", sess.innerState)
+		slog.Info("radius: получен inner PEAP пакет", "len", len(app), "app0", app[0], "innerState", sess.innerState, "user", sess.outerIdentity)
 
 		var innerPkt *eap.Packet
 		// В PEAPv0 внутренние пакеты MS-CHAPv2 (26) и Identity (1) передаются без
@@ -655,11 +655,15 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 		// Аутентификация успешна!
 		// Вычисляем ISK, CMK, IPMK и CSK для Cryptobinding и MPPE ([MS-PEAP] §3.1.5.5):
 		if len(sess.keyBlock) >= 40 {
+			sess.peapRawTLSKey = make([]byte, len(sess.keyBlock))
+			copy(sess.peapRawTLSKey, sess.keyBlock)
+
 			isk := eap.DerivePEAPISK(eap.NTHash(matched.pwdString), resp.NTResponse[:])
 			ipmk, cmk := eap.DerivePEAPCMK(sess.keyBlock[:40], isk)
 			sess.peapCMK = cmk
 			csk := eap.DerivePEAPCSK(ipmk)
-			sess.keyBlock = csk[:64] // обновляем keyBlock на CSK[:64] для MS-MPPE ключей!
+			sess.peapCSK = csk[:64]
+			sess.keyBlock = csk[:64] // по умолчанию CSK[:64]
 			slog.Info("radius: PEAP Cryptobinding и CSK ключи сформированы", "user", username)
 		}
 
@@ -679,6 +683,9 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 		if innerPkt.Type() == eap.TypeTLV {
 			if ok, _ := eap.ParseResultTLV(innerPkt.Data); ok {
 				slog.Info("radius: клиент сразу прислал Result TLV Success", "user", sess.outerIdentity)
+				if !eap.HasCryptobindingTLV(innerPkt.Data) && len(sess.peapRawTLSKey) >= 64 {
+					sess.keyBlock = sess.peapRawTLSKey[:64]
+				}
 				s.finishPEAP(w, r, sess, outerEAPID, sess.outerIdentity, srcIP)
 				return
 			}
@@ -700,11 +707,20 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 
 	case peapStateTLV:
 		// Завершающий шаг: клиент прислал Result TLV Response
+		cryptoUsed := false
 		if innerPkt.Type() == eap.TypeTLV {
 			if ok, err := eap.ParseResultTLV(innerPkt.Data); err == nil && !ok {
 				s.failEAP(w, r, sess, "клиент отклонил Result TLV")
 				return
 			}
+			cryptoUsed = eap.HasCryptobindingTLV(innerPkt.Data)
+		}
+		if cryptoUsed && len(sess.peapCSK) >= 64 {
+			sess.keyBlock = sess.peapCSK[:64]
+			slog.Info("radius: Cryptobinding TLV подтверждён клиентом, использован CSK", "user", sess.outerIdentity)
+		} else if len(sess.peapRawTLSKey) >= 64 {
+			sess.keyBlock = sess.peapRawTLSKey[:64]
+			slog.Info("radius: Cryptobinding TLV не использован клиентом, применён TLS keying material", "user", sess.outerIdentity)
 		}
 		slog.Info("radius: получен Result TLV Response, завершение PEAP", "user", sess.outerIdentity)
 		s.finishPEAP(w, r, sess, outerEAPID, sess.outerIdentity, srcIP)

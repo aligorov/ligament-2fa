@@ -116,7 +116,7 @@ func BuildMSCHAPv2Failure(eapID byte, mschapID byte, message string) []byte {
 func BuildResultTLV(code Code, id byte, success bool) []byte {
 	data := make([]byte, 7)
 	data[0] = byte(TypeTLV)
-	binary.BigEndian.PutUint16(data[1:3], 0x8001) // TLV Type: 0x8001 (Result TLV, mandatory)
+	binary.BigEndian.PutUint16(data[1:3], 0x8003) // TLV Type: 0x8003 (Result TLV = 3, mandatory = 0x8000)
 	binary.BigEndian.PutUint16(data[3:5], 2)      // TLV Length: 2
 	val := uint16(1)
 	if !success {
@@ -155,7 +155,7 @@ func BuildPEAPResultAndCryptoRequest(innerReqID byte, nonce []byte, cmk []byte) 
 		return BuildResultTLV(CodeRequest, innerReqID, true)
 	}
 	resTLV := make([]byte, 6)
-	binary.BigEndian.PutUint16(resTLV[0:2], 0x8001) // Result TLV, mandatory
+	binary.BigEndian.PutUint16(resTLV[0:2], 0x8003) // Result TLV (3), mandatory (0x8000)
 	binary.BigEndian.PutUint16(resTLV[2:4], 2)      // Length 2
 	binary.BigEndian.PutUint16(resTLV[4:6], 1)      // Status 1 (Success)
 
@@ -184,7 +184,7 @@ func ParseResultTLV(data []byte) (bool, error) {
 		if len(pos) < tlvLen {
 			break
 		}
-		if tlvType == 1 { // Result TLV
+		if tlvType == 3 { // Result TLV (EAP_TLV_RESULT_TLV = 3)
 			if tlvLen >= 2 {
 				status := binary.BigEndian.Uint16(pos[:2])
 				return status == 1, nil
@@ -193,6 +193,27 @@ func ParseResultTLV(data []byte) (bool, error) {
 		pos = pos[tlvLen:]
 	}
 	return false, errors.New("eap: Result TLV не найден")
+}
+
+// HasCryptobindingTLV возвращает true, если внутри пакета TypeTLV присутствует Cryptobinding TLV (тип 12).
+func HasCryptobindingTLV(data []byte) bool {
+	if len(data) < 1 || Type(data[0]) != TypeTLV {
+		return false
+	}
+	pos := data[1:]
+	for len(pos) >= 4 {
+		tlvType := binary.BigEndian.Uint16(pos[0:2]) & 0x3fff
+		tlvLen := int(binary.BigEndian.Uint16(pos[2:4]))
+		pos = pos[4:]
+		if len(pos) < tlvLen {
+			break
+		}
+		if tlvType == 12 { // Cryptobinding TLV
+			return true
+		}
+		pos = pos[tlvLen:]
+	}
+	return false
 }
 
 // GetMasterKey (RFC 3079 §3.4): вычисляет 16-байтный MasterKey из PasswordHashHash и NTResponse.

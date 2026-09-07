@@ -210,6 +210,8 @@ type eapSession struct {
 	innerMSCHAPID byte
 	outerIdentity string
 	peapCMK       []byte // 20 байт Compound MAC Key для Cryptobinding TLV
+	peapCSK       []byte // 64 байта CSK[:64] для MS-MPPE при подтверждённом cryptobinding
+	peapRawTLSKey []byte // исходные 64 байта TLS keying material (на случай отсутствия cryptobinding)
 
 	phase        eapPhase
 	keyBlock     []byte // 64 байта keying material (кладёт воркер)
