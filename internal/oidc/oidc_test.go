@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/aligorov/twofa/internal/store"
@@ -382,3 +383,49 @@ func TestAuthorizeURL(t *testing.T) {
 		t.Errorf("authorizeURL = %q, хочу локальный путь", u)
 	}
 }
+
+// TestOIDCCORS: эндпоинты discovery, JWKS, token и userinfo отдают CORS-заголовки
+// и корректно отвечают 204 No Content на preflight-запросы OPTIONS.
+func TestOIDCCORS(t *testing.T) {
+	mgr := testManager(t)
+	r := chi.NewRouter()
+	mgr.Register(r)
+
+	endpoints := []string{
+		"/.well-known/openid-configuration",
+		"/.well-known/jwks.json",
+		"/oidc/token",
+		"/oidc/userinfo",
+	}
+
+	for _, ep := range endpoints {
+		// 1. Проверка OPTIONS preflight
+		reqOpt := httptest.NewRequest(http.MethodOptions, ep, nil)
+		recOpt := httptest.NewRecorder()
+		r.ServeHTTP(recOpt, reqOpt)
+
+		if recOpt.Code != http.StatusNoContent {
+			t.Errorf("OPTIONS %s: code = %d, want %d", ep, recOpt.Code, http.StatusNoContent)
+		}
+		if got := recOpt.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("OPTIONS %s: Access-Control-Allow-Origin = %q, want *", ep, got)
+		}
+		if !strings.Contains(recOpt.Header().Get("Access-Control-Allow-Methods"), "OPTIONS") {
+			t.Errorf("OPTIONS %s: Access-Control-Allow-Methods missing OPTIONS", ep)
+		}
+
+		// 2. Проверка CORS-заголовка на целевом методе
+		method := http.MethodGet
+		if ep == "/oidc/token" {
+			method = http.MethodPost
+		}
+		reqTarget := httptest.NewRequest(method, ep, nil)
+		recTarget := httptest.NewRecorder()
+		r.ServeHTTP(recTarget, reqTarget)
+
+		if got := recTarget.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("%s %s: Access-Control-Allow-Origin = %q, want *", method, ep, got)
+		}
+	}
+}
+

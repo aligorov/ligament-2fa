@@ -39,13 +39,35 @@ const cookieSession = "twofa_session"
 // менеджер без ключей (компонент не смонтирован) оставляет маршруты на
 // месте — все отвечают 503 oidc_disabled (роуты присутствуют в роутере и
 // контракте OpenAPI независимо от конфигурации).
+// Публичные JSON-эндпоинты (discovery, JWKS, token, userinfo) поддерживают CORS (RFC 8414 §3)
+// для работы браузерных SPA-клиентов и инструментов тестирования (openidconnect.net).
 func (mgr *Manager) Register(r chi.Router) {
-	r.Get("/.well-known/openid-configuration", mgr.serve(mgr.handleDiscovery))
-	r.Get("/.well-known/jwks.json", mgr.serve(mgr.handleJWKS))
+	cors := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+			h(w, r)
+		}
+	}
+
+	r.Get("/.well-known/openid-configuration", cors(mgr.serve(mgr.handleDiscovery)))
+	r.Get("/.well-known/jwks.json", cors(mgr.serve(mgr.handleJWKS)))
 	r.Get("/oidc/authorize", mgr.serve(mgr.handleAuthorize))
 	r.Post("/oidc/authorize/confirm", mgr.serve(mgr.handleAuthorizeConfirm))
-	r.Post("/oidc/token", mgr.serve(mgr.handleToken))
-	r.Get("/oidc/userinfo", mgr.serve(mgr.handleUserinfo))
+	r.Post("/oidc/token", cors(mgr.serve(mgr.handleToken)))
+	r.Get("/oidc/userinfo", cors(mgr.serve(mgr.handleUserinfo)))
+
+	r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+	})
 }
 
 // serve — обёртка nil-проверки менеджера (см. Register).
@@ -92,6 +114,9 @@ func (mgr *Manager) audit(r *http.Request, username, event, result string, detai
 // запроса (снимок настроек читается на каждый запрос — это дёшево, а
 // смена domain применяется без рестарта).
 func (mgr *Manager) issuer(r *http.Request) string {
+	if mgr == nil || mgr.m == nil {
+		return issuerFrom("", r)
+	}
 	return issuerFrom(mgr.m.Get().Server.Domain, r)
 }
 
