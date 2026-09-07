@@ -216,6 +216,7 @@ type eapSession struct {
 	outQueue     []ttlsFrag // недоразосланные фрагменты исходящего потока
 	reqID        byte       // identifier следующего EAP-Request
 	id           byte       // identifier последнего Response клиента (для Failure)
+	fragSize     int        // размер фрагмента исходящего потока (по Framed-MTU или MaxFragment)
 
 	// Ретрансмиты NAS (под мьютексом store): дубликат запроса — повтор
 	// последнего ответа.
@@ -313,15 +314,10 @@ func (sess *eapSession) waitHandshakeStep() (out []byte, handshakeFinished bool,
 			out = append(out, b...)
 			continue
 		}
+		// Проверяем handshakeCh ПРИОРИТЕТНО: воркер после Handshake() сразу
+		// переходит к Read(), сигнализируя wantIn — случайный выбор select в Go
+		// может предпочесть wantIn вместо завершённого handshakeCh.
 		select {
-		case <-sess.conn.outReady:
-			continue
-		case <-sess.conn.wantIn:
-			if b := sess.conn.takeOutput(); len(b) > 0 {
-				out = append(out, b...)
-				continue
-			}
-			return out, false, nil
 		case herr := <-sess.handshakeCh:
 			if b := sess.conn.takeOutput(); len(b) > 0 {
 				out = append(out, b...)
@@ -330,6 +326,37 @@ func (sess *eapSession) waitHandshakeStep() (out []byte, handshakeFinished bool,
 				return nil, false, herr
 			}
 			return out, true, nil
+		default:
+		}
+
+		select {
+		case <-sess.conn.outReady:
+			continue
+		case herr := <-sess.handshakeCh:
+			if b := sess.conn.takeOutput(); len(b) > 0 {
+				out = append(out, b...)
+			}
+			if herr != nil {
+				return nil, false, herr
+			}
+			return out, true, nil
+		case <-sess.conn.wantIn:
+			if b := sess.conn.takeOutput(); len(b) > 0 {
+				out = append(out, b...)
+				continue
+			}
+			select {
+			case herr := <-sess.handshakeCh:
+				if b := sess.conn.takeOutput(); len(b) > 0 {
+					out = append(out, b...)
+				}
+				if herr != nil {
+					return nil, false, herr
+				}
+				return out, true, nil
+			default:
+			}
+			return out, false, nil
 		case werr := <-sess.workerErr:
 			return nil, false, werr
 		case <-timer.C:
@@ -372,13 +399,24 @@ func (sess *eapSession) takeAppData() []byte {
 	}
 }
 
-// pushOutQueue режет исходящий поток на фрагменты ≤ eap.MaxFragment.
+// nextReqID возвращает identifier для следующего EAP-Request и инкрементирует его (RFC 3748 §4.1).
+func (sess *eapSession) nextReqID() byte {
+	id := sess.reqID
+	sess.reqID++
+	return id
+}
+
+// pushOutQueue режет исходящий поток на фрагменты ≤ eap.MaxFragment (или согласно Framed-MTU).
 func (sess *eapSession) pushOutQueue(payload []byte) {
 	if len(payload) == 0 {
 		return
 	}
+	fragSize := sess.fragSize
+	if fragSize <= 0 {
+		fragSize = eap.MaxFragment
+	}
 	for off := 0; off < len(payload); {
-		end := off + eap.MaxFragment
+		end := off + fragSize
 		if end > len(payload) {
 			end = len(payload)
 		}
@@ -394,15 +432,14 @@ func (sess *eapSession) pushOutQueue(payload []byte) {
 
 // popOutFragment достаёт следующий фрагмент очереди и собирает полный
 // EAP-Request/PEAP или EAP-Request/TTLS (первый — L с полной длиной, все кроме последнего — M;
-// identifier — sess.reqID c инкрементом: новый Request ≠ предыдущего).
+// identifier — sess.nextReqID: каждый новый Request ≠ предыдущего, RFC 3748 §4.1).
 func (sess *eapSession) popOutFragment() []byte {
 	if len(sess.outQueue) == 0 {
 		return nil
 	}
 	f := sess.outQueue[0]
 	sess.outQueue = sess.outQueue[1:]
-	id := sess.reqID
-	sess.reqID++
+	id := sess.nextReqID()
 	declared := -1
 	if f.first {
 		declared = f.declared

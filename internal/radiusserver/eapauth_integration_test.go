@@ -223,6 +223,9 @@ func (s *ttlsSupplicant) runExchange(resp *radius.Packet, username, password str
 		if p.Code != eap.CodeRequest || p.Type() != eap.TypeTTLS {
 			s.t.Fatalf("ожидался EAP-Request/TTLS, получен code=%d type=%d", p.Code, p.Type())
 		}
+		if s.eapReqID != 0 && p.ID == s.eapReqID {
+			s.t.Fatalf("сервер повторил EAP Request ID %d (нарушение RFC 3748 §4.1)", p.ID)
+		}
 		s.eapReqID = p.ID
 		ttlsMsg, err := eap.ParseTTLS(p.Data)
 		if err != nil {
@@ -706,6 +709,9 @@ func (s *peapSupplicant) authenticate(username, password string) *radius.Packet 
 		}
 		if p.Code != eap.CodeRequest || p.Type() != eap.TypePEAP {
 			s.t.Fatalf("ожидался EAP-Request/PEAP, получен code=%d type=%d", p.Code, p.Type())
+		}
+		if s.eapReqID != 0 && p.ID == s.eapReqID {
+			s.t.Fatalf("сервер повторил EAP Request ID %d (нарушение RFC 3748 §4.1)", p.ID)
 		}
 		s.eapReqID = p.ID
 		peapMsg, err := eap.ParsePEAP(p.Data)

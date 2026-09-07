@@ -49,10 +49,23 @@ func (s *Server) handleEAPAuth(w radius.ResponseWriter, r *radius.Request, eapRa
 
 	state := hexState(rfc2865.State_Get(r.Packet))
 	sess := s.eapSessions.get(state)
+	if sess != nil {
+		if mtu, err := rfc2865.FramedMTU_Lookup(r.Packet); err == nil && mtu > 0 {
+			maxFrag := int(mtu) - 100
+			if maxFrag > eap.MaxFragment {
+				maxFrag = eap.MaxFragment
+			}
+			if maxFrag < 256 {
+				maxFrag = 256
+			}
+			sess.fragSize = maxFrag
+		}
+	}
 
 	// Ретрансмит NAS (тот же State + тот же EAP-пакет): повторяем последний
 	// ответ идентично — дубли запросов от AP нормальны и идемпотентны.
 	if sess != nil && bytes.Equal(sess.lastReqEAP, eapRaw) {
+		slog.Debug("radius: NAS EAP retransmit", "remote", srcIP, "state", state)
 		s.sendEAP(w, r, sess, sess.lastRespEAP)
 		return
 	}
@@ -80,10 +93,22 @@ func (s *Server) handleEAPAuth(w radius.ResponseWriter, r *radius.Request, eapRa
 		sess.reqID = pkt.ID + 1
 		sess.outerIdentity = string(pkt.IdentityData())
 		sess.lastReqEAP = append([]byte(nil), eapRaw...)
+		if mtu, err := rfc2865.FramedMTU_Lookup(r.Packet); err == nil && mtu > 0 {
+			maxFrag := int(mtu) - 100
+			if maxFrag > eap.MaxFragment {
+				maxFrag = eap.MaxFragment
+			}
+			if maxFrag < 256 {
+				maxFrag = 256
+			}
+			sess.fragSize = maxFrag
+		}
 		slog.Info("radius: EAP-PEAP начат", "identity", sess.outerIdentity, "remote", srcIP)
 		// Старт PEAP: пустой EAP-Request/PEAP с флагом S.
+		// Идентификатор инкрементируется (sess.nextReqID()), чтобы следующий Request
+		// (TLS ServerHello) имел отличный ID (RFC 3748 §4.1).
 		s.sendEAP(w, r, sess,
-			eap.BuildPEAP(eap.CodeRequest, sess.reqID, eap.PEAPFlagStart, -1, nil))
+			eap.BuildPEAP(eap.CodeRequest, sess.nextReqID(), eap.PEAPFlagStart, -1, nil))
 
 	case eap.TypePEAP:
 		if sess == nil {
@@ -119,7 +144,7 @@ func (s *Server) handleEAPAuth(w radius.ResponseWriter, r *radius.Request, eapRa
 				sess.reqID = pkt.ID + 1
 				sess.lastReqEAP = append([]byte(nil), eapRaw...)
 				s.sendEAP(w, r, sess,
-					eap.BuildTTLS(eap.CodeRequest, sess.reqID, eap.TTLSFlagStart, -1, nil))
+					eap.BuildTTLS(eap.CodeRequest, sess.nextReqID(), eap.TTLSFlagStart, -1, nil))
 				return
 			}
 		}
@@ -230,7 +255,7 @@ func (s *Server) handleTTLS(w radius.ResponseWriter, r *radius.Request,
 // продвижение обмена: данные никогда не застревают в мосту.
 func (s *Server) pumpTTLS(w radius.ResponseWriter, r *radius.Request, sess *eapSession, out []byte) {
 	if stuck := sess.conn.takeOutput(); len(stuck) > 0 {
-		sess.pushOutQueue(stuck)
+		out = append(stuck, out...)
 	}
 	sess.pushOutQueue(out)
 	s.sendEAP(w, r, sess, sess.popOrAck())
@@ -341,6 +366,7 @@ func (s *Server) handlePEAP(w radius.ResponseWriter, r *radius.Request,
 		}
 		if finished {
 			sess.phase = eapPhaseInner
+			slog.Info("radius: PEAP TLS handshake завершён, запуск MS-CHAPv2", "identity", sess.outerIdentity, "remote", srcIP)
 			// TLS-handshake завершён! В PEAPv0 сервер первым инициирует внутреннюю
 			// аутентификацию, отправляя EAP-Request/MS-CHAPv2 Challenge.
 			if _, err := rand.Read(sess.authChallenge[:]); err != nil {
@@ -355,6 +381,7 @@ func (s *Server) handlePEAP(w radius.ResponseWriter, r *radius.Request,
 				s.failEAP(w, r, sess, "отправка inner MS-CHAPv2 Challenge: "+err.Error())
 				return
 			}
+			slog.Info("radius: inner MS-CHAPv2 Challenge записан", "chal_len", len(chal))
 		}
 		s.pumpPEAP(w, r, sess, out)
 
@@ -408,10 +435,10 @@ func (s *Server) handlePEAP(w radius.ResponseWriter, r *radius.Request,
 // pumpPEAP складывает out и застрявший в мосту исходящий поток в очередь
 // фрагментов и отправляет следующий EAP-Request/PEAP либо ACK-запрос.
 func (s *Server) pumpPEAP(w radius.ResponseWriter, r *radius.Request, sess *eapSession, out []byte) {
-	sess.pushOutQueue(out)
 	if extra := sess.conn.takeOutput(); len(extra) > 0 {
-		sess.pushOutQueue(extra)
+		out = append(out, extra...)
 	}
+	sess.pushOutQueue(out)
 	s.sendEAP(w, r, sess, sess.popOrAck())
 }
 
@@ -701,8 +728,7 @@ func (sess *eapSession) popOrAck() []byte {
 	if pkt := sess.popOutFragment(); pkt != nil {
 		return pkt
 	}
-	id := sess.reqID
-	sess.reqID++
+	id := sess.nextReqID()
 	if sess.proto == eapProtoPEAP {
 		return eap.BuildPEAP(eap.CodeRequest, id, 0, -1, nil)
 	}
