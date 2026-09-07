@@ -114,6 +114,10 @@ func (p *fakePush) SendPush(_ context.Context, _ int64, _, _, _ string, chID uui
 	return nil
 }
 
+func (p *fakePush) SendNotification(_ context.Context, _ int64, _ string) error {
+	return nil
+}
+
 // ---- HTTP-клиент с cookie-jar (как браузер) ----
 
 type httpClient struct {

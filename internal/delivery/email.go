@@ -39,6 +39,7 @@ type EmailSender struct {
 }
 
 var _ Sender = (*EmailSender)(nil)
+var _ AlertSender = (*EmailSender)(nil)
 
 // NewEmail создаёт SMTP-отправитель. Аутентификация PLAIN, только при
 // непустом user. STARTTLS: smtp.SendMail обновляет соединение до TLS,
@@ -116,6 +117,59 @@ func (e *EmailSender) buildMessage(to, code string) []byte {
 	b.WriteString("From: " + sanitizeHeader(e.from) + "\r\n")
 	b.WriteString("To: " + sanitizeHeader(to) + "\r\n")
 	b.WriteString("Subject: " + subject + "\r\n")
+	b.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
+	b.WriteString("MIME-Version: 1.0\r\n")
+	b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
+	b.WriteString("Content-Transfer-Encoding: 8bit\r\n")
+	b.WriteString("\r\n")
+	b.WriteString(body)
+	b.WriteString("\r\n")
+	return []byte(b.String())
+}
+
+// SendAlert реализует AlertSender: отправляет произвольное текстовое письмо.
+func (e *EmailSender) SendAlert(ctx context.Context, to, subject, body string) error {
+	addr := net.JoinHostPort(e.host, strconv.Itoa(e.port))
+	var auth smtp.Auth
+	if e.user != "" {
+		auth = smtp.PlainAuth("", e.user, e.pass, e.host)
+	}
+
+	timeout := e.timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- e.sendFn(addr, auth, e.from, []string{to}, e.buildRawMessage(to, subject, body))
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("delivery: email alert: отправка через %s: %w", addr, err)
+		}
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("delivery: email alert: таймаут отправки через %s после %s", addr, timeout)
+	case <-ctx.Done():
+		return fmt.Errorf("delivery: email alert: отменено: %w", ctx.Err())
+	}
+}
+
+func (e *EmailSender) buildRawMessage(to, subject, body string) []byte {
+	subj := mime.QEncoding.Encode("UTF-8", sanitizeHeader(subject))
+	if e.adLine != nil {
+		if ad := e.adLine(); ad != "" {
+			body += "\r\n--\r\n" + ad
+		}
+	}
+	var b strings.Builder
+	b.WriteString("From: " + sanitizeHeader(e.from) + "\r\n")
+	b.WriteString("To: " + sanitizeHeader(to) + "\r\n")
+	b.WriteString("Subject: " + subj + "\r\n")
 	b.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")

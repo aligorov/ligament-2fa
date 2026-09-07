@@ -119,6 +119,7 @@ func (v *LocalVerifier) Verify(ctx context.Context, username, password string) (
 // означает, что канал telegram_push недоступен и пропускается.
 type PushNotifier interface {
 	SendPush(ctx context.Context, chatID int64, who, ip, ua string, challengeID uuid.UUID) error
+	SendNotification(ctx context.Context, chatID int64, text string) error
 }
 
 // BackupChannel — псевдоканал в возвращаемом значении VerifyAnyCode:

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,9 @@ type Core struct {
 	senders map[channel.Channel]delivery.Sender
 	pv      PasswordVerifier
 	push    PushNotifier // nil → канал telegram_push недоступен
+
+	notifyMu   sync.Mutex
+	lastNotify map[string]time.Time
 }
 
 // NewCore собирает ядро. senders — доставка кодов по каналам (email/sms/
@@ -53,7 +57,13 @@ func NewCore(
 	pv PasswordVerifier,
 	push PushNotifier,
 ) *Core {
-	c := &Core{st: st, set: set, box: box, pv: pv}
+	c := &Core{
+		st:         st,
+		set:        set,
+		box:        box,
+		pv:         pv,
+		lastNotify: make(map[string]time.Time),
+	}
 	c.SetSenders(senders, push)
 	return c
 }
@@ -654,3 +664,105 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		}
 	}
 }
+
+// NotifyLoginSuccess асинхронно отправляет пользователю уведомление о входе
+// во все доступные каналы (Telegram, если привязан, и Email, если настроен).
+// 2-минутный антиспам-кулдаун на связку user:method:ip предотвращает спам
+// при быстром роуминге Wi-Fi 802.1X между точками доступа.
+func (c *Core) NotifyLoginSuccess(ctx context.Context, username, method, ip, ua string) {
+	if username == "" {
+		return
+	}
+
+	key := username + ":" + method + ":" + ip
+	c.notifyMu.Lock()
+	if c.lastNotify == nil {
+		c.lastNotify = make(map[string]time.Time)
+	}
+	last, ok := c.lastNotify[key]
+	now := time.Now()
+	if ok && now.Sub(last) < 2*time.Minute {
+		c.notifyMu.Unlock()
+		return
+	}
+	c.lastNotify[key] = now
+	// Очистка устаревших записей (> 10 минут)
+	if len(c.lastNotify) > 1000 {
+		for k, t := range c.lastNotify {
+			if now.Sub(t) > 10*time.Minute {
+				delete(c.lastNotify, k)
+			}
+		}
+	}
+	c.notifyMu.Unlock()
+
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+
+		user, err := c.st.UserByUsername(bgCtx, username)
+		if err != nil || user == nil {
+			return
+		}
+
+		timeStr := now.Format("02.01.2006 15:04:05")
+		domain := ""
+		if c.set != nil && c.set.Get() != nil {
+			t := c.set.Get()
+			if t.Server.Domain != "" {
+				domain = t.Server.Domain
+			} else if t.ACME.Domain != "" {
+				domain = t.ACME.Domain
+			}
+		}
+
+		var sb strings.Builder
+		sb.WriteString("🔔 Вход в учётную запись\n\n")
+		sb.WriteString("👤 Пользователь: " + username + "\n")
+		if method != "" {
+			sb.WriteString("🌐 Способ: " + method + "\n")
+		}
+		if ip != "" {
+			sb.WriteString("📍 IP-адрес: " + ip + "\n")
+		}
+		if ua != "" {
+			sb.WriteString("📱 Устройство: " + ua + "\n")
+		}
+		sb.WriteString("⏰ Время: " + timeStr + "\n")
+		if domain != "" {
+			sb.WriteString("🏢 Сервер: " + domain + "\n")
+		}
+		sb.WriteString("\nЕсли это были не вы, немедленно обратитесь к администратору или смените пароль.")
+		text := sb.String()
+
+		subject := "Вход в учётную запись " + username
+		if domain != "" {
+			subject = "[" + domain + "] " + subject
+		}
+
+		// 1. Telegram
+		if user.TelegramChatID != nil {
+			if push := c.pushNotifier(); push != nil {
+				if err := push.SendNotification(bgCtx, *user.TelegramChatID, text); err != nil {
+					slog.Warn("auth: ошибка отправки уведомления в Telegram", "user", username, "error", err)
+				} else {
+					slog.Info("auth: отправлено уведомление о входе в Telegram", "user", username)
+				}
+			}
+		}
+
+		// 2. Email
+		if user.Email != "" {
+			if s := c.senderFor(channel.Email); s != nil {
+				if as, ok := s.(delivery.AlertSender); ok {
+					if err := as.SendAlert(bgCtx, user.Email, subject, text); err != nil {
+						slog.Warn("auth: ошибка отправки уведомления на Email", "user", username, "error", err)
+					} else {
+						slog.Info("auth: отправлено уведомление о входе на Email", "user", username)
+					}
+				}
+			}
+		}
+	}()
+}
+

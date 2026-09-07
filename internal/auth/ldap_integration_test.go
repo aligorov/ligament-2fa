@@ -547,7 +547,7 @@ func TestLdapSyncUserUniqueViolationRace(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		u, err := v.syncUser(ctx, "raceuser", res)
+		u, err := v.syncUser(ctx, "raceuser", res, set.Get().LDAP)
 		done <- outcome{u, err}
 	}()
 

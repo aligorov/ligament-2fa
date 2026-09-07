@@ -364,6 +364,7 @@ func (s *SessionAPI) startSession(w http.ResponseWriter, r *http.Request, user *
 		s.trustDevice(w, r, user)
 	}
 	s.audit(r.Context(), user.Username, "login_ok", clientIP(r), "ok", map[string]any{"mode": mode})
+	s.core.NotifyLoginSuccess(r.Context(), user.Username, "Web/API ("+mode+")", clientIP(r), r.UserAgent())
 	return csrf, nil
 }
 

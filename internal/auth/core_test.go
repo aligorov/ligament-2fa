@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -158,6 +159,10 @@ type fakePush struct {
 	seenWho    string
 	seenIP     string
 	seenChalID uuid.UUID
+
+	notifCalls  int
+	notifChatID int64
+	notifText   string
 }
 
 func (f *fakePush) SendPush(_ context.Context, chatID int64, who, ip, ua string, chID uuid.UUID) error {
@@ -175,6 +180,15 @@ func (f *fakePush) SendPush(_ context.Context, chatID int64, who, ip, ua string,
 			_ = f.st.ChallengeSetPush(context.Background(), chID, state)
 		}()
 	}
+	return nil
+}
+
+func (f *fakePush) SendNotification(_ context.Context, chatID int64, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.notifCalls++
+	f.notifChatID = chatID
+	f.notifText = text
 	return nil
 }
 
@@ -1066,3 +1080,84 @@ func TestVerifyAnyCodePurposeScoping(t *testing.T) {
 // purposeUIConfirmForTest — purpose подтверждения операций кабинета в тестах
 // ядра (в api-пакете это константа purposeUIConfirm).
 const purposeUIConfirmForTest = "ui_confirm"
+
+type fakeAlertEmailSender struct {
+	mu      sync.Mutex
+	calls   int
+	to      string
+	subject string
+	body    string
+}
+
+func (s *fakeAlertEmailSender) Name() channel.Channel                    { return channel.Email }
+func (s *fakeAlertEmailSender) Send(_ context.Context, _, _ string) error { return nil }
+func (s *fakeAlertEmailSender) SendAlert(_ context.Context, to, subject, body string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	s.to = to
+	s.subject = subject
+	s.body = body
+	return nil
+}
+
+func TestNotifyLoginSuccess(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	push := &fakePush{st: st}
+	emailSender := &fakeAlertEmailSender{}
+	senders := map[channel.Channel]delivery.Sender{
+		channel.Email: emailSender,
+	}
+	core := newCore(st, set, box, senders, push)
+
+	chatID := int64(123456789)
+	user := mkUser(t, ctx, st, "notifyuser", func(u *store.User) {
+		u.Email = "notify@example.com"
+		u.TelegramChatID = &chatID
+	})
+
+	// Первый вход: отправляются уведомления и в TG, и на почту
+	core.NotifyLoginSuccess(ctx, user.Username, "Wi-Fi (PEAP)", "192.168.1.50", "")
+
+	// Ожидаем завершения фоновой горутины
+	time.Sleep(100 * time.Millisecond)
+
+	push.mu.Lock()
+	pCalls := push.notifCalls
+	pChatID := push.notifChatID
+	pText := push.notifText
+	push.mu.Unlock()
+
+	emailSender.mu.Lock()
+	eCalls := emailSender.calls
+	eTo := emailSender.to
+	eSubject := emailSender.subject
+	eBody := emailSender.body
+	emailSender.mu.Unlock()
+
+	if pCalls != 1 || pChatID != chatID {
+		t.Fatalf("Telegram notif: calls=%d chatID=%d, want 1 and %d", pCalls, pChatID, chatID)
+	}
+	if !strings.Contains(pText, "Wi-Fi (PEAP)") || !strings.Contains(pText, "192.168.1.50") {
+		t.Fatalf("Telegram notif text missing info: %s", pText)
+	}
+
+	if eCalls != 1 || eTo != "notify@example.com" {
+		t.Fatalf("Email alert: calls=%d to=%s, want 1 and notify@example.com", eCalls, eTo)
+	}
+	if !strings.Contains(eSubject, "notifyuser") || !strings.Contains(eBody, "Wi-Fi (PEAP)") {
+		t.Fatalf("Email alert body/subject missing info: subj=%s body=%s", eSubject, eBody)
+	}
+
+	// Второй вход с тем же методом и IP в пределах кулдауна (2 мин) — уведомление НЕ отправляется
+	core.NotifyLoginSuccess(ctx, user.Username, "Wi-Fi (PEAP)", "192.168.1.50", "")
+	time.Sleep(50 * time.Millisecond)
+
+	push.mu.Lock()
+	pCalls2 := push.notifCalls
+	push.mu.Unlock()
+	if pCalls2 != 1 {
+		t.Fatalf("Expected cooldown to prevent second notif, but got calls=%d", pCalls2)
+	}
+}

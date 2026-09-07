@@ -18,6 +18,11 @@ type Sender interface {
 	Send(ctx context.Context, to, code string) error
 }
 
+// AlertSender — канал отправки произвольных текстовых уведомлений (тема + тело).
+type AlertSender interface {
+	SendAlert(ctx context.Context, to, subject, body string) error
+}
+
 // BodyTemplate — встроенный дефолт текста сообщения, если настройка
 // messages.* пуста: плейсхолдер {code} заменяется на одноразовый код.
 const BodyTemplate = "Ваш код подтверждения: {code}"

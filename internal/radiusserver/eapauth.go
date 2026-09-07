@@ -326,6 +326,7 @@ func (s *Server) finishInnerPAP(w radius.ResponseWriter, r *radius.Request,
 	}
 	s.eapSessions.delete(sess)
 	slog.Info("radius: EAP-TTLS Accept", "user", inner.UserName, "remote", srcIP)
+	s.core.NotifyLoginSuccess(context.WithoutCancel(r.Context()), inner.UserName, "Wi-Fi (TTLS)", srcIP, "")
 }
 
 // handlePEAP — шаг PEAPv0 в существующей сессии: сборка входящих
@@ -781,6 +782,7 @@ func (s *Server) finishPEAP(w radius.ResponseWriter, r *radius.Request,
 	}
 	s.eapSessions.delete(sess)
 	slog.Info("radius: EAP-PEAP Accept", "user", username, "remote", srcIP)
+	s.core.NotifyLoginSuccess(context.WithoutCancel(r.Context()), username, "Wi-Fi (PEAP)", srcIP, "")
 }
 
 // sendEAP отправляет Access-Challenge с EAP-пакетом и State сессии,

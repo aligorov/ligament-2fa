@@ -337,6 +337,16 @@ func (b *Bot) Send(ctx context.Context, to, code string) error {
 	return b.send(ctx, chatID, text, nil)
 }
 
+// SendNotification отправляет произвольное текстовое уведомление в Telegram-чат.
+func (b *Bot) SendNotification(ctx context.Context, chatID int64, text string) error {
+	if b.adLine != nil {
+		if ad := b.adLine(); ad != "" {
+			text += "\n\n" + ad
+		}
+	}
+	return b.send(ctx, chatID, text, nil)
+}
+
 // snap0 — снимок настроек или пустой (нет менеджера — тесты бота).
 func snap0(m settingsDeps) *settings.T {
 	if m == nil {

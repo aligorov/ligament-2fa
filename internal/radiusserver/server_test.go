@@ -155,6 +155,10 @@ func (p *probePush) SendPush(_ context.Context, _ int64, _, _, _ string, chID uu
 	return nil
 }
 
+func (p *probePush) SendNotification(_ context.Context, _ int64, _ string) error {
+	return nil
+}
+
 // approveAfter ждёт челлендж от probePush и спустя d подтверждает его.
 func approveAfter(st *store.Store, p *probePush, d time.Duration, state string) <-chan struct{} {
 	done := make(chan struct{})

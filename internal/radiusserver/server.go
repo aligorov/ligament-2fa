@@ -267,6 +267,7 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 		applyReplyAttrs(resp, attrs)
 		slog.Info("radius: Access-Accept", "user", username, "reason", reason,
 			"remote", hostOnly(r.RemoteAddr))
+		s.core.NotifyLoginSuccess(context.WithoutCancel(r.Context()), username, "Wi-Fi (PAP)", hostOnly(r.RemoteAddr), "")
 	} else {
 		resp = r.Response(radius.CodeAccessReject)
 		if err := rfc2865.ReplyMessage_SetString(resp, "rejected"); err != nil {
