@@ -239,7 +239,7 @@ func (m *Manager) ObtainCertificate(ctx context.Context, domain, email string, s
 
 		// Ожидание завершения проверки центром сертификации
 		waitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		authzRes, err := client.WaitAuthorization(waitCtx, chal.URI)
+		authzRes, err := client.WaitAuthorization(waitCtx, authzURL)
 		cancel()
 		m.DeleteChallenge(chal.Token)
 

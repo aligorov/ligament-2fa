@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aligorov/twofa/internal/acme"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -212,4 +213,24 @@ func TestRadiusCertHandlers(t *testing.T) {
 		t.Fatalf("expected 404 for missing CA cert, got %d", recCA.Code)
 	}
 }
+
+func TestACMERouteInRouter(t *testing.T) {
+	mgr := acme.NewManager(acme.Config{})
+	mgr.SetChallenge("test-token", "keyauth123")
+	m := settings.NewDefaultManager()
+	rt := BuildRouter(Deps{
+		M:    m,
+		ACME: mgr,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/acme-challenge/test-token", nil)
+	rec := httptest.NewRecorder()
+	rt.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "keyauth123" {
+		t.Fatalf("expected keyauth123, got %s", rec.Body.String())
+	}
+}
+
 

@@ -201,6 +201,9 @@ func BuildRouter(d Deps) *Router {
 	r.Get("/healthz", healthzHandler(d.St))
 
 	if d.ACME != nil {
+		r.Get("/.well-known/acme-challenge/{token}", func(w http.ResponseWriter, r *http.Request) {
+			d.ACME.HTTPHandler(nil).ServeHTTP(w, r)
+		})
 		r.Get("/.well-known/acme-challenge/*", func(w http.ResponseWriter, r *http.Request) {
 			d.ACME.HTTPHandler(nil).ServeHTTP(w, r)
 		})
