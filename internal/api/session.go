@@ -289,6 +289,9 @@ func (s *SessionAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.finishLogin(w, r, user, false, "password_only")
 		return
 	}
+	if s.core != nil {
+		_, _ = s.core.StartWithMeta(ctx, user, purposeAPI, ip, r.UserAgent())
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"two_factor": "required", "methods": methods})
 }
 

@@ -382,13 +382,18 @@ func (p *PagesAPI) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 // renderLoginErr — рендер формы входа с ошибкой (401) либо подсказкой
 // «введите код» (200): решение о шаге 2FA принимает сервер. next — адрес
 // возврата (проксируется hidden-полем формы).
-func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status int, prefill, msg string, needCode bool, next string) {
+func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status int, prefill, msg string, needCode bool, next string, info ...string) {
+	var inf string
+	if len(info) > 0 {
+		inf = info[0]
+	}
 	p.render(w, status, "login", web.LoginData{
 		BaseData: p.baseData(r, "Вход", ""),
 		Err:      msg,
 		Prefill:  prefill,
 		NeedCode: needCode,
 		Next:     next,
+		Info:     inf,
 	})
 }
 
@@ -433,8 +438,28 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if methods := p.sess.twoFactorMethods(ctx, user); len(methods) > 0 {
-			// Второй фактор обязателен — та же форма с подсказкой.
-			p.renderLoginErr(w, r, http.StatusOK, username, "", true, next)
+			// Второй фактор обязателен — инициируем отправку кода (если настроен канал доставки).
+			var info string
+			if p.core != nil {
+				ch, err := p.core.StartWithMeta(ctx, user, purposeAPI, clientIP(r), r.UserAgent())
+				if err != nil {
+					if errors.Is(err, auth.ErrCooldown) {
+						info = "Код уже был отправлен ранее, подождите перед повторным запросом."
+					}
+				} else if ch != nil {
+					switch ch.Channel {
+					case channel.Telegram:
+						info = "Код отправлен в Telegram."
+					case channel.Email:
+						info = "Код отправлен на почту."
+					case channel.SMS:
+						info = "Код отправлен по SMS."
+					case channel.TelegramPush:
+						info = "Запрос подтверждения отправлен в Telegram."
+					}
+				}
+			}
+			p.renderLoginErr(w, r, http.StatusOK, username, "", true, next, info)
 			return
 		}
 		p.loginDone(w, r, user, remember, next, "password_only")

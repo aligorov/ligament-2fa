@@ -130,6 +130,12 @@ func TestRenderPages(t *testing.T) {
 			want: []string{"Вход", `action="/login"`, "Запомнить это устройство", "Код 2FA", "Неверный код", `value="vasya"`},
 		},
 		{
+			name: "login_need_code_info",
+			tmpl: "login",
+			data: LoginData{BaseData: BaseData{Title: "Вход"}, NeedCode: true, Info: "Код отправлен в Telegram.", Prefill: "vasya"},
+			want: []string{"Вход", `action="/login"`, "Введите код второго фактора.", "Код отправлен в Telegram.", `value="vasya"`},
+		},
+		{
 			name: "me_profile",
 			tmpl: "me_profile",
 			data: MeProfileData{BaseData: base("Профиль"), User: testUser(),

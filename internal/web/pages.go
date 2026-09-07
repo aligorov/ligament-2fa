@@ -66,6 +66,7 @@ type LoginData struct {
 	Prefill  string // подстановка username после неудачной попытки
 	NeedCode bool   // подсказка: сервер ждёт именно код 2FA
 	Next     string // куда вернуться после успешного входа (только локальные пути)
+	Info     string // пояснение о доставке кода (email/sms/telegram/cooldown)
 }
 
 // MeProfileData — /me: контакты, prefer_channels, смена пароля + сводка
