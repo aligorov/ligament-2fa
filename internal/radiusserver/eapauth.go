@@ -40,6 +40,7 @@ func (s *Server) handleEAPAuth(w radius.ResponseWriter, r *radius.Request, eapRa
 		s.rejectEAP(w, r, 0)
 		return
 	}
+	slog.Debug("radius: handleEAPAuth enter", "pkt_id", pkt.ID, "pkt_type", pkt.Type(), "raw_len", len(eapRaw))
 	if pkt.Code != eap.CodeResponse {
 		// Request/Success/Failure от клиента — протокольная ошибка.
 		slog.Warn("radius: EAP-пакет не Response — Reject", "remote", srcIP, "code", int(pkt.Code))
@@ -365,25 +366,36 @@ func (s *Server) handlePEAP(w radius.ResponseWriter, r *radius.Request,
 			return
 		}
 		if finished {
-			sess.phase = eapPhaseInner
-			slog.Info("radius: PEAP TLS handshake завершён, запуск MS-CHAPv2", "identity", sess.outerIdentity, "remote", srcIP)
-			// TLS-handshake завершён! В PEAPv0 сервер первым инициирует внутреннюю
-			// аутентификацию, отправляя EAP-Request/MS-CHAPv2 Challenge.
-			if _, err := rand.Read(sess.authChallenge[:]); err != nil {
-				binary.BigEndian.PutUint64(sess.authChallenge[:8], uint64(time.Now().UnixNano()))
-			}
-			sess.innerReqID = 1
-			sess.innerMSCHAPID = 1
-			sess.innerState = peapStateChallenge
-
-			chal := eap.BuildMSCHAPv2Challenge(sess.innerReqID, sess.innerMSCHAPID, sess.authChallenge, "ligament")
-			if err := sess.writeInner(chal); err != nil {
-				s.failEAP(w, r, sess, "отправка inner MS-CHAPv2 Challenge: "+err.Error())
-				return
-			}
-			slog.Info("radius: inner MS-CHAPv2 Challenge записан", "chal_len", len(chal))
+			sess.phase = eapPhaseHandshakeDone
+			slog.Info("radius: PEAP TLS handshake завершён сервером, отправка Server Finished", "identity", sess.outerIdentity, "remote", srcIP)
 		}
 		s.pumpPEAP(w, r, sess, out)
+
+	case eapPhaseHandshakeDone:
+		if len(payload) > 0 {
+			sess.conn.deliver(payload)
+		}
+		sess.phase = eapPhaseInner
+		slog.Info("radius: PEAP TLS handshake подтверждён клиентом, запуск inner MS-CHAPv2", "identity", sess.outerIdentity, "remote", srcIP)
+
+		// TLS-handshake завершён и подтверждён клиентом! В PEAPv0 сервер первым инициирует
+		// внутреннюю аутентификацию, отправляя EAP-Request/MS-CHAPv2 Challenge.
+		if _, err := rand.Read(sess.authChallenge[:]); err != nil {
+			binary.BigEndian.PutUint64(sess.authChallenge[:8], uint64(time.Now().UnixNano()))
+		}
+		sess.innerReqID = 1
+		sess.innerMSCHAPID = 1
+		sess.innerState = peapStateChallenge
+
+		chal := eap.BuildMSCHAPv2Challenge(sess.innerReqID, sess.innerMSCHAPID, sess.authChallenge, "ligament")
+		// В PEAPv0 внутренние пакеты MS-CHAPv2 передаются без 4-байтового EAP-заголовка (draft-kamath-pppext-peapv0-00 §2.1)
+		chalPayload := chal[4:]
+		if err := sess.writeInner(chalPayload); err != nil {
+			s.failEAP(w, r, sess, "отправка inner MS-CHAPv2 Challenge: "+err.Error())
+			return
+		}
+		slog.Info("radius: inner MS-CHAPv2 Challenge отправлен", "identity", sess.outerIdentity, "remote", srcIP)
+		s.pumpPEAP(w, r, sess, nil)
 
 	case eapPhaseInner:
 		var app []byte
@@ -407,25 +419,49 @@ func (s *Server) handlePEAP(w radius.ResponseWriter, r *radius.Request,
 		app = append(sess.pendingInner, app...)
 		sess.pendingInner = nil
 
-		if len(app) < 4 {
-			sess.pendingInner = app
+		if len(app) == 0 {
+			slog.Debug("radius: peap app is empty, pumping", "innerState", sess.innerState)
 			s.pumpPEAP(w, r, sess, nil)
 			return
 		}
-		eapLen := int(binary.BigEndian.Uint16(app[2:4]))
-		if len(app) < eapLen {
-			sess.pendingInner = app
-			s.pumpPEAP(w, r, sess, nil)
-			return
-		}
+		slog.Debug("radius: peap app received", "len", len(app), "app0", app[0], "innerState", sess.innerState)
 
-		innerPkt, err := eap.Parse(app[:eapLen])
-		if err != nil {
-			s.failEAP(w, r, sess, "битый внутренний EAP: "+err.Error())
+		var innerPkt *eap.Packet
+		// В PEAPv0 внутренние пакеты MS-CHAPv2 (26) и Identity (1) передаются без
+		// 4-байтового EAP-заголовка Code/ID/Length (draft-kamath-pppext-peapv0-00 §2.1,
+		// hostapd eap_server_peap.c). Result TLV (33) передаётся с полным EAP-заголовком.
+		if len(app) >= 1 && (eap.Type(app[0]) == eap.TypeMSCHAPv2 || eap.Type(app[0]) == eap.TypeIdentity) {
+			synthesized := make([]byte, 4+len(app))
+			synthesized[0] = byte(eap.CodeResponse)
+			synthesized[1] = sess.innerReqID
+			binary.BigEndian.PutUint16(synthesized[2:4], uint16(len(synthesized)))
+			copy(synthesized[4:], app)
+			var err error
+			innerPkt, err = eap.Parse(synthesized)
+			if err != nil {
+				s.failEAP(w, r, sess, "битый inner PEAP: "+err.Error())
+				return
+			}
+		} else if len(app) >= 4 {
+			eapLen := int(binary.BigEndian.Uint16(app[2:4]))
+			if eapLen > len(app) {
+				sess.pendingInner = app
+				s.pumpPEAP(w, r, sess, nil)
+				return
+			}
+			var err error
+			innerPkt, err = eap.Parse(app[:eapLen])
+			if err != nil {
+				s.failEAP(w, r, sess, "битый внутренний EAP: "+err.Error())
+				return
+			}
+			if len(app) > eapLen {
+				sess.pendingInner = app[eapLen:]
+			}
+		} else {
+			sess.pendingInner = app
+			s.pumpPEAP(w, r, sess, nil)
 			return
-		}
-		if len(app) > eapLen {
-			sess.pendingInner = app[eapLen:]
 		}
 
 		s.handlePEAPInner(w, r, sess, pkt.ID, innerPkt, srcIP)
@@ -453,7 +489,7 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 			sess.outerIdentity = string(innerPkt.IdentityData())
 			sess.innerReqID++
 			chal := eap.BuildMSCHAPv2Challenge(sess.innerReqID, sess.innerMSCHAPID, sess.authChallenge, "ligament")
-			_ = sess.writeInner(chal)
+			_ = sess.writeInner(chal[4:])
 			s.pumpPEAP(w, r, sess, nil)
 			return
 		}
@@ -620,7 +656,7 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 		sess.innerReqID++
 		sess.innerState = peapStateSuccess
 		succPkt := eap.BuildMSCHAPv2Success(sess.innerReqID, resp.ID, matched.authResp)
-		if err := sess.writeInner(succPkt); err != nil {
+		if err := sess.writeInner(succPkt[4:]); err != nil {
 			s.failEAP(w, r, sess, "отправка MS-CHAPv2 Success: "+err.Error())
 			return
 		}
@@ -658,7 +694,7 @@ func (s *Server) failMSCHAPv2(w radius.ResponseWriter, r *radius.Request, sess *
 	sess.innerReqID++
 	sess.innerState = peapStateFailed
 	failPkt := eap.BuildMSCHAPv2Failure(sess.innerReqID, mschapID, "E=691 R=0 M="+reason)
-	if err := sess.writeInner(failPkt); err == nil {
+	if err := sess.writeInner(failPkt[4:]); err == nil {
 		s.pumpPEAP(w, r, sess, nil)
 	} else {
 		s.failEAP(w, r, sess, reason)

@@ -710,14 +710,15 @@ func (s *peapSupplicant) authenticate(username, password string) *radius.Packet 
 		if p.Code != eap.CodeRequest || p.Type() != eap.TypePEAP {
 			s.t.Fatalf("ожидался EAP-Request/PEAP, получен code=%d type=%d", p.Code, p.Type())
 		}
-		if s.eapReqID != 0 && p.ID == s.eapReqID {
-			s.t.Fatalf("сервер повторил EAP Request ID %d (нарушение RFC 3748 §4.1)", p.ID)
-		}
-		s.eapReqID = p.ID
 		peapMsg, err := eap.ParsePEAP(p.Data)
 		if err != nil {
 			s.t.Fatalf("ParsePEAP challenge: %v", err)
 		}
+		s.t.Logf("supplicant recv: reqID=%d, lastReqID=%d, handshakeDone=%v, payloadLen=%d", p.ID, s.eapReqID, s.handshakeDone, len(peapMsg.Payload))
+		if s.eapReqID != 0 && p.ID == s.eapReqID {
+			s.t.Fatalf("сервер повторил EAP Request ID %d (нарушение RFC 3748 §4.1)", p.ID)
+		}
+		s.eapReqID = p.ID
 		if len(peapMsg.Payload) > 0 {
 			s.conn.deliver(peapMsg.Payload)
 		}
@@ -739,7 +740,16 @@ func (s *peapSupplicant) authenticate(username, password string) *radius.Packet 
 		if err != nil {
 			s.t.Fatalf("tlsConn.Read inner: %v", err)
 		}
-		innerReq, err := eap.Parse(buf[:n])
+		data := buf[:n]
+		if len(data) >= 1 && eap.Type(data[0]) == eap.TypeMSCHAPv2 {
+			synthesized := make([]byte, 4+len(data))
+			synthesized[0] = byte(eap.CodeRequest)
+			synthesized[1] = s.eapReqID
+			binary.BigEndian.PutUint16(synthesized[2:4], uint16(len(synthesized)))
+			copy(synthesized[4:], data)
+			data = synthesized
+		}
+		innerReq, err := eap.Parse(data)
 		if err != nil {
 			s.t.Fatalf("inner Parse: %v", err)
 		}
@@ -769,8 +779,7 @@ func (s *peapSupplicant) authenticate(username, password string) *radius.Packet 
 				copy(respData[30:54], ntResp[:])
 				copy(respData[55:], username)
 
-				innerResp := eap.Build(eap.CodeResponse, innerReq.ID, respData)
-				if _, err := s.tlsConn.Write(innerResp); err != nil {
+				if _, err := s.tlsConn.Write(respData); err != nil {
 					s.t.Fatalf("tlsConn.Write innerResp: %v", err)
 				}
 				out := s.conn.takeOutput()
@@ -779,7 +788,7 @@ func (s *peapSupplicant) authenticate(username, password string) *radius.Packet 
 				resp = s.request(pkt)
 
 			case eap.MSCHAPv2OpSuccess:
-				innerACK := eap.Build(eap.CodeResponse, innerReq.ID, []byte{byte(eap.TypeMSCHAPv2)})
+				innerACK := []byte{byte(eap.TypeMSCHAPv2)}
 				if _, err := s.tlsConn.Write(innerACK); err != nil {
 					s.t.Fatalf("tlsConn.Write innerACK: %v", err)
 				}
@@ -795,6 +804,7 @@ func (s *peapSupplicant) authenticate(username, password string) *radius.Packet 
 				s.t.Fatalf("tlsConn.Write tlvResp: %v", err)
 			}
 			out := s.conn.takeOutput()
+			s.t.Logf("supplicant sending TypeTLV: innerReqID=%d, outerReqID=%d, outLen=%d", innerReq.ID, s.eapReqID, len(out))
 			pkt := eap.BuildPEAP(eap.CodeResponse, s.eapReqID, 0, -1, out)
 			s.lastRespEAP = pkt
 			resp = s.request(pkt)

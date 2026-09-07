@@ -174,8 +174,9 @@ func (eapAddr) String() string  { return "eap-ttls" }
 type eapPhase int
 
 const (
-	eapPhaseHandshake eapPhase = iota // TLS handshake в процессе
-	eapPhaseInner                     // туннель поднят, ждём/обрабатываем AVP
+	eapPhaseHandshake     eapPhase = iota // TLS handshake в процессе
+	eapPhaseHandshakeDone                 // TLS handshake завершён сервером, ждём ACK клиента
+	eapPhaseInner                         // туннель поднят, ждём/обрабатываем phase-2
 )
 
 // ttlsFrag — фрагмент исходящего потока (очередь отправки).
@@ -378,7 +379,19 @@ func (sess *eapSession) waitAppData() ([]byte, error) {
 		case chunk := <-sess.appData:
 			out = append(out, chunk...)
 			continue
+		default:
+		}
+
+		select {
+		case chunk := <-sess.appData:
+			out = append(out, chunk...)
+			continue
 		case <-sess.conn.wantIn:
+			select {
+			case chunk := <-sess.appData:
+				out = append(out, chunk...)
+			default:
+			}
 			return out, nil
 		case err := <-sess.workerErr:
 			return out, err
