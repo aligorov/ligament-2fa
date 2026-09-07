@@ -248,8 +248,17 @@ func (ar authorizeReq) authorizeURL() string {
 	return "/oidc/authorize?" + q.Encode()
 }
 
+// firstRuneUpper возвращает первый символ строки в верхнем регистре (безопасно для UTF-8 / кириллицы).
+func firstRuneUpper(s string) string {
+	s = strings.TrimSpace(s)
+	for _, r := range s {
+		return strings.ToUpper(string(r))
+	}
+	return ""
+}
+
 // scopeDescriptions — человекочитаемые описания scope для страницы
-// согласия.
+// согласия (для обратной совместимости).
 func scopeDescriptions(scope string) []string {
 	out := []string{"подтверждение вашей личности (openid)"}
 	if HasScope(scope, "profile") {
@@ -259,6 +268,45 @@ func scopeDescriptions(scope string) []string {
 		out = append(out, "адрес электронной почты (email)")
 	}
 	return out
+}
+
+// scopeDetails возвращает структурированные описания scope с иконками и понятными текстами.
+func scopeDetails(scope string) []web.OIDCScopeInfo {
+	details := []web.OIDCScopeInfo{
+		{
+			Scope:       "openid",
+			Title:       "Подтверждение личности (OpenID)",
+			Description: "Уникальный идентификатор учётной записи (sub) для авторизации в приложении",
+			Icon:        "🪪",
+		},
+	}
+	if HasScope(scope, "profile") {
+		details = append(details, web.OIDCScopeInfo{
+			Scope:       "profile",
+			Title:       "Данные профиля (profile)",
+			Description: "Имя пользователя, отображаемое имя и системная роль в организации",
+			Icon:        "👤",
+		})
+	}
+	if HasScope(scope, "email") {
+		details = append(details, web.OIDCScopeInfo{
+			Scope:       "email",
+			Title:       "Адрес электронной почты (email)",
+			Description: "Основной почтовый ящик для авторизации и служебных уведомлений",
+			Icon:        "✉️",
+		})
+	}
+	for _, s := range strings.Fields(scope) {
+		if s != "openid" && s != "profile" && s != "email" {
+			details = append(details, web.OIDCScopeInfo{
+				Scope:       s,
+				Title:       s,
+				Description: "Дополнительное разрешение, запрошенное внешним приложением",
+				Icon:        "🔑",
+			})
+		}
+	}
+	return details
 }
 
 // validateAuthorize проверяет запрос при УЖЕ найденном валидном клиенте
@@ -340,12 +388,42 @@ func (mgr *Manager) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 // renderConsent — страница согласия «Приложение X запрашивает вход».
 func (mgr *Manager) renderConsent(w http.ResponseWriter, r *http.Request, ar authorizeReq, client *store.OIDCClient, user *store.User, csrf string) {
+	base := web.BaseData{Title: "Вход в приложение", Username: user.Username, CSRF: csrf}
+	if mgr.ads != nil {
+		base.Ads = mgr.ads(r)
+	}
+	if mgr.brand != nil {
+		base.Brand = mgr.brand(r)
+	}
+
+	redirectHost := ""
+	if u, err := url.Parse(ar.RedirectURI); err == nil && u.Host != "" {
+		redirectHost = u.Host
+	}
+
+	clientName := client.Name
+	if strings.TrimSpace(clientName) == "" {
+		clientName = client.ClientID
+	}
+
+	userInitial := firstRuneUpper(user.DisplayName)
+	if userInitial == "" {
+		userInitial = firstRuneUpper(user.Username)
+	}
+
 	mgr.renderPage(w, http.StatusOK, "oidc_consent", web.OIDCConsentData{
-		BaseData:   web.BaseData{Title: "Вход в приложение", Username: user.Username, CSRF: csrf},
-		ClientName: client.Name,
-		ClientID:   client.ClientID,
-		Scopes:     scopeDescriptions(ar.Scope),
-		Fields:     ar.hiddenFields(),
+		BaseData:        base,
+		ClientName:      clientName,
+		ClientID:        client.ClientID,
+		ClientInitial:   firstRuneUpper(clientName),
+		RedirectURI:     ar.RedirectURI,
+		RedirectHost:    redirectHost,
+		UserDisplayName: user.DisplayName,
+		UserEmail:       user.Email,
+		UserInitial:     userInitial,
+		Scopes:          scopeDescriptions(ar.Scope),
+		ScopeDetails:    scopeDetails(ar.Scope),
+		Fields:          ar.hiddenFields(),
 	})
 }
 

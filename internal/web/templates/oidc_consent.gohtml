@@ -1,25 +1,111 @@
 {{define "layout"}}{{template "layout_center" .}}{{end}}
 {{define "content"}}
-<div class="login-card">
-  <div class="login-brand"><span class="brand-mark">2FA</span>twofa</div>
-  <h1>Вход в приложение</h1>
-  <p class="page-sub">Приложение <strong>{{.ClientName}}</strong>
-  (client_id <span class="mono">{{.ClientID}}</span>) запрашивает вход под
-  вашей учётной записью.</p>
-  <p>Приложение получит:</p>
-  <ul>
-    {{range .Scopes}}<li>{{.}}</li>{{end}}
-  </ul>
-  <form action="/oidc/authorize/confirm" method="post" class="form">
+<div class="consent-card">
+  <!-- Верхняя панель: бренд и статус защиты 2FA -->
+  <div class="consent-top">
+    <div class="login-brand">
+      {{if .Brand.Logo}}<img class="brand-logo" src="{{.Brand.Logo}}" alt="logo">
+      {{else if .Brand.Name}}<span class="brand-mark">{{if .Brand.Mark}}{{.Brand.Mark}}{{else}}{{slice .Brand.Name 0 1}}{{end}}</span>{{.Brand.Name}}
+      {{else}}<span class="brand-mark">L</span>Ligament{{end}}
+    </div>
+    <div class="consent-badge" title="Аутентификация защищена двухфакторной проверкой">
+      <span class="consent-badge-dot"></span>
+      <span>2FA Защита</span>
+    </div>
+  </div>
+
+  <!-- Карточка приложения, запрашивающего вход -->
+  <div class="consent-app-hero">
+    <div class="consent-app-avatar">
+      {{if .ClientInitial}}{{.ClientInitial}}{{else}}📱{{end}}
+    </div>
+    <div class="consent-app-info">
+      <div class="consent-app-name">{{.ClientName}}</div>
+      <div class="consent-app-meta">
+        <span class="mono" title="Идентификатор клиента">{{.ClientID}}</span>
+        {{if .RedirectHost}}
+          <span class="consent-meta-sep">•</span>
+          <span class="consent-app-host" title="{{.RedirectURI}}">🌐 {{.RedirectHost}}</span>
+        {{end}}
+      </div>
+    </div>
+  </div>
+
+  <!-- Заголовок страницы -->
+  <div class="consent-intro">
+    <h1>Вход в приложение</h1>
+    <p class="page-sub">Приложение <strong>{{.ClientName}}</strong> (client_id <span class="mono">{{.ClientID}}</span>) запрашивает вход под вашей учётной записью.</p>
+  </div>
+
+  <!-- Подтверждение пользователя: кто авторизуется -->
+  <div class="consent-account-bar">
+    <div class="consent-account-user">
+      <div class="consent-account-avatar">
+        {{if .UserInitial}}{{.UserInitial}}{{else}}👤{{end}}
+      </div>
+      <div class="consent-account-details">
+        <div class="consent-account-label">Вы входите как</div>
+        <div class="consent-account-name">
+          {{if .UserDisplayName}}{{.UserDisplayName}} <span class="muted">({{.Username}})</span>{{else}}{{.Username}}{{end}}
+        </div>
+        {{if .UserEmail}}<div class="consent-account-email">{{.UserEmail}}</div>{{end}}
+      </div>
+    </div>
+    <span class="badge ok">Сессия активна</span>
+  </div>
+
+  <!-- Список запрашиваемых разрешений -->
+  <div class="consent-permissions">
+    <div class="consent-permissions-title">
+      <span>Приложение получит доступ</span>
+      <span class="badge neutral">{{if .ScopeDetails}}{{len .ScopeDetails}}{{else}}{{len .Scopes}}{{end}}</span>
+    </div>
+    <div class="consent-scopes-list">
+      {{if .ScopeDetails}}
+        {{range .ScopeDetails}}
+        <div class="consent-scope-item">
+          <div class="consent-scope-icon">{{.Icon}}</div>
+          <div class="consent-scope-body">
+            <div class="consent-scope-title">{{.Title}}</div>
+            <div class="consent-scope-desc">{{.Description}}</div>
+          </div>
+        </div>
+        {{end}}
+      {{else}}
+        {{range .Scopes}}
+        <div class="consent-scope-item">
+          <div class="consent-scope-icon">🔹</div>
+          <div class="consent-scope-body">
+            <div class="consent-scope-title">{{.}}</div>
+          </div>
+        </div>
+        {{end}}
+      {{end}}
+    </div>
+  </div>
+
+  <!-- Гарантия конфиденциальности и безопасности -->
+  <div class="consent-security-notice">
+    <span class="consent-security-notice-icon">🛡️</span>
+    <div class="consent-security-notice-text">
+      <strong>Вход проходит с вашей двухфакторной защитой Ligament.</strong>
+      Приложение не увидит ваш пароль и коды.
+    </div>
+  </div>
+
+  <!-- Форма подтверждения -->
+  <form action="/oidc/authorize/confirm" method="post" class="consent-form">
     {{csrf .CSRF}}
     {{range .Fields}}<input type="hidden" name="{{.Key}}" value="{{.Val}}">
     {{end}}
-    <div class="form-actions">
+    <div class="consent-actions">
       <button type="submit" class="btn primary">Разрешить вход</button>
-      <a class="btn ghost" href="/me">Отклонить</a>
+      <a class="btn secondary" href="/me">Отклонить</a>
     </div>
   </form>
-  <p class="help">Вход проходит с вашей двухфакторной защитой Ligament.
-  Приложение не увидит ваш пароль и коды.</p>
+
+  <p class="consent-footer-help">
+    Вы всегда можете завершить сессию или сменить пароль в личном кабинете.
+  </p>
 </div>
 {{end}}

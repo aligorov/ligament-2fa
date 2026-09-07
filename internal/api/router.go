@@ -209,6 +209,11 @@ func BuildRouter(d Deps) *Router {
 	pages.SetAds(ads)
 	pages.SetBrand(brandFor(d.Lic, d.M))
 
+	if d.Oidc != nil {
+		d.Oidc.SetAds(ads)
+		d.Oidc.SetBrand(brandFor(d.Lic, d.M))
+	}
+
 	pub.Register(r)
 	sess.Register(r)
 	me.Register(r)

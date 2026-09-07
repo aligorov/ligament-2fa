@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net/http"
 
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
@@ -63,9 +64,18 @@ type Manager struct {
 	m    *settings.M
 	rend *web.Renderer
 
+	ads   func(*http.Request) web.AdsData
+	brand func(*http.Request) web.BrandData
+
 	key *rsa.PrivateKey
 	kid string
 }
+
+// SetAds подключает решатель показа рекламы РСЯ / direct.
+func (mgr *Manager) SetAds(f func(*http.Request) web.AdsData) { mgr.ads = f }
+
+// SetBrand подключает решатель белого лейбла.
+func (mgr *Manager) SetBrand(f func(*http.Request) web.BrandData) { mgr.brand = f }
 
 // NewManager собирает провайдер OIDC: читает ключ подписи из настройки
 // oidc.keys, при её отсутствии (или битом значении) генерирует новую пару

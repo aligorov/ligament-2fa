@@ -216,15 +216,30 @@ type FormField struct {
 	Val string
 }
 
+// OIDCScopeInfo — структурированное описание одного scope OIDC для страницы согласия.
+type OIDCScopeInfo struct {
+	Scope       string
+	Title       string
+	Description string
+	Icon        string
+}
+
 // OIDCConsentData — страница согласия /oidc/authorize: «Приложение X
 // запрашивает вход». Форма POST /oidc/authorize/confirm несёт CSRF и все
 // параметры authorize скрытыми полями.
 type OIDCConsentData struct {
 	BaseData
-	ClientName string
-	ClientID   string
-	Scopes     []string    // человекочитаемые описания запрошенных scope
-	Fields     []FormField // параметры authorize для скрытых полей формы
+	ClientName      string
+	ClientID        string
+	ClientInitial   string
+	RedirectURI     string
+	RedirectHost    string
+	UserDisplayName string
+	UserEmail       string
+	UserInitial     string
+	Scopes          []string        // человекочитаемые описания запрошенных scope
+	ScopeDetails    []OIDCScopeInfo // расширенные описания с иконками
+	Fields          []FormField     // параметры authorize для скрытых полей формы
 }
 
 // AdminOIDCClientsData — /admin/oidc: клиентские приложения OIDC и форма

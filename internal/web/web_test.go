@@ -304,6 +304,38 @@ func TestRenderPages(t *testing.T) {
 			},
 		},
 		{
+			name: "oidc_consent_rich",
+			tmpl: "oidc_consent",
+			data: OIDCConsentData{
+				BaseData:        BaseData{Title: "Вход в приложение", Username: "ivanov", CSRF: testCSRF},
+				ClientName:      "1С:Предприятие",
+				ClientID:        "1c_enterprise",
+				ClientInitial:   "1",
+				RedirectURI:     "https://1c.corp.example.com/oauth/callback",
+				RedirectHost:    "1c.corp.example.com",
+				UserDisplayName: "Иван Иванов",
+				UserEmail:       "ivanov@corp.example.com",
+				UserInitial:     "И",
+				ScopeDetails: []OIDCScopeInfo{
+					{Scope: "openid", Title: "Подтверждение личности (OpenID)", Description: "Уникальный идентификатор учётной записи (sub)", Icon: "🪪"},
+					{Scope: "profile", Title: "Данные профиля (profile)", Description: "Имя пользователя и системная роль", Icon: "👤"},
+				},
+				Fields: []FormField{
+					{"client_id", "1c_enterprise"},
+					{"redirect_uri", "https://1c.corp.example.com/oauth/callback"},
+					{"response_type", "code"},
+					{"scope", "openid profile"},
+					{"state", "state-999"},
+				},
+			},
+			want: []string{
+				"Вход в приложение", "1С:Предприятие", "1c_enterprise",
+				"1c.corp.example.com", "Иван Иванов", "ivanov@corp.example.com",
+				"Подтверждение личности (OpenID)", "Данные профиля (profile)",
+				"2FA Защита", "Сессия активна", "Разрешить вход",
+			},
+		},
+		{
 			name: "admin_oidc",
 			tmpl: "admin_oidc",
 			data: AdminOIDCClientsData{
