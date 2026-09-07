@@ -28,6 +28,9 @@ const (
 	TypeNotification Type = 2  // Notification (в обмене не участвует)
 	TypeNak          Type = 3  // Nak: клиент не поддерживает предложенный метод
 	TypeTTLS         Type = 21 // EAP-TTLS (RFC 5281)
+	TypePEAP         Type = 25 // PEAPv0 (Protected EAP, [MS-PEAP])
+	TypeMSCHAPv2     Type = 26 // EAP-MSCHAPv2 (RFC 2759)
+	TypeTLV          Type = 33 // EAP-TLV / Result TLV ([MS-PEAP])
 )
 
 // headerLen — размер заголовка EAP: Code(1) + Identifier(1) + Length(2).

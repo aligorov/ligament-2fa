@@ -17,3 +17,5 @@ coverage.*
 
 # superpowers SDD-скретч (брифы/отчёты/ledger/worktrees)
 .superpowers/
+graphify-out/
+

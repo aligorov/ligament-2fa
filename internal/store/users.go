@@ -44,6 +44,7 @@ type User struct {
 	PasswordHash   string
 	Source         string // SourceLocal | SourceLDAP (миграция 0002)
 	DisplayName    string // отображаемое имя (синк из LDAP-атрибута)
+	PasswordEnc    []byte // AES-256-GCM шифрованный пароль под master_key с AAD username (миграция 0005)
 }
 
 // scanner абстрагирует pgx.Row и pgx.Rows для общего кода сканирования.
@@ -53,7 +54,7 @@ type scanner interface{ Scan(dest ...any) error }
 // updated_at — они не входят в структуру User).
 const userCols = `id, username, password_hash, role, enabled, email, phone,
 	telegram_chat_id, prefer_channels, radius_push, radius_reply, webauthn_id,
-	source, display_name`
+	source, display_name, password_enc`
 
 // defaultChannels возвращает свежую копию каналов по умолчанию.
 func defaultChannels() []channel.Channel {
@@ -125,7 +126,7 @@ func scanUser(row scanner) (*User, error) {
 	if err := row.Scan(
 		&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled,
 		&u.Email, &u.Phone, &u.TelegramChatID, &preferRaw, &u.RadiusPush,
-		&replyRaw, &u.WebAuthnID, &u.Source, &u.DisplayName,
+		&replyRaw, &u.WebAuthnID, &u.Source, &u.DisplayName, &u.PasswordEnc,
 	); err != nil {
 		return nil, err
 	}
@@ -192,11 +193,11 @@ func (s *Store) UserCreate(ctx context.Context, u *User) error {
 	_, err = s.Pool().Exec(ctx, `INSERT INTO users
 		(id, username, password_hash, role, enabled, email, phone,
 		 telegram_chat_id, prefer_channels, radius_push, radius_reply, webauthn_id,
-		 source, display_name)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		 source, display_name, password_enc)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		u.ID, u.Username, u.PasswordHash, u.Role, u.Enabled, u.Email, u.Phone,
 		u.TelegramChatID, prefer, u.RadiusPush, reply, u.WebAuthnID,
-		u.Source, u.DisplayName)
+		u.Source, u.DisplayName, u.PasswordEnc)
 	if err != nil {
 		return fmt.Errorf("store: создать пользователя %q: %w", u.Username, err)
 	}
@@ -221,11 +222,11 @@ func (s *Store) UserUpdate(ctx context.Context, u *User) error {
 		username = $2, password_hash = $3, role = $4, enabled = $5,
 		email = $6, phone = $7, telegram_chat_id = $8, prefer_channels = $9,
 		radius_push = $10, radius_reply = $11, webauthn_id = $12,
-		source = $13, display_name = $14, updated_at = now()
+		source = $13, display_name = $14, password_enc = $15, updated_at = now()
 		WHERE id = $1`,
 		u.ID, u.Username, u.PasswordHash, u.Role, u.Enabled, u.Email, u.Phone,
 		u.TelegramChatID, prefer, u.RadiusPush, reply, u.WebAuthnID,
-		u.Source, u.DisplayName)
+		u.Source, u.DisplayName, u.PasswordEnc)
 	if err != nil {
 		return fmt.Errorf("store: обновить пользователя %s: %w", u.ID, err)
 	}

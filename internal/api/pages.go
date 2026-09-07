@@ -1132,9 +1132,16 @@ func (p *PagesAPI) handleAdminUserCreate(w http.ResponseWriter, r *http.Request)
 	}
 	u.RadiusReply = reply
 	if pwd == "" {
-		u.PasswordHash = secrets.HashPassword(secrets.RandomToken(32))
+		rnd := secrets.RandomToken(32)
+		u.PasswordHash = secrets.HashPassword(rnd)
+		if p.box != nil {
+			u.PasswordEnc = p.box.EncryptAAD(u.Username, []byte(rnd))
+		}
 	} else {
 		u.PasswordHash = secrets.HashPassword(pwd)
+		if p.box != nil {
+			u.PasswordEnc = p.box.EncryptAAD(u.Username, []byte(pwd))
+		}
 	}
 	if err := p.st.UserCreate(r.Context(), u); err != nil {
 		if isUniqueViolation(err) {
@@ -1208,6 +1215,7 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 	switch r.PostFormValue("do") {
 	case "save":
 		wasEnabled := u.Enabled // до перезаписи формой (userFormFields)
+		oldUsername := u.Username
 		pwd := p.userFormFields(r, u)
 		if u.Username == "" {
 			redirectFlash(w, r, back, "Имя пользователя не может быть пустым.", false)
@@ -1228,6 +1236,13 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 		}
 		if pwd != "" {
 			u.PasswordHash = secrets.HashPassword(pwd)
+			if p.box != nil {
+				u.PasswordEnc = p.box.EncryptAAD(u.Username, []byte(pwd))
+			}
+		} else if u.Username != oldUsername && len(u.PasswordEnc) > 0 && p.box != nil {
+			if raw, err := p.box.DecryptAAD(oldUsername, u.PasswordEnc); err == nil {
+				u.PasswordEnc = p.box.EncryptAAD(u.Username, raw)
+			}
 		}
 		reply, ok := radiusReplyFromForm(r.PostFormValue("radius_reply"))
 		if !ok {

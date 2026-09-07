@@ -22,11 +22,14 @@ import (
 	"time"
 )
 
-// Параметры self-signed сертификата EAP-TTLS.
+// Параметры self-signed сертификата EAP-TTLS / PEAP.
+// Срок действия ограничен 730 днями (2 года): Apple (iOS 13+) блокирует
+// TLS-сертификаты с валидностью > 825 дней.
 const (
 	eapCertKeyBits  = 2048
 	eapCertCN       = "ligament"
-	eapCertValidity = 10 * 365 * 24 * time.Hour
+	eapCertValidity = 730 * 24 * time.Hour
+	maxAppleCertDays = 825
 )
 
 // eapCertPair — значение настройки radius.eap_cert: сертификат и приватный
@@ -36,9 +39,10 @@ type eapCertPair struct {
 	KeyPEM  string `json:"key_pem"`
 }
 
-// EnsureEAPCert гарантирует загруженный TLS-сертификат для TTLS: читает
+// EnsureEAPCert гарантирует загруженный TLS-сертификат для TTLS/PEAP: читает
 // radius.eap_cert из текущего снимка настроек, при отсутствии/битом
-// значении генерирует новую пару и сохраняет через settings.Put.
+// значении или превышении лимита 825 дней генерирует новую пару и
+// сохраняет через settings.Put.
 // Идемпотентен и потокобезопасен; ошибка не катастрофа — PAP-RADIUS
 // продолжает работать, EAP-запросы получают Reject.
 func (s *Server) EnsureEAPCert(ctx context.Context) error {
@@ -54,7 +58,16 @@ func (s *Server) EnsureEAPCert(ctx context.Context) error {
 		if err != nil {
 			slog.Error("radius: значение radius.eap_cert не разбирается — генерирую новый сертификат", "error", err)
 		} else {
-			pair = p
+			// Проверка на соответствие лимитам Apple (<= 825 дней)
+			if block, _ := pem.Decode([]byte(p.CertPEM)); block != nil {
+				if parsed, perr := x509.ParseCertificate(block.Bytes); perr == nil {
+					if parsed.NotAfter.Sub(parsed.NotBefore) > maxAppleCertDays*24*time.Hour || time.Now().After(parsed.NotAfter) {
+						slog.Warn("radius: существующий сертификат radius.eap_cert устарел или превышает 825 дней — перевыпуск")
+					} else {
+						pair = p
+					}
+				}
+			}
 		}
 	}
 	if pair == nil {

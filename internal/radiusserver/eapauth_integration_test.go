@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"net"
 	"testing"
 	"time"
@@ -212,6 +213,12 @@ func (s *ttlsSupplicant) runExchange(resp *radius.Packet, username, password str
 		p, err := eap.Parse(raw)
 		if err != nil {
 			s.t.Fatalf("Parse challenge: %v", err)
+		}
+		if p.Code == eap.CodeRequest && p.Type() == eap.TypePEAP {
+			// Клиент TTLS не умеет PEAP, отправляет Nak с предложением TypeTTLS:
+			s.lastRespEAP = eap.Build(eap.CodeResponse, p.ID, []byte{byte(eap.TypeNak), byte(eap.TypeTTLS)})
+			resp = s.request(s.lastRespEAP)
+			continue
 		}
 		if p.Code != eap.CodeRequest || p.Type() != eap.TypeTTLS {
 			s.t.Fatalf("ожидался EAP-Request/TTLS, получен code=%d type=%d", p.Code, p.Type())
@@ -476,5 +483,315 @@ func waitAudit(t *testing.T, ctx context.Context, st *store.Store, username, eve
 			t.Fatalf("%s (result=%s) не появился в audit_log за 3с", event, result)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// TestEAPPEAPFullExchange: полный нативный вход PEAPv0 + MS-CHAPv2
+// (стандартный сценарий iOS/macOS/Windows без профилей):
+// Identity -> PEAP Start -> TLS handshake -> MS-CHAPv2 Challenge -> Response
+// -> Success -> Result TLV -> RADIUS Access-Accept с EAP-Success и MS-MPPE ключами.
+func TestEAPPEAPFullExchange(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	mustPut(t, ctx, set, "radius.reply_attributes",
+		`{"Mikrotik-Group":"peap-wifi","Session-Timeout":"7200"}`)
+
+	core := newCore(st, set, box, nil, nil)
+	srv := New(core, st, set)
+	srvCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	authAddr, _ := startServers(t, srvCtx, srv)
+	secret := []byte(set.Get().RadiusSecret)
+
+	if err := srv.EnsureEAPCert(ctx); err != nil {
+		t.Fatalf("EnsureEAPCert: %v", err)
+	}
+
+	user := mkUser(t, ctx, st, "peapuser", func(u *store.User) {
+		u.PasswordEnc = box.EncryptAAD(u.Username, []byte(testPassword))
+	})
+
+	supp := newPEAPSupplicant(t, authAddr, secret)
+	resp := supp.authenticate(user.Username, testPassword)
+	if resp.Code != radius.CodeAccessAccept {
+		t.Fatalf("код ответа %v, хочу Access-Accept", resp.Code)
+	}
+
+	raw, err := rfc2869.EAPMessage_Lookup(resp)
+	if err != nil {
+		t.Fatalf("Accept без EAP-Message: %v", err)
+	}
+	p, err := eap.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p.Code != eap.CodeSuccess {
+		t.Fatalf("EAP-код %d, хочу Success", p.Code)
+	}
+
+	// MS-MPPE-ключи: 32 байта Recv + 32 байта Send
+	recvKey := decryptMSMPPE(t, resp, supp.lastReqPkt, 17)
+	sendKey := decryptMSMPPE(t, resp, supp.lastReqPkt, 16)
+	if len(recvKey) != 32 || len(sendKey) != 32 {
+		t.Fatalf("MS-MPPE: Recv=%d Send=%d байт, хочу 32+32", len(recvKey), len(sendKey))
+	}
+	if bytes.Equal(recvKey, sendKey) {
+		t.Fatal("Recv и Send ключи совпадают")
+	}
+
+	if got := mt.MikrotikGroup_GetString(resp); got != "peap-wifi" {
+		t.Fatalf("Mikrotik-Group = %q, хочу peap-wifi", got)
+	}
+
+	if !hasMessageAuthenticator(resp) || !verifyResponseMA(supp.lastReqPkt, resp) {
+		t.Fatal("Message-Authenticator Accept-а отсутствует или неверен")
+	}
+
+	waitAudit(t, ctx, st, user.Username, "radius_eap", "ok")
+}
+
+// peapSupplicant — клиент PEAPv0 + MS-CHAPv2.
+type peapSupplicant struct {
+	t       *testing.T
+	conn    *eapConn
+	tlsConn *tls.Conn
+	hsCh    chan error
+
+	pc     net.PacketConn
+	addr   net.Addr
+	secret []byte
+
+	state       []byte
+	ident       int
+	lastReqPkt  *radius.Packet
+	lastRawReq  []byte
+	lastRespEAP []byte
+	eapReqID    byte
+
+	handshakeDone bool
+}
+
+func newPEAPSupplicant(t *testing.T, addr string, secret []byte) *peapSupplicant {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	t.Cleanup(func() { pc.Close() })
+	udp, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", addr, err)
+	}
+	conn := newEAPConn()
+	cfg := &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS10,
+		MaxVersion:         tls.VersionTLS12,
+	}
+	tlsConn := tls.Client(conn, cfg)
+	hsCh := make(chan error, 1)
+	go func() { hsCh <- tlsConn.Handshake() }()
+
+	return &peapSupplicant{
+		t:       t,
+		conn:    conn,
+		tlsConn: tlsConn,
+		hsCh:    hsCh,
+		pc:      pc,
+		addr:    udp,
+		secret:  secret,
+	}
+}
+
+func (s *peapSupplicant) exchange(pkt *radius.Packet) *radius.Packet {
+	s.t.Helper()
+	pkt.Identifier = byte(s.ident)
+	s.ident++
+	rfc2865.UserName_SetString(pkt, "anonymous")
+	signRequestMA(pkt)
+	raw, err := pkt.Encode()
+	if err != nil {
+		s.t.Fatalf("Encode: %v", err)
+	}
+	s.lastReqPkt = pkt
+	s.lastRawReq = raw
+	if _, err := s.pc.WriteTo(raw, s.addr); err != nil {
+		s.t.Fatalf("WriteTo: %v", err)
+	}
+	return s.readResp()
+}
+
+func (s *peapSupplicant) readResp() *radius.Packet {
+	s.t.Helper()
+	buf := make([]byte, 4096)
+	if err := s.pc.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		s.t.Fatalf("SetReadDeadline: %v", err)
+	}
+	n, _, err := s.pc.ReadFrom(buf)
+	if err != nil {
+		s.t.Fatalf("ReadFrom: %v", err)
+	}
+	resp, err := radius.Parse(buf[:n], s.secret)
+	if err != nil {
+		s.t.Fatalf("Parse ответа: %v", err)
+	}
+	if st := rfc2865.State_Get(resp); len(st) > 0 {
+		s.state = st
+	}
+	return resp
+}
+
+func (s *peapSupplicant) request(eapPkt []byte) *radius.Packet {
+	pkt := radius.New(radius.CodeAccessRequest, s.secret)
+	if len(s.state) > 0 {
+		rfc2865.State_Add(pkt, s.state)
+	}
+	rfc2869.EAPMessage_Set(pkt, eapPkt)
+	return s.exchange(pkt)
+}
+
+func (s *peapSupplicant) waitStep() (out []byte, err error) {
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		if b := s.conn.takeOutput(); len(b) > 0 {
+			out = append(out, b...)
+			continue
+		}
+		select {
+		case <-s.conn.outReady:
+			continue
+		case <-s.conn.wantIn:
+			if b := s.conn.takeOutput(); len(b) > 0 {
+				out = append(out, b...)
+				continue
+			}
+			time.Sleep(20 * time.Millisecond)
+			if b := s.conn.takeOutput(); len(b) > 0 {
+				out = append(out, b...)
+				continue
+			}
+			return out, nil
+		case hsErr := <-s.hsCh:
+			if hsErr != nil {
+				return nil, hsErr
+			}
+			s.handshakeDone = true
+			if b := s.conn.takeOutput(); len(b) > 0 {
+				out = append(out, b...)
+			}
+			return out, nil
+		case <-timer.C:
+			return out, nil
+		}
+	}
+}
+
+func (s *peapSupplicant) authenticate(username, password string) *radius.Packet {
+	resp := s.request(eap.BuildIdentity(eap.CodeResponse, 0, "anonymous"))
+	for {
+		if resp.Code == radius.CodeAccessAccept || resp.Code == radius.CodeAccessReject {
+			return resp
+		}
+		if resp.Code != radius.CodeAccessChallenge {
+			s.t.Fatalf("неожиданный код ответа %v", resp.Code)
+		}
+		raw, err := rfc2869.EAPMessage_Lookup(resp)
+		if err != nil {
+			s.t.Fatalf("Challenge без EAP-Message: %v", err)
+		}
+		p, err := eap.Parse(raw)
+		if err != nil {
+			s.t.Fatalf("Parse challenge: %v", err)
+		}
+		if p.Code != eap.CodeRequest || p.Type() != eap.TypePEAP {
+			s.t.Fatalf("ожидался EAP-Request/PEAP, получен code=%d type=%d", p.Code, p.Type())
+		}
+		s.eapReqID = p.ID
+		peapMsg, err := eap.ParsePEAP(p.Data)
+		if err != nil {
+			s.t.Fatalf("ParsePEAP challenge: %v", err)
+		}
+		if len(peapMsg.Payload) > 0 {
+			s.conn.deliver(peapMsg.Payload)
+		}
+
+		if !s.handshakeDone {
+			out, err := s.waitStep()
+			if err != nil {
+				s.t.Fatalf("TLS-клиент: %v", err)
+			}
+			pkt := eap.BuildPEAP(eap.CodeResponse, s.eapReqID, 0, -1, out)
+			s.lastRespEAP = pkt
+			resp = s.request(pkt)
+			continue
+		}
+
+		// Handshake завершён: читаем внутренний EAP-пакет от сервера
+		buf := make([]byte, 4096)
+		n, err := s.tlsConn.Read(buf)
+		if err != nil {
+			s.t.Fatalf("tlsConn.Read inner: %v", err)
+		}
+		innerReq, err := eap.Parse(buf[:n])
+		if err != nil {
+			s.t.Fatalf("inner Parse: %v", err)
+		}
+
+		switch innerReq.Type() {
+		case eap.TypeMSCHAPv2:
+			op := innerReq.Data[1]
+			switch op {
+			case eap.MSCHAPv2OpChallenge:
+				mschapID := innerReq.Data[2]
+				var authChal [16]byte
+				copy(authChal[:], innerReq.Data[6:22])
+
+				var peerChal [16]byte
+				copy(peerChal[:], []byte("1234567890abcdef"))
+				ntHash := eap.NTHash(password)
+				cHash := eap.ChallengeHash(peerChal[:], authChal[:], username)
+				ntResp := eap.ChallengeResponse(cHash, ntHash)
+
+				respData := make([]byte, 1+5+49+len(username))
+				respData[0] = byte(eap.TypeMSCHAPv2)
+				respData[1] = eap.MSCHAPv2OpResponse
+				respData[2] = mschapID
+				binary.BigEndian.PutUint16(respData[3:5], uint16(5+49+len(username)))
+				respData[5] = 49
+				copy(respData[6:22], peerChal[:])
+				copy(respData[30:54], ntResp[:])
+				copy(respData[55:], username)
+
+				innerResp := eap.Build(eap.CodeResponse, innerReq.ID, respData)
+				if _, err := s.tlsConn.Write(innerResp); err != nil {
+					s.t.Fatalf("tlsConn.Write innerResp: %v", err)
+				}
+				out := s.conn.takeOutput()
+				pkt := eap.BuildPEAP(eap.CodeResponse, s.eapReqID, 0, -1, out)
+				s.lastRespEAP = pkt
+				resp = s.request(pkt)
+
+			case eap.MSCHAPv2OpSuccess:
+				innerACK := eap.Build(eap.CodeResponse, innerReq.ID, []byte{byte(eap.TypeMSCHAPv2)})
+				if _, err := s.tlsConn.Write(innerACK); err != nil {
+					s.t.Fatalf("tlsConn.Write innerACK: %v", err)
+				}
+				out := s.conn.takeOutput()
+				pkt := eap.BuildPEAP(eap.CodeResponse, s.eapReqID, 0, -1, out)
+				s.lastRespEAP = pkt
+				resp = s.request(pkt)
+			}
+
+		case eap.TypeTLV:
+			tlvResp := eap.BuildResultTLV(eap.CodeResponse, innerReq.ID, true)
+			if _, err := s.tlsConn.Write(tlvResp); err != nil {
+				s.t.Fatalf("tlsConn.Write tlvResp: %v", err)
+			}
+			out := s.conn.takeOutput()
+			pkt := eap.BuildPEAP(eap.CodeResponse, s.eapReqID, 0, -1, out)
+			s.lastRespEAP = pkt
+			resp = s.request(pkt)
+		}
 	}
 }

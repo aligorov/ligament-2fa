@@ -134,7 +134,7 @@ func main() {
 		slog.Error("main: мастер-ключ", "error", err)
 		os.Exit(1)
 	}
-	if err := bootstrapAdmin(ctx, st); err != nil {
+	if err := bootstrapAdmin(ctx, st, box); err != nil {
 		slog.Error("main: бутстрап администратора", "error", err)
 		os.Exit(1)
 	}
@@ -390,7 +390,7 @@ func openBackupOutput(out string) (io.Writer, func(), error) {
 // bootstrapAdmin создаёт первого администратора на пустой базе: пароль
 // RandomToken(12) печатается в лог ОДИН раз (повторно не восстанавливается —
 // только сброс через БД или другого админа).
-func bootstrapAdmin(ctx context.Context, st *store.Store) error {
+func bootstrapAdmin(ctx context.Context, st *store.Store, box *secrets.Box) error {
 	n, err := st.UserCount(ctx)
 	if err != nil {
 		return fmt.Errorf("подсчёт пользователей: %w", err)
@@ -404,6 +404,9 @@ func bootstrapAdmin(ctx context.Context, st *store.Store) error {
 		Role:         "admin",
 		Enabled:      true,
 		PasswordHash: secrets.HashPassword(pwd),
+	}
+	if box != nil {
+		u.PasswordEnc = box.EncryptAAD("admin", []byte(pwd))
 	}
 	if err := st.UserCreate(ctx, u); err != nil {
 		return fmt.Errorf("создание администратора: %w", err)

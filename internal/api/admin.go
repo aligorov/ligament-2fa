@@ -71,6 +71,15 @@ func NewAdminAPI(st *store.Store, m *settings.M, lic *license.Manager) *AdminAPI
 	return a
 }
 
+// box возвращает secrets.Box из настроек master_key (nil если настройки недоступны).
+func (a *AdminAPI) box() *secrets.Box {
+	if a.m != nil && a.m.Get() != nil && a.m.Get().MasterKeyB64 != "" {
+		b, _ := secrets.NewBox(a.m.Get().MasterKeyB64)
+		return b
+	}
+	return nil
+}
+
 // Register монтирует админ маршруты в chi-роутер (все под RequireAdminToken).
 func (a *AdminAPI) Register(r chi.Router) {
 	r.Route("/api/v1/admin", func(r chi.Router) {
@@ -258,6 +267,9 @@ func (a *AdminAPI) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 		Phone:        req.Phone,
 		PasswordHash: secrets.HashPassword(req.Password),
 	}
+	if b := a.box(); b != nil {
+		u.PasswordEnc = b.EncryptAAD(u.Username, []byte(req.Password))
+	}
 	if u.Role == "" {
 		u.Role = "user"
 	}
@@ -329,6 +341,7 @@ func (a *AdminAPI) handleUserPatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	oldUsername := u.Username
 	if req.Username != nil {
 		if *req.Username == "" {
 			writeError(w, http.StatusBadRequest, "bad_request")
@@ -342,6 +355,15 @@ func (a *AdminAPI) handleUserPatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u.PasswordHash = secrets.HashPassword(*req.Password)
+		if b := a.box(); b != nil {
+			u.PasswordEnc = b.EncryptAAD(u.Username, []byte(*req.Password))
+		}
+	} else if req.Username != nil && *req.Username != oldUsername && len(u.PasswordEnc) > 0 {
+		if b := a.box(); b != nil {
+			if raw, err := b.DecryptAAD(oldUsername, u.PasswordEnc); err == nil {
+				u.PasswordEnc = b.EncryptAAD(u.Username, raw)
+			}
+		}
 	}
 	if req.Email != nil {
 		u.Email = *req.Email

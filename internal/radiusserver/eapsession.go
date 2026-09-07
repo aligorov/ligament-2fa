@@ -39,11 +39,28 @@ const (
 	// eapKeyLabel/eapKeyBlockLen — keying material TTLS (RFC 5281 §10):
 	// PRF(master_secret, "ttls keying material", client_random||
 	// server_random) длиной 64 байта: первые 32 — MS-MPPE-Recv-Key,
-	// вторые 32 — MS-MPPE-Send-Key. Реализуется tls.Conn.
-	// ExportKeyingMaterial (context=nil — seed из random-ов соединения,
-	// как у hostapd/FreeRADIUS).
+	// вторые 32 — MS-MPPE-Send-Key.
 	eapKeyLabel    = "ttls keying material"
+	peapKeyLabel   = "client EAP encryption"
 	eapKeyBlockLen = 64
+)
+
+// eapProtocol — тип внешнего протокола сессии.
+type eapProtocol int
+
+const (
+	eapProtoPEAP eapProtocol = iota // PEAPv0 (дефолт для нативного входа iOS/Windows/Android)
+	eapProtoTTLS                    // EAP-TTLS (для клиентов, запросивших TTLS через Nak)
+)
+
+// peapInnerState — состояние внутренней аутентификации MS-CHAPv2 внутри PEAP-туннеля.
+type peapInnerState int
+
+const (
+	peapStateChallenge peapInnerState = iota // сервер отправил MS-CHAPv2 Challenge, ждёт Response
+	peapStateSuccess                        // сервер отправил MS-CHAPv2 Success, ждёт Success ACK
+	peapStateTLV                            // сервер отправил Result TLV, ждёт Result TLV Response
+	peapStateFailed                         // сервер отправил MS-CHAPv2 Failure, ждёт Failure ACK
 )
 
 // eapConn — адаптер net.Conn для crypto/tls поверх EAP-TTLS. Read отдаёт
@@ -169,7 +186,7 @@ type ttlsFrag struct {
 	declared int
 }
 
-// eapSession — одна EAP-TTLS аутентификация, резюмируется по State.
+// eapSession — одна EAP аутентификация (PEAPv0 или EAP-TTLS), резюмируется по State.
 // Поля, кроме помеченных «store-мьютекс», трогает только RADIUS-хендлер
 // (layeh/radius обслуживает пакеты последовательно на своём цикле); воркер
 // runTLS пишет только в каналы, keyBlock и буферы conn.
@@ -185,9 +202,16 @@ type eapSession struct {
 	appData     chan []byte // расшифрованные phase-2 данные (ёмкость 1)
 	workerErr   chan error  // фатальная ошибка воркера после handshake
 
+	proto         eapProtocol
+	innerState    peapInnerState
+	authChallenge [16]byte
+	innerReqID    byte
+	innerMSCHAPID byte
+	outerIdentity string
+
 	phase        eapPhase
 	keyBlock     []byte // 64 байта keying material (кладёт воркер)
-	pendingInner []byte // частично пришедший AVP-блок
+	pendingInner []byte // частично пришедший AVP-блок или внутренний EAP-пакет
 	frag         eap.Assembler
 	outQueue     []ttlsFrag // недоразосланные фрагменты исходящего потока
 	reqID        byte       // identifier следующего EAP-Request
@@ -200,30 +224,31 @@ type eapSession struct {
 }
 
 // newEAPSession собирает сессию (stateKey = hex(raw)) и стартует TLS-воркер.
-func newEAPSession(raw []byte, stateKey string, cert *tls.Certificate) *eapSession {
+func newEAPSession(raw []byte, stateKey string, cert *tls.Certificate, proto eapProtocol) *eapSession {
 	conn := newEAPConn()
-	// EAP-TTLS определён на TLS 1.0–1.2 (RFC 5281): 1.3 не используется,
-	// ExportKeyingMaterial TTLS на нём не определён.
+	// EAP-TTLS и PEAPv0 определены на TLS 1.0–1.2: 1.3 не используется.
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{*cert},
 		MinVersion:   tls.VersionTLS10,
 		MaxVersion:   tls.VersionTLS12,
 	}
 	sess := &eapSession{
-		state:        append([]byte(nil), raw...),
-		stateKey:     stateKey,
-		createdAt:    time.Now(),
-		lastUsed:     time.Now(),
-		conn:         conn,
-		tlsConn:      tls.Server(conn, cfg),
-		handshakeCh:  make(chan error, 1),
-		appData:      make(chan []byte, 1),
-		workerErr:    make(chan error, 1),
-		frag:         eap.Assembler{},
-		reqID:        0,
-		lastRespEAP:  nil,
-		lastReqEAP:   nil,
-		pendingInner: nil,
+		state:         append([]byte(nil), raw...),
+		stateKey:      stateKey,
+		createdAt:     time.Now(),
+		lastUsed:      time.Now(),
+		conn:          conn,
+		tlsConn:       tls.Server(conn, cfg),
+		handshakeCh:   make(chan error, 1),
+		appData:       make(chan []byte, 1),
+		workerErr:     make(chan error, 1),
+		proto:         proto,
+		innerState:    peapStateChallenge,
+		frag:          eap.Assembler{},
+		reqID:         0,
+		lastRespEAP:   nil,
+		lastReqEAP:    nil,
+		pendingInner:  nil,
 	}
 	go sess.runTLS()
 	return sess
@@ -237,10 +262,14 @@ func (sess *eapSession) runTLS() {
 		sess.handshakeCh <- err
 		return
 	}
+	label := eapKeyLabel
+	if sess.proto == eapProtoPEAP {
+		label = peapKeyLabel
+	}
 	cs := sess.tlsConn.ConnectionState()
-	kb, err := cs.ExportKeyingMaterial(eapKeyLabel, nil, eapKeyBlockLen)
+	kb, err := cs.ExportKeyingMaterial(label, nil, eapKeyBlockLen)
 	if err != nil {
-		sess.handshakeCh <- fmt.Errorf("экспорт TTLS keying material: %w", err)
+		sess.handshakeCh <- fmt.Errorf("экспорт keying material (%s): %w", label, err)
 		return
 	}
 	sess.keyBlock = kb
@@ -263,6 +292,13 @@ func (sess *eapSession) runTLS() {
 			return
 		}
 	}
+}
+
+// writeInner отправляет открытый EAP-пакет в TLS-туннель (для PEAP).
+// Зашифрованные TLS-записи складываются в outBuf моста.
+func (sess *eapSession) writeInner(pkt []byte) error {
+	_, err := sess.tlsConn.Write(pkt)
+	return err
 }
 
 // waitHandshakeStep собирает исходящие TLS-записи после доставки данных
@@ -357,7 +393,7 @@ func (sess *eapSession) pushOutQueue(payload []byte) {
 }
 
 // popOutFragment достаёт следующий фрагмент очереди и собирает полный
-// EAP-Request/TTLS (первый — L с полной длиной, все кроме последнего — M;
+// EAP-Request/PEAP или EAP-Request/TTLS (первый — L с полной длиной, все кроме последнего — M;
 // identifier — sess.reqID c инкрементом: новый Request ≠ предыдущего).
 func (sess *eapSession) popOutFragment() []byte {
 	if len(sess.outQueue) == 0 {
@@ -367,16 +403,26 @@ func (sess *eapSession) popOutFragment() []byte {
 	sess.outQueue = sess.outQueue[1:]
 	id := sess.reqID
 	sess.reqID++
+	declared := -1
+	if f.first {
+		declared = f.declared
+	}
+	if sess.proto == eapProtoPEAP {
+		var flags byte
+		if f.first {
+			flags |= eap.PEAPFlagLength
+		}
+		if !f.last {
+			flags |= eap.PEAPFlagMore
+		}
+		return eap.BuildPEAP(eap.CodeRequest, id, flags, declared, f.data)
+	}
 	var flags byte
 	if f.first {
 		flags |= eap.TTLSFlagLength
 	}
 	if !f.last {
 		flags |= eap.TTLSFlagMore
-	}
-	declared := -1
-	if f.first {
-		declared = f.declared
 	}
 	return eap.BuildTTLS(eap.CodeRequest, id, flags, declared, f.data)
 }
@@ -409,10 +455,10 @@ func (st *eapSessionStore) get(state string) *eapSession {
 	return s
 }
 
-// create делает новую сессию со свежим State (crypto/rand 16 байт) и
-// стартует TLS-воркер. При переполнении капы выметаются просроченные,
-// затем самые старые.
-func (st *eapSessionStore) create(cert *tls.Certificate) *eapSession {
+// create делает новую сессию со свежим State (crypto/rand 16 байт),
+// заданным протоколом (PEAP или TTLS) и стартует TLS-воркер. При
+// переполнении капы выметаются просроченные, затем самые старые.
+func (st *eapSessionStore) create(cert *tls.Certificate, proto eapProtocol) *eapSession {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.cleanupLocked()
@@ -438,7 +484,7 @@ func (st *eapSessionStore) create(cert *tls.Certificate) *eapSession {
 		if _, exists := st.sessions[state]; exists {
 			continue
 		}
-		sess := newEAPSession(b, state, cert)
+		sess := newEAPSession(b, state, cert, proto)
 		st.sessions[state] = sess
 		return sess
 	}

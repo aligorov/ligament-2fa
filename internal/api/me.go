@@ -224,6 +224,9 @@ func (p *MeAPI) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user.PasswordHash = secrets.HashPassword(req.New)
+	if p.box != nil {
+		user.PasswordEnc = p.box.EncryptAAD(user.Username, []byte(req.New))
+	}
 	if err := p.st.UserUpdate(ctx, user); err != nil {
 		slog.Error("api: смена пароля", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal")

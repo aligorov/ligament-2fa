@@ -28,6 +28,7 @@ import (
 
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/firewall"
+	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
 )
@@ -71,6 +72,14 @@ func New(core *auth.Core, st *store.Store, m *settings.M) *Server {
 // забаненного IP получает Access-Reject без обращения к паролям;
 // accounting с такого IP отбрасывается. nil — фильтрации нет.
 func (s *Server) SetFirewall(g *firewall.Guard) { s.fw = g }
+
+// box создаёт экземпляр шифровальщика secrets.Box из настроек master_key.
+func (s *Server) box() (*secrets.Box, error) {
+	if s.m == nil || s.m.Get() == nil || s.m.Get().MasterKeyB64 == "" {
+		return nil, errors.New("master_key не настроен")
+	}
+	return secrets.NewBox(s.m.Get().MasterKeyB64)
+}
 
 // slogBridge — маршрутизация внутренних ошибок layeh/radius в slog
 // (PacketServer.ErrorLog принимает *log.Logger).
