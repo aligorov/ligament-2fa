@@ -91,6 +91,77 @@
 
 <section class="card">
   <div class="card-head">
+    <h2><span class="card-icon">🔒</span>SSL/TLS Сертификат (EAP / 802.1X / Web)</h2>
+    <p>Автоматическое получение и продление сертификатов Let's Encrypt (ACME HTTP-01) для Wi-Fi (WPA-Enterprise) и Web.</p>
+  </div>
+  {{if .HasCert}}
+  <div class="grid" style="margin-bottom: 1rem;">
+    <div class="field">
+      <span class="field-label">Статус сертификата</span>
+      <p style="margin-top: 0.25rem;">
+        {{if .CertIsACME}}
+          <span class="badge success">Доверенный (Let's Encrypt)</span>
+        {{else if .CertIsSelfSigned}}
+          <span class="badge warn">Самоподписанный (Ligament CA)</span>
+        {{else}}
+          <span class="badge neutral">Внешний сертификат</span>
+        {{end}}
+      </p>
+    </div>
+    <div class="field">
+      <span class="field-label">Домен (CN)</span>
+      <p class="mono" style="margin-top: 0.25rem;">{{.CertCN}}</p>
+    </div>
+    <div class="field">
+      <span class="field-label">Кем выдан</span>
+      <p style="margin-top: 0.25rem;">{{.CertIssuer}}</p>
+    </div>
+    <div class="field">
+      <span class="field-label">Срок действия</span>
+      <p style="margin-top: 0.25rem;">{{.CertNotAfter}}
+        {{if lt .CertDaysLeft 30}}
+          <span class="badge danger">осталось {{.CertDaysLeft}} дн.</span>
+        {{else}}
+          <span class="badge success">осталось {{.CertDaysLeft}} дн.</span>
+        {{end}}
+      </p>
+    </div>
+  </div>
+  <div style="margin-bottom: 1.5rem;">
+    <a href="/ca.crt" class="btn secondary" download="ligament-ca.crt">⬇️ Скачать активный сертификат (CA.crt)</a>
+  </div>
+  {{end}}
+
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="acme">
+    <div class="grid">
+      <label class="field checkbox">
+        <input type="checkbox" name="acme.enabled" {{if .S.ACME.Enabled}}checked{{end}}>
+        <span class="field-label">Включить автообновление Let's Encrypt</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Домен (FQDN)</span>
+        <input class="input" type="text" name="acme.domain" value="{{.S.ACME.Domain}}" placeholder="wifi.example.com">
+        <span class="help">A-запись домена должна указывать на IP этого сервера (HTTP-порт 80).</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Email для уведомлений</span>
+        <input class="input" type="email" name="acme.email" value="{{.S.ACME.Email}}" placeholder="admin@example.com">
+      </label>
+      <label class="field checkbox">
+        <input type="checkbox" name="acme.staging" {{if .S.ACME.Staging}}checked{{end}}>
+        <span class="field-label">Тестовый режим (Let's Encrypt Staging)</span>
+      </label>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+      <button type="submit" name="acme_renew" value="true" class="btn secondary">Обновить сертификат сейчас</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
     <h2><span class="card-icon">🎫</span>Токены доступа</h2>
     <p>admin_token — Bearer-токен REST API <code>/api/v1/admin/*</code>.
     Новое значение показывается один раз; интеграции со старым токеном

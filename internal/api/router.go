@@ -3,15 +3,18 @@
 package api
 
 import (
+	"encoding/json"
 	"math/rand"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/aligorov/twofa/internal/acme"
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/oidc"
+	"github.com/aligorov/twofa/internal/radiusserver"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -143,8 +146,10 @@ type Deps struct {
 	M    *settings.M
 	Rend *web.Renderer
 	Lic  *license.Manager // nil — лицензирование не смонтировано
-	FW   *firewall.Guard  // nil — файрвол/fail2ban выключен
-	Oidc *oidc.Manager    // nil — OIDC не смонтирован (роуты отвечают 503); main всегда инициализирует
+	FW     *firewall.Guard      // nil — файрвол/fail2ban выключен
+	Oidc   *oidc.Manager        // nil — OIDC не смонтирован (роуты отвечают 503); main всегда инициализирует
+	ACME   *acme.Manager        // nil — ACME выключен
+	Radius *radiusserver.Server // nil — RADIUS не смонтирован
 }
 
 // firewallMiddleware фильтрует запросы по IP ДО маршрутов и обработчиков:
@@ -195,12 +200,26 @@ func BuildRouter(d Deps) *Router {
 	}
 	r.Get("/healthz", healthzHandler(d.St))
 
+	if d.ACME != nil {
+		r.Get("/.well-known/acme-challenge/*", func(w http.ResponseWriter, r *http.Request) {
+			d.ACME.HTTPHandler(nil).ServeHTTP(w, r)
+		})
+	}
+	r.Get("/ca.crt", caCertDownloadHandler(d.Radius, d.M))
+	r.Get("/api/v1/public/ca.crt", caCertDownloadHandler(d.Radius, d.M))
+
 	pub := NewPublicAPI(d.Core, d.WA, d.St, d.PV, d.M)
 	sess := NewSessionAPI(d.Core, d.St, d.PV, d.M)
 	me := NewMeAPI(d.Core, d.WA, d.St, d.Box, d.PV, d.M)
 	admin := NewAdminAPI(d.St, d.M, d.Lic)
 	if d.FW != nil {
 		admin.SetFirewall(d.FW)
+	}
+	if d.Radius != nil {
+		admin.SetRadius(d.Radius)
+	}
+	if d.ACME != nil {
+		admin.SetACME(d.ACME)
 	}
 	pages := NewPagesAPI(d.Rend, sess, admin, d.Core, d.WA, d.St, d.Box, d.PV, d.M)
 	if d.FW != nil {
@@ -227,4 +246,31 @@ func BuildRouter(d Deps) *Router {
 	r.NotFound(pages.NotFound)
 
 	return &Router{Handler: r, stops: []func(){pub.Stop, sess.Stop}}
+}
+
+func caCertDownloadHandler(radius *radiusserver.Server, m *settings.M) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var pemBytes []byte
+		if radius != nil {
+			pemBytes = radius.CurrentEAPCertPEM()
+		}
+		if len(pemBytes) == 0 && m != nil {
+			if raw := m.Get().Radius.EAPCert; len(raw) > 0 {
+				var pair struct {
+					CertPEM string `json:"cert_pem"`
+				}
+				if json.Unmarshal(raw, &pair) == nil && pair.CertPEM != "" {
+					pemBytes = []byte(pair.CertPEM)
+				}
+			}
+		}
+		if len(pemBytes) == 0 {
+			writeError(w, http.StatusNotFound, "cert_not_found")
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+		w.Header().Set("Content-Disposition", "attachment; filename=\"ligament-ca.crt\"")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(pemBytes)
+	}
 }

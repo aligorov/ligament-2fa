@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aligorov/twofa/internal/acme"
 	"github.com/aligorov/twofa/internal/api"
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/backup"
@@ -244,22 +246,55 @@ func main() {
 		slog.Error("main: OIDC-провайдер", "error", err)
 		os.Exit(1)
 	}
-	rt := api.BuildRouter(api.Deps{
-		Core: core, WA: wa, St: st, Box: box, PV: pv, M: m, Rend: rend, Lic: lic,
-		FW: guard, Oidc: oidcMgr,
-	})
-	defer rt.Stop()
-
 	radius := radiusserver.New(core, st, m)
 	radius.SetFirewall(guard)
 
 	// Сертификат EAP-TTLS (WPA2/WPA3-Enterprise): self-signed пара
-	// создаётся при первом старте и хранится в настройках (radius.eap_cert).
-	// Ошибка не фатальна: PAP-RADIUS продолжает работать, EAP-запросы
-	// получат Reject (и повторную попытку генерации при следующем).
+	// создаётся при первом старте и хранится в настройках (radius.eap_cert)
+	// или читается из файлов radius.cert_file / radius.key_file.
 	if err := radius.EnsureEAPCert(ctx); err != nil {
 		slog.Warn("main: сертификат EAP-TTLS не создан — 802.1X временно отключён", "error", err)
 	}
+
+	acmeMgr := acme.NewManager(acme.Config{
+		GetSettings: func() (bool, string, string, bool) {
+			s := m.Get().ACME
+			return s.Enabled, s.Domain, s.Email, s.Staging
+		},
+		CurrentCertPEM: func() []byte {
+			return radius.CurrentEAPCertPEM()
+		},
+		OnCertRenewed: func(ctx context.Context, certPEM, keyPEM []byte) error {
+			tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+			if err != nil {
+				return fmt.Errorf("разбор полученного сертификата: %w", err)
+			}
+			radius.SetEAPCertificate(&tlsCert, certPEM)
+			payload, err := json.Marshal(struct {
+				CertPEM string `json:"cert_pem"`
+				KeyPEM  string `json:"key_pem"`
+			}{
+				CertPEM: string(certPEM),
+				KeyPEM:  string(keyPEM),
+			})
+			if err != nil {
+				return fmt.Errorf("сериализация eap_cert: %w", err)
+			}
+			if err := m.Put(ctx, "radius.eap_cert", payload); err != nil {
+				slog.Error("acme: сохранение radius.eap_cert в настройки", "error", err)
+				return err
+			}
+			slog.Info("acme: новый сертификат успешно установлен для EAP и сохранен в базе")
+			return nil
+		},
+	})
+	go acmeMgr.Run(ctx)
+
+	rt := api.BuildRouter(api.Deps{
+		Core: core, WA: wa, St: st, Box: box, PV: pv, M: m, Rend: rend, Lic: lic,
+		FW: guard, Oidc: oidcMgr, ACME: acmeMgr, Radius: radius,
+	})
+	defer rt.Stop()
 
 	addr := *addrFlag
 	if addr == "" {

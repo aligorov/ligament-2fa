@@ -18,13 +18,22 @@ services:
     restart: unless-stopped
 
   twofa:
-    image: aligorov/ligament_2fa:v0.4.13
+    image: aligorov/ligament_2fa:v0.4.14
     depends_on:
       db:
         condition: service_healthy
     environment:
       TWOFA_DB_DSN: postgres://twofa:${TWOFA_PG_PASSWORD:-changeme}@db:5432/twofa
+      # Автоматический заказ и продление SSL/TLS (Let's Encrypt)
+      # Настройки можно также задать через Web-интерфейс (Настройки -> SSL/TLS и ACME):
+      # ACME_DOMAIN: auth.example.com
+      # ACME_EMAIL: admin@example.com
+      # ACME_STAGING: "false"
+      # Либо использовать внешние файлы сертификата:
+      # EAP_CERT_FILE: /etc/ssl/certs/fullchain.pem
+      # EAP_KEY_FILE: /etc/ssl/certs/privkey.pem
     ports:
+      - "80:8080"
       - "8080:8080"
       - "1812:1812/udp"
       - "1813:1813/udp"

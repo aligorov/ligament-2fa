@@ -26,6 +26,7 @@ import (
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 
+	"github.com/aligorov/twofa/internal/acme"
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
@@ -1591,6 +1592,37 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 			groupRadiusJSON = string(b)
 		}
 	}
+
+	var pemBytes []byte
+	if p.admin != nil && p.admin.radius != nil {
+		pemBytes = p.admin.radius.CurrentEAPCertPEM()
+	}
+	if len(pemBytes) == 0 && len(t.Radius.EAPCert) > 0 {
+		var pair struct {
+			CertPEM string `json:"cert_pem"`
+		}
+		if json.Unmarshal(t.Radius.EAPCert, &pair) == nil && pair.CertPEM != "" {
+			pemBytes = []byte(pair.CertPEM)
+		}
+	}
+	certCN, certIssuer, certNotAfter := "", "", ""
+	certDaysLeft := 0
+	certIsSelfSigned, certIsACME, hasCert := false, false, false
+	if len(pemBytes) > 0 {
+		if _, info, err := acme.ParseCertPEM(pemBytes); err == nil && info != nil {
+			certCN = info.SubjectCN
+			certIssuer = info.IssuerOrg
+			if certIssuer == "" {
+				certIssuer = info.IssuerCN
+			}
+			certNotAfter = info.NotAfter.Format("02.01.2006 15:04")
+			certDaysLeft = info.DaysLeft
+			certIsSelfSigned = info.IsSelfSigned
+			certIsACME = info.IsACME
+			hasCert = true
+		}
+	}
+
 	return web.AdminSettingsData{
 		BaseData:        p.baseData(r, "Настройки сервера", "admin-settings"),
 		S:               t,
@@ -1607,6 +1639,13 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 		LDAPAllowGroups:    allowJSON,
 		LDAPRoleMap:        roleJSON,
 		LDAPGroupRadiusMap: groupRadiusJSON,
+		CertCN:             certCN,
+		CertIssuer:         certIssuer,
+		CertNotAfter:       certNotAfter,
+		CertDaysLeft:       certDaysLeft,
+		CertIsSelfSigned:   certIsSelfSigned,
+		CertIsACME:         certIsACME,
+		HasCert:            hasCert,
 	}
 }
 
@@ -1687,6 +1726,12 @@ var settingsForm = map[string][]settingsField{
 		{name: "radius.fail_window", key: "radius.fail_window"},
 		{name: "radius.push_wait", key: "radius.push_wait"},
 		{name: "radius.reply_attributes", key: "radius.reply_attributes", kind: 'j'},
+	},
+	"acme": {
+		{name: "acme.enabled", key: "acme", kind: 'b'},
+		{name: "acme.domain", key: "acme"},
+		{name: "acme.email", key: "acme"},
+		{name: "acme.staging", key: "acme", kind: 'b'},
 	},
 	"proxy": {
 		{name: "proxy.trusted_networks", key: "proxy"},
@@ -1817,6 +1862,21 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		d.OneTimeLabel = key
 		d.OneTimeValue = val
 		p.render(w, http.StatusOK, "admin_settings", d)
+		return
+	}
+
+	// Кнопка «Обновить сертификат» (name=acme_renew value=true).
+	if r.PostFormValue("acme_renew") != "" {
+		if p.admin == nil || p.admin.acme == nil {
+			redirectFlash(w, r, "/admin/settings", "ACME не инициализирован.", false)
+			return
+		}
+		if err := p.admin.acme.Renew(ctx); err != nil {
+			redirectFlash(w, r, "/admin/settings", "Ошибка обновления сертификата: "+err.Error(), false)
+			return
+		}
+		p.admin.audit(ctx, "acme_cert_renewed", map[string]any{"via": "html"})
+		redirectFlash(w, r, "/admin/settings", "Сертификат Let's Encrypt успешно получен и обновлён!", true)
 		return
 	}
 

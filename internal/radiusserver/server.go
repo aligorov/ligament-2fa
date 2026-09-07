@@ -56,8 +56,9 @@ type Server struct {
 	// EAP-TTLS (802.1X): сессии по RADIUS State и серверный сертификат
 	// (self-signed, см. cert.go; nil при его отсутствии — EAP отключён).
 	eapSessions *eapSessionStore
-	certMu      sync.Mutex
+	certMu      sync.RWMutex
 	eapTLSCert  *tls.Certificate
+	eapCertPEM  []byte
 }
 
 // New собирает RADIUS-сервер. Секрет и адреса читаются из настроек при

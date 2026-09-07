@@ -79,6 +79,25 @@ paths:
 
   # ---- Public Auth ----
 
+  /api/v1/public/ca.crt:
+    get:
+      tags: [Public Auth]
+      summary: "Скачать активный корневой/серверный CA сертификат"
+      description: "Публичный файл сертификата сервера Ligament CA в формате X.509 PEM для импорта на клиентские устройства 802.1X."
+      operationId: publicCACertGet
+      responses:
+        '200':
+          description: Сертификат CA в формате PEM.
+          content:
+            application/x-x509-ca-cert:
+              schema:
+                type: string
+        '404':
+          description: Сертификат не найден.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
   /api/v1/auth/start:
     post:
       tags: [Public Auth]
@@ -2642,6 +2661,71 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
               example: {error: internal}
+
+  /api/v1/admin/radius/cert:
+    get:
+      tags: [Admin]
+      summary: "Информация о текущем TLS-сертификате EAP и настройках ACME"
+      description: "Возвращает метаданные сертификата RADIUS EAP (CN, эмитент, срок действия, дней до экспирации) и статус ACME (Let's Encrypt)."
+      operationId: adminRadiusCertGet
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Метаданные сертификата и статус ACME.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cert, acme]
+                properties:
+                  cert:
+                    type: object
+                  acme:
+                    type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Сертификат не найден.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '500':
+          $ref: '#/components/responses/Internal'
+
+  /api/v1/admin/radius/acme/renew:
+    post:
+      tags: [Admin]
+      summary: "Принудительный выпуск / продление сертификата Let's Encrypt"
+      description: "Запускает немедленный заказ и обновление SSL/TLS-сертификата через Let's Encrypt (ACME HTTP-01)."
+      operationId: adminRadiusACMERenew
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Сертификат успешно обновлен.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cert, acme]
+                properties:
+                  cert:
+                    type: object
+                  acme:
+                    type: object
+        '400':
+          description: Ошибка выпуска сертификата ACME.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: ACME не настроен или сервис недоступен.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
 
   # ---- OpenID Connect Provider (публичные, без авторизации) ----
 

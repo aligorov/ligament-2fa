@@ -201,6 +201,13 @@ type AdminSettingsData struct {
 	LDAPGroupRadiusMap string            // ldap.group_radius_map (JSON) для textarea
 	OneTimeValue       string            // новое значение секрета (показ один раз)
 	OneTimeLabel       string            // ключ секрета (admin_token / radius.secret)
+	CertCN             string
+	CertIssuer         string
+	CertNotAfter       string
+	CertDaysLeft       int
+	CertIsSelfSigned   bool
+	CertIsACME         bool
+	HasCert            bool
 }
 
 // ErrorData — страница ошибки (код + сообщение по-русски).

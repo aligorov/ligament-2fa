@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -119,7 +120,16 @@ type T struct {
 		// EAPCert — сырой JSON ключа radius.eap_cert: self-signed пара
 		// сертификата EAP-TTLS {"cert_pem","key_pem"}. Генерируется
 		// RADIUS-сервером при первом старте; nil — ещё не создан.
-		EAPCert json.RawMessage
+		EAPCert  json.RawMessage
+		CertFile string
+		KeyFile  string
+	}
+
+	ACME struct {
+		Enabled bool   `json:"enabled"`
+		Domain  string `json:"domain"`
+		Email   string `json:"email"`
+		Staging bool   `json:"staging"`
 	}
 
 	SMTP struct {
@@ -581,10 +591,36 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Radius.PushWait = parseDur(raw["radius.push_wait"], def.Radius.PushWait)
 	t.Radius.ReplyAttributes = parseStringMap(raw["radius.reply_attributes"], def.Radius.ReplyAttributes)
 
+	t.Radius.CertFile = parseString(raw["radius.cert_file"], def.Radius.CertFile)
+	if envCert := os.Getenv("EAP_CERT_FILE"); envCert != "" && t.Radius.CertFile == "" {
+		t.Radius.CertFile = envCert
+	}
+	t.Radius.KeyFile = parseString(raw["radius.key_file"], def.Radius.KeyFile)
+	if envKey := os.Getenv("EAP_KEY_FILE"); envKey != "" && t.Radius.KeyFile == "" {
+		t.Radius.KeyFile = envKey
+	}
+
 	// radius.eap_cert: null/отсутствие = сертификат не создан (nil), иначе
 	// сырой JSON (расшифровкой занимается radiusserver).
 	if v := rawJSON(raw["radius.eap_cert"], def.Radius.EAPCert); !isNullJSON(v) {
 		t.Radius.EAPCert = v
+	}
+
+	acmeRaw := fields(raw["acme"])
+	t.ACME.Enabled = parseBool(acmeRaw["enabled"], def.ACME.Enabled)
+	t.ACME.Domain = parseString(acmeRaw["domain"], def.ACME.Domain)
+	t.ACME.Email = parseString(acmeRaw["email"], def.ACME.Email)
+	t.ACME.Staging = parseBool(acmeRaw["staging"], def.ACME.Staging)
+
+	if envDom := os.Getenv("ACME_DOMAIN"); envDom != "" && t.ACME.Domain == "" {
+		t.ACME.Domain = envDom
+		t.ACME.Enabled = true
+	}
+	if envEmail := os.Getenv("ACME_EMAIL"); envEmail != "" && t.ACME.Email == "" {
+		t.ACME.Email = envEmail
+	}
+	if envStaging := os.Getenv("ACME_STAGING"); envStaging == "true" || envStaging == "1" {
+		t.ACME.Staging = true
 	}
 
 	smtp := fields(raw["smtp"])
@@ -744,6 +780,13 @@ func NewManager(ctx context.Context, st *store.Store) (*M, error) {
 	}
 	m.cur.Store(t)
 	return m, nil
+}
+
+// NewDefaultManager создаёт менеджер с дефолтными настройками (для тестов без БД).
+func NewDefaultManager() *M {
+	m := &M{}
+	m.cur.Store(buildT(nil))
+	return m
 }
 
 // Get возвращает текущий снимок. Возвращённый T иммутабелен — только
@@ -998,8 +1041,16 @@ func (t *T) masked() map[string]any {
 			"fail_window":       t.Radius.FailWindow.String(),
 			"push_wait":         t.Radius.PushWait.String(),
 			"reply_attributes":  t.Radius.ReplyAttributes,
+			"cert_file":         t.Radius.CertFile,
+			"key_file":          secretMask(t.Radius.KeyFile),
 			// eap_cert — секрет: приватный ключ TLS-сертификата.
 			"eap_cert": maskForValue(t.Radius.EAPCert),
+		},
+		"acme": map[string]any{
+			"enabled": t.ACME.Enabled,
+			"domain":  t.ACME.Domain,
+			"email":   t.ACME.Email,
+			"staging": t.ACME.Staging,
 		},
 		"smtp": map[string]any{
 			"host":     t.SMTP.Host,

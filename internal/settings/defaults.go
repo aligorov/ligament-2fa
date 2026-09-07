@@ -29,12 +29,15 @@ var defaults = map[string]json.RawMessage{
 	"radius.fail_window":       json.RawMessage(`"5m"`),
 	"radius.push_wait":         json.RawMessage(`"20s"`),
 	"radius.reply_attributes":  json.RawMessage(`{}`),
+	"radius.cert_file":         json.RawMessage(`""`),
+	"radius.key_file":          json.RawMessage(`""`),
 	// radius.eap_cert — пара self-signed сертификата EAP-TTLS (RSA-2048,
 	// JSON {"cert_pem","key_pem"}). Дефолт null — «сертификат не создан»:
 	// генерируется RADIUS-сервером при первом старте
 	// (internal/radiusserver.EnsureEAPCert) и записывается через Put, а не
 	// здесь. Секрет: не экспортируется/не импортируется и маскируется.
 	"radius.eap_cert": json.RawMessage(`null`),
+	"acme":            json.RawMessage(`{"enabled":false,"domain":"","email":"","staging":false}`),
 	"smtp":            json.RawMessage(`{"host":"","port":0,"starttls":false,"user":"","password":"","from":"","subject":"","timeout":"0s"}`),
 	"sms.gateway":     json.RawMessage(`{}`),
 	"sms.presets":     json.RawMessage(`{}`),

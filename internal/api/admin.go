@@ -29,8 +29,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/aligorov/twofa/internal/acme"
 	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/oidc"
+	"github.com/aligorov/twofa/internal/radiusserver"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -56,7 +58,12 @@ type AdminAPI struct {
 	// отдельное поле, чтобы тест 413-ветки подменял счётчик без вставки
 	// полумиллиона строк.
 	countAuditRows func(ctx context.Context) (int64, error)
+	radius         *radiusserver.Server
+	acme           *acme.Manager
 }
+
+func (a *AdminAPI) SetRadius(srv *radiusserver.Server) { a.radius = srv }
+func (a *AdminAPI) SetACME(mgr *acme.Manager)          { a.acme = mgr }
 
 // NewAdminAPI собирает админ API.
 func NewAdminAPI(st *store.Store, m *settings.M, lic *license.Manager) *AdminAPI {
@@ -108,6 +115,8 @@ func (a *AdminAPI) Register(r chi.Router) {
 		r.Get("/oidc/clients", a.handleOIDCClientsList)
 		r.Post("/oidc/clients", a.handleOIDCClientCreate)
 		r.Delete("/oidc/clients/{id}", a.handleOIDCClientDelete)
+		r.Get("/radius/cert", a.handleRadiusCertGet)
+		r.Post("/radius/acme/renew", a.handleRadiusACMERenew)
 		a.registerLicenseRoutes(r)
 	})
 }
@@ -1045,3 +1054,57 @@ func (a *AdminAPI) handleOIDCClientDelete(w http.ResponseWriter, r *http.Request
 	a.audit(r.Context(), "oidc_client_delete", map[string]any{"id": id.String()})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
+// handleRadiusCertGet — GET /api/v1/admin/radius/cert.
+func (a *AdminAPI) handleRadiusCertGet(w http.ResponseWriter, r *http.Request) {
+	var pemBytes []byte
+	if a.radius != nil {
+		pemBytes = a.radius.CurrentEAPCertPEM()
+	}
+	if len(pemBytes) == 0 && a.m != nil {
+		if raw := a.m.Get().Radius.EAPCert; len(raw) > 0 {
+			var pair struct {
+				CertPEM string `json:"cert_pem"`
+			}
+			if json.Unmarshal(raw, &pair) == nil && pair.CertPEM != "" {
+				pemBytes = []byte(pair.CertPEM)
+			}
+		}
+	}
+	if len(pemBytes) == 0 {
+		writeError(w, http.StatusNotFound, "cert_not_found")
+		return
+	}
+	_, info, err := acme.ParseCertPEM(pemBytes)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cert_parse_failed")
+		return
+	}
+	acmeConf := a.m.Get().ACME
+	resp := map[string]any{
+		"cert": info,
+		"acme": map[string]any{
+			"enabled": acmeConf.Enabled,
+			"domain":  acmeConf.Domain,
+			"email":   acmeConf.Email,
+			"staging": acmeConf.Staging,
+		},
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleRadiusACMERenew — POST /api/v1/admin/radius/acme/renew.
+func (a *AdminAPI) handleRadiusACMERenew(w http.ResponseWriter, r *http.Request) {
+	if a.acme == nil {
+		writeError(w, http.StatusServiceUnavailable, "acme_not_configured")
+		return
+	}
+	if err := a.acme.Renew(r.Context()); err != nil {
+		slog.Error("api: ошибка ручного обновления сертификата ACME", "error", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "acme_renew_failed", "details": err.Error()})
+		return
+	}
+	a.audit(r.Context(), "acme_cert_renewed", map[string]any{"domain": a.m.Get().ACME.Domain})
+	a.handleRadiusCertGet(w, r)
+}
+

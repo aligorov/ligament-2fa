@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"os"
 	"time"
 )
 
@@ -49,6 +50,26 @@ func (s *Server) EnsureEAPCert(ctx context.Context) error {
 	s.certMu.Lock()
 	defer s.certMu.Unlock()
 	if s.eapTLSCert != nil {
+		return nil
+	}
+
+	// 1. Проверяем, заданы ли файлы сертификата (EAP_CERT_FILE / radius.cert_file)
+	cf := s.m.Get().Radius.CertFile
+	kf := s.m.Get().Radius.KeyFile
+	if cf != "" && kf != "" {
+		certData, err := os.ReadFile(cf)
+		if err != nil {
+			return fmt.Errorf("radius: чтение cert_file %s: %w", cf, err)
+		}
+		keyData, err := os.ReadFile(kf)
+		if err != nil {
+			return fmt.Errorf("radius: чтение key_file %s: %w", kf, err)
+		}
+		pair := &eapCertPair{CertPEM: string(certData), KeyPEM: string(keyData)}
+		if err := loadEAPCert(s, pair); err != nil {
+			return err
+		}
+		slog.Info("radius: загружен EAP-сертификат из файлов", "cert_file", cf)
 		return nil
 	}
 
@@ -93,10 +114,50 @@ func (s *Server) EnsureEAPCert(ctx context.Context) error {
 	return loadEAPCert(s, pair)
 }
 
-// eapCertificate возвращает загруженный сертификат (nil — ещё нет).
-func (s *Server) eapCertificate() *tls.Certificate {
+// SetEAPCertificate устанавливает активный сертификат в рантайме (например, после ACME-обновления).
+func (s *Server) SetEAPCertificate(cert *tls.Certificate, rawPEM []byte) {
 	s.certMu.Lock()
 	defer s.certMu.Unlock()
+	s.eapTLSCert = cert
+	s.eapCertPEM = rawPEM
+}
+
+// CurrentEAPCertPEM возвращает сырой PEM активного сертификата.
+func (s *Server) CurrentEAPCertPEM() []byte {
+	s.certMu.RLock()
+	defer s.certMu.RUnlock()
+	if len(s.eapCertPEM) > 0 {
+		return s.eapCertPEM
+	}
+	if raw := s.m.Get().Radius.EAPCert; len(raw) > 0 {
+		if pair, err := parseEAPCertPair(raw); err == nil && pair != nil {
+			return []byte(pair.CertPEM)
+		}
+	}
+	return nil
+}
+
+// CurrentEAPCertificate возвращает текущий *tls.Certificate и распарсенный leaf *x509.Certificate.
+func (s *Server) CurrentEAPCertificate() (*tls.Certificate, *x509.Certificate, error) {
+	s.certMu.RLock()
+	defer s.certMu.RUnlock()
+	if s.eapTLSCert == nil {
+		return nil, nil, errors.New("сертификат EAP не загружен")
+	}
+	if len(s.eapTLSCert.Certificate) == 0 {
+		return s.eapTLSCert, nil, errors.New("в tls.Certificate нет DER-блоков")
+	}
+	leaf, err := x509.ParseCertificate(s.eapTLSCert.Certificate[0])
+	if err != nil {
+		return s.eapTLSCert, nil, fmt.Errorf("разбор x509: %w", err)
+	}
+	return s.eapTLSCert, leaf, nil
+}
+
+// eapCertificate возвращает загруженный сертификат (nil — ещё нет).
+func (s *Server) eapCertificate() *tls.Certificate {
+	s.certMu.RLock()
+	defer s.certMu.RUnlock()
 	return s.eapTLSCert
 }
 
@@ -107,6 +168,7 @@ func loadEAPCert(s *Server, pair *eapCertPair) error {
 		return fmt.Errorf("radius: разбор сертификата radius.eap_cert: %w", err)
 	}
 	s.eapTLSCert = &cert
+	s.eapCertPEM = []byte(pair.CertPEM)
 	return nil
 }
 

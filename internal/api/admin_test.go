@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/aligorov/twofa/internal/channel"
+	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
 )
 
@@ -181,3 +182,34 @@ func TestLicenseRoutesNilManager(t *testing.T) {
 		}
 	}
 }
+
+func TestRadiusCertHandlers(t *testing.T) {
+	m := settings.NewDefaultManager()
+	a := NewAdminAPI(nil, m, nil)
+
+	// 1. handleRadiusCertGet when no cert is set -> 404
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/radius/cert", nil)
+	rec := httptest.NewRecorder()
+	a.handleRadiusCertGet(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing cert, got %d", rec.Code)
+	}
+
+	// 2. handleRadiusACMERenew when acme is nil -> 503
+	reqRenew := httptest.NewRequest(http.MethodPost, "/api/v1/admin/radius/acme/renew", nil)
+	recRenew := httptest.NewRecorder()
+	a.handleRadiusACMERenew(recRenew, reqRenew)
+	if recRenew.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for nil acme, got %d", recRenew.Code)
+	}
+
+	// 3. caCertDownloadHandler when cert not found -> 404
+	h := caCertDownloadHandler(nil, m)
+	reqCA := httptest.NewRequest(http.MethodGet, "/ca.crt", nil)
+	recCA := httptest.NewRecorder()
+	h(recCA, reqCA)
+	if recCA.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing CA cert, got %d", recCA.Code)
+	}
+}
+

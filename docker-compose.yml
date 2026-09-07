@@ -23,7 +23,11 @@ services:
         condition: service_healthy
     environment:
       TWOFA_DB_DSN: postgres://twofa:${TWOFA_PG_PASSWORD:-changeme}@db:5432/twofa
+      # ACME_DOMAIN: auth.example.com
+      # ACME_EMAIL: admin@example.com
+      # ACME_STAGING: "false"
     ports:
+      - "80:8080"
       - "8080:8080"
       - "1812:1812/udp"
       - "1813:1813/udp"
