@@ -379,6 +379,18 @@ func (p *PagesAPI) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func maskEmail(email string) string {
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 {
+		return email
+	}
+	name, domain := parts[0], parts[1]
+	if len(name) <= 2 {
+		return name + "***@" + domain
+	}
+	return name[:2] + "***@" + domain
+}
+
 func maskPhone(phone string) string {
 	phone = strings.TrimSpace(phone)
 	if len(phone) < 7 {
@@ -387,18 +399,26 @@ func maskPhone(phone string) string {
 	return phone[:4] + "***" + phone[len(phone)-2:]
 }
 
+type loginOpts struct {
+	Info     string
+	CanEmail bool
+	CanSMS   bool
+}
+
 // renderLoginErr — рендер формы входа с ошибкой (401) либо подсказкой
 // «введите код» (200): решение о шаге 2FA принимает сервер. next — адрес
 // возврата (проксируется hidden-полем формы).
 func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status int, prefill, msg string, needCode bool, next string, opt ...any) {
 	var inf string
-	var canSMS bool
+	var canEmail, canSMS bool
 	for _, o := range opt {
 		switch v := o.(type) {
 		case string:
 			inf = v
-		case bool:
-			canSMS = v
+		case loginOpts:
+			inf = v.Info
+			canEmail = v.CanEmail
+			canSMS = v.CanSMS
 		}
 	}
 	p.render(w, status, "login", web.LoginData{
@@ -408,6 +428,7 @@ func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status
 		NeedCode: needCode,
 		Next:     next,
 		Info:     inf,
+		CanEmail: canEmail,
 		CanSMS:   canSMS,
 	})
 }
@@ -443,6 +464,37 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Явный запрос отправки на Email:
+	if action == "send_email" {
+		user, status, errCode := p.sess.loginStep1(ctx, clientIP(r), username, password, "web_html")
+		if status != 0 {
+			fail(status, errCode)
+			return
+		}
+		canEmail := user.Email != "" && p.core != nil && p.core.HasSender(channel.Email)
+		canSMS := user.Phone != "" && p.core != nil && p.core.HasSender(channel.SMS)
+		if !canEmail {
+			p.renderLoginErr(w, r, http.StatusBadRequest, username, "Отправка на почту недоступна.", true, next, loginOpts{CanEmail: false, CanSMS: canSMS})
+			return
+		}
+		slim := *user
+		slim.PreferChannels = []channel.Channel{channel.Email}
+		_, err := p.core.StartWithMeta(ctx, &slim, purposeAPI, clientIP(r), r.UserAgent())
+		var info string
+		if err != nil {
+			if errors.Is(err, auth.ErrCooldown) {
+				info = "Код уже был отправлен ранее, подождите перед повторным запросом."
+			} else {
+				slog.Warn("pages: не удалось отправить Email", "user", username, "error", err)
+				info = "Не удалось отправить Email. Проверьте настройки SMTP."
+			}
+		} else {
+			info = fmt.Sprintf("Код отправлен на почту %s.", maskEmail(user.Email))
+		}
+		p.renderLoginErr(w, r, http.StatusOK, username, "", true, next, loginOpts{Info: info, CanEmail: true, CanSMS: canSMS})
+		return
+	}
+
 	// Явный запрос отправки SMS: пользователь подтвердил желание получить SMS,
 	// чтобы не расходовать платный пакет без необходимости.
 	if action == "send_sms" {
@@ -451,9 +503,10 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			fail(status, errCode)
 			return
 		}
+		canEmail := user.Email != "" && p.core != nil && p.core.HasSender(channel.Email)
 		canSMS := user.Phone != "" && p.core != nil && p.core.HasSender(channel.SMS)
 		if !canSMS {
-			p.renderLoginErr(w, r, http.StatusBadRequest, username, "Отправка SMS недоступна.", true, next, "", false)
+			p.renderLoginErr(w, r, http.StatusBadRequest, username, "Отправка SMS недоступна.", true, next, loginOpts{CanEmail: canEmail, CanSMS: false})
 			return
 		}
 		slim := *user
@@ -470,7 +523,7 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		} else {
 			info = fmt.Sprintf("Код отправлен по SMS на номер %s.", maskPhone(user.Phone))
 		}
-		p.renderLoginErr(w, r, http.StatusOK, username, "", true, next, info, true)
+		p.renderLoginErr(w, r, http.StatusOK, username, "", true, next, loginOpts{Info: info, CanEmail: canEmail, CanSMS: true})
 		return
 	}
 
@@ -485,21 +538,16 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if methods := p.sess.twoFactorMethods(ctx, user); len(methods) > 0 {
+			canEmail := user.Email != "" && p.core != nil && p.core.HasSender(channel.Email)
 			canSMS := user.Phone != "" && p.core != nil && p.core.HasSender(channel.SMS)
 			var info string
 			if p.core != nil {
-				// Автоматическая отправка: пробуем бесплатные/мгновенные каналы (TOTP, Telegram, Email).
-				// SMS — платный канал («чтоб не тратить пакет»), отправляется только по явному запросу пользователя.
-				var autoChannels []channel.Channel
-				prefer := user.PreferChannels
-				if len(prefer) == 0 && p.m != nil {
-					prefer = p.m.Get().Policy.DefaultPrefer
-				}
-				for _, c := range prefer {
-					if c != channel.SMS {
-						autoChannels = append(autoChannels, c)
-					}
-				}
+				// Приоритет каналов доставки:
+				// 1. Telegram (если привязан и бот настроен)
+				// 2. Email (если указан и SMTP настроен)
+				// 3. TOTP (приложение-аутентификатор)
+				// SMS — только по явной кнопке пользователя («чтоб не тратить пакет»).
+				autoChannels := []channel.Channel{channel.Telegram, channel.Email, channel.TOTP}
 				slim := *user
 				slim.PreferChannels = autoChannels
 
@@ -508,7 +556,9 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 					if errors.Is(err, auth.ErrCooldown) {
 						info = "Код уже был отправлен ранее, подождите перед повторным запросом."
 					} else if errors.Is(err, auth.ErrNoChannel) {
-						if canSMS {
+						if canEmail {
+							info = "Для получения кода нажмите кнопку «Отправить на почту»."
+						} else if canSMS {
 							info = "Для получения кода по SMS нажмите кнопку «Отправить код по SMS»."
 						} else {
 							info = "Не удалось доставить код. Проверьте настройки каналов связи."
@@ -524,13 +574,13 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 					case channel.Telegram:
 						info = "Код отправлен в Telegram."
 					case channel.Email:
-						info = "Код отправлен на почту."
+						info = fmt.Sprintf("Код отправлен на почту %s.", maskEmail(user.Email))
 					case channel.TelegramPush:
 						info = "Запрос подтверждения отправлен в Telegram."
 					}
 				}
 			}
-			p.renderLoginErr(w, r, http.StatusOK, username, "", true, next, info, canSMS)
+			p.renderLoginErr(w, r, http.StatusOK, username, "", true, next, loginOpts{Info: info, CanEmail: canEmail, CanSMS: canSMS})
 			return
 		}
 		p.loginDone(w, r, user, remember, next, "password_only")
@@ -539,11 +589,12 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 
 	user, status, errCode := p.sess.loginStep2(ctx, r, username, password, code, "web_html_2fa")
 	if status != 0 {
-		canSMS := false
+		var canEmail, canSMS bool
 		if u, err := p.st.UserByUsername(ctx, username); err == nil && u != nil {
+			canEmail = u.Email != "" && p.core != nil && p.core.HasSender(channel.Email)
 			canSMS = u.Phone != "" && p.core != nil && p.core.HasSender(channel.SMS)
 		}
-		p.renderLoginErr(w, r, status, username, loginErrText[errCode], true, next, "", canSMS)
+		p.renderLoginErr(w, r, status, username, loginErrText[errCode], true, next, loginOpts{CanEmail: canEmail, CanSMS: canSMS})
 		return
 	}
 	p.loginDone(w, r, user, remember, next, "password+code")

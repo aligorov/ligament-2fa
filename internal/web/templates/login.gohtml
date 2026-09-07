@@ -32,6 +32,9 @@
     </label>
     <div class="form-actions">
       <button type="submit" class="btn primary">Войти</button>
+      {{if and .NeedCode .CanEmail}}
+      <button type="submit" name="action" value="send_email" class="btn secondary">Отправить на почту</button>
+      {{end}}
       {{if and .NeedCode .CanSMS}}
       <button type="submit" name="action" value="send_sms" class="btn secondary">Отправить код по SMS</button>
       {{end}}

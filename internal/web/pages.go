@@ -67,6 +67,7 @@ type LoginData struct {
 	NeedCode bool   // подсказка: сервер ждёт именно код 2FA
 	Next     string // куда вернуться после успешного входа (только локальные пути)
 	Info     string // пояснение о доставке кода (email/sms/telegram/cooldown)
+	CanEmail bool   // доступна ли отправка на Email
 	CanSMS   bool   // доступна ли отправка по SMS по подтверждению пользователя
 }
 
