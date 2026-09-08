@@ -405,9 +405,10 @@ func maskPhone(phone string) string {
 }
 
 type loginOpts struct {
-	Info     string
-	CanEmail bool
-	CanSMS   bool
+	Info       string
+	CanEmail   bool
+	CanSMS     bool
+	CanPasskey bool
 }
 
 // renderLoginErr — рендер формы входа с ошибкой (401) либо подсказкой
@@ -415,7 +416,7 @@ type loginOpts struct {
 // возврата (проксируется hidden-полем формы).
 func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status int, prefill, msg string, needCode bool, next string, opt ...any) {
 	var inf string
-	var canEmail, canSMS bool
+	var canEmail, canSMS, canPasskey bool
 	for _, o := range opt {
 		switch v := o.(type) {
 		case string:
@@ -424,17 +425,19 @@ func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status
 			inf = v.Info
 			canEmail = v.CanEmail
 			canSMS = v.CanSMS
+			canPasskey = v.CanPasskey
 		}
 	}
 	p.render(w, status, "login", web.LoginData{
-		BaseData: p.baseData(r, "Вход", ""),
-		Err:      msg,
-		Prefill:  prefill,
-		NeedCode: needCode,
-		Next:     next,
-		Info:     inf,
-		CanEmail: canEmail,
-		CanSMS:   canSMS,
+		BaseData:   p.baseData(r, "Вход", ""),
+		Err:        msg,
+		Prefill:    prefill,
+		NeedCode:   needCode,
+		Next:       next,
+		Info:       inf,
+		CanEmail:   canEmail,
+		CanSMS:     canSMS,
+		CanPasskey: canPasskey,
 	})
 }
 
@@ -539,6 +542,15 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.ensurePasswordEnc(ctx, user, password)
+
+		// Если только что была завершена WebAuthn-церемония входа:
+		if p.sess.HasWebauthnPending(ctx, user.ID) {
+			if u, s2, _ := p.sess.loginStep2(ctx, r, username, password, "", "web_html_passkey"); s2 == 0 && u != nil {
+				p.loginDone(w, r, u, remember, next, "passkey")
+				return
+			}
+		}
+
 		if p.sess.trustedDevice(r, user) {
 			p.loginDone(w, r, user, remember, next, "trusted_device")
 			return
@@ -546,6 +558,13 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		if methods := p.sess.twoFactorMethods(ctx, user); len(methods) > 0 {
 			canEmail := user.Email != "" && p.core != nil && p.core.HasSender(channel.Email)
 			canSMS := user.Phone != "" && p.core != nil && p.core.HasSender(channel.SMS)
+			canPasskey := false
+			for _, m := range methods {
+				if m == "webauthn" {
+					canPasskey = true
+					break
+				}
+			}
 			var info string
 			if p.core != nil {
 				// Приоритет каналов доставки:
@@ -562,7 +581,9 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 					if errors.Is(err, auth.ErrCooldown) {
 						info = "Код уже был отправлен ранее, подождите перед повторным запросом."
 					} else if errors.Is(err, auth.ErrNoChannel) {
-						if canEmail {
+						if canPasskey {
+							info = "Подтвердите вход с помощью Passkey (Touch ID / Face ID / Ключ безопасности) или введите код."
+						} else if canEmail {
 							info = "Для получения кода нажмите кнопку «Отправить на почту»."
 						} else if canSMS {
 							info = "Для получения кода по SMS нажмите кнопку «Отправить код по SMS»."
@@ -571,7 +592,11 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 						}
 					} else {
 						slog.Warn("pages: не удалось запустить 2FA-челлендж", "user", username, "error", err)
-						info = "Не удалось доставить код. Проверьте настройки каналов связи."
+						if canPasskey {
+							info = "Подтвердите вход с помощью Passkey (кнопка ниже)."
+						} else {
+							info = "Не удалось доставить код. Проверьте настройки каналов связи."
+						}
 					}
 				} else if ch != nil {
 					switch ch.Channel {
@@ -584,9 +609,12 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 					case channel.TelegramPush:
 						info = "Запрос подтверждения отправлен в Telegram."
 					}
+					if canPasskey {
+						info += " Также доступен вход по Passkey."
+					}
 				}
 			}
-			p.renderLoginErr(w, r, http.StatusOK, username, "", true, next, loginOpts{Info: info, CanEmail: canEmail, CanSMS: canSMS})
+			p.renderLoginErr(w, r, http.StatusOK, username, "", true, next, loginOpts{Info: info, CanEmail: canEmail, CanSMS: canSMS, CanPasskey: canPasskey})
 			return
 		}
 		p.loginDone(w, r, user, remember, next, "password_only")
@@ -595,12 +623,18 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 
 	user, status, errCode := p.sess.loginStep2(ctx, r, username, password, code, "web_html_2fa")
 	if status != 0 {
-		var canEmail, canSMS bool
+		var canEmail, canSMS, canPasskey bool
 		if u, err := p.st.UserByUsername(ctx, username); err == nil && u != nil {
 			canEmail = u.Email != "" && p.core != nil && p.core.HasSender(channel.Email)
 			canSMS = u.Phone != "" && p.core != nil && p.core.HasSender(channel.SMS)
+			for _, m := range p.sess.twoFactorMethods(ctx, u) {
+				if m == "webauthn" {
+					canPasskey = true
+					break
+				}
+			}
 		}
-		p.renderLoginErr(w, r, status, username, loginErrText[errCode], true, next, loginOpts{CanEmail: canEmail, CanSMS: canSMS})
+		p.renderLoginErr(w, r, status, username, loginErrText[errCode], true, next, loginOpts{CanEmail: canEmail, CanSMS: canSMS, CanPasskey: canPasskey})
 		return
 	}
 	p.ensurePasswordEnc(ctx, user, password)

@@ -998,3 +998,66 @@ func TestSecurityHeaders(t *testing.T) {
 		}
 	}
 }
+
+// TestPagesLoginPasskey проверяет форму /login для пользователя с Passkey:
+// показ кнопки и подсказки Passkey, а также успешный вход при наличии webauthn_web_pending.
+func TestPagesLoginPasskey(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := t.Context()
+	rt := newPagesRouter(t, st, set, box)
+
+	u := mkUser(t, ctx, st, "passkey-user", nil)
+	// Добавляем зарегистрированный passkey
+	if err := st.WACredUpsert(ctx, u.ID, &store.WACred{
+		CredentialID:    []byte("cred-1"),
+		RPID:            "localhost",
+		PublicKey:       []byte("pk-1"),
+		AttestationType: "none",
+		Present:         true,
+		Verified:        true,
+	}); err != nil {
+		t.Fatalf("WACredUpsert: %v", err)
+	}
+
+	cli := newHTMLClient(t, rt.Handler)
+
+	// Шаг 1: попытка входа без кода при отсутствии активного pending-окна.
+	// Должна отрендерить форму с NeedCode, подсказкой о Passkey и кнопкой Passkey.
+	rec := cli.postForm("/login", url.Values{
+		"username": {u.Username},
+		"password": {testPassword},
+		"code":     {""},
+	}, false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /login: status=%d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Passkey") {
+		t.Errorf("страница входа не упоминает Passkey: %s", body)
+	}
+	if !strings.Contains(body, "data-passkey-login") {
+		t.Errorf("на странице нет кнопки data-passkey-login: %s", body)
+	}
+
+	// Шаг 2: завершённая WebAuthn-церемония (создаётся webauthn_web_pending).
+	if err := createWebPendingChallenge(ctx, st, u.ID); err != nil {
+		t.Fatalf("createWebPendingChallenge: %v", err)
+	}
+
+	// Шаг 3: вход с пустым кодом после успешной церемонии -> редирект 302 на /me и выпуск сессии.
+	rec = cli.postForm("/login", url.Values{
+		"username": {u.Username},
+		"password": {testPassword},
+		"code":     {""},
+	}, false)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("POST /login с pending passkey: status=%d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/me") {
+		t.Errorf("Location = %q, want /me", loc)
+	}
+	if cli.session == nil {
+		t.Error("cookie twofa_session не установлен после passkey-входа")
+	}
+}
+

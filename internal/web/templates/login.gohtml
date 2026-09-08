@@ -8,14 +8,15 @@
     </div>
   <h1>Вход</h1>
   <p class="page-sub">{{if .Brand.Description}}{{.Brand.Description}}{{else}}Имя пользователя, пароль и — если включён второй
-  фактор — код из приложения или сообщения.{{end}}</p>
+  фактор — код из приложения, сообщение или Passkey.{{end}}</p>
+  <div id="login-flash"></div>
   {{with .Err}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
   {{if .NeedCode}}<div class="flash ok"><span class="flash-icon">🔐</span>Введите код второго фактора.{{if .Info}} {{.Info}}{{end}}</div>{{end}}
-  <form action="/login" method="post" class="form">
+  <form action="/login" method="post" class="form" id="login-form">
     {{if .Next}}<input type="hidden" name="next" value="{{.Next}}">{{end}}
     <label class="field">
       <span class="field-label">Имя пользователя</span>
-      <input class="input" type="text" name="username" value="{{.Prefill}}" required autofocus autocomplete="username">
+      <input class="input" type="text" name="username" value="{{.Prefill}}" required autofocus autocomplete="username webauthn">
     </label>
     <label class="field">
       <span class="field-label">Пароль</span>
@@ -24,7 +25,7 @@
     <label class="field">
       <span class="field-label">Код 2FA (если включён)</span>
       <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="например, 123456">
-      <span class="help">Шестизначный код из приложения-аутентификатора или сообщения.</span>
+      <span class="help">Шестизначный код из приложения или оставьте пустым для входа по Passkey.</span>
     </label>
     <label class="check">
       <input type="checkbox" name="remember" value="1">
@@ -32,6 +33,7 @@
     </label>
     <div class="form-actions">
       <button type="submit" class="btn primary">Войти</button>
+      <button type="button" class="btn secondary" data-passkey-login title="Вход по Touch ID, Face ID, Windows Hello или аппаратному ключу">{{if and .NeedCode .CanPasskey}}🔑 Подтвердить с Passkey{{else}}🔑 Войти с Passkey{{end}}</button>
       {{if and .NeedCode .CanEmail}}
       <button type="submit" name="action" value="send_email" class="btn secondary">Отправить на почту</button>
       {{end}}

@@ -492,6 +492,17 @@ func (s *SessionAPI) consumeWebauthnPending(ctx context.Context, user *store.Use
 	return true
 }
 
+// HasWebauthnPending проверяет, есть ли у пользователя активное passkey-окно после завершённой церемонии.
+func (s *SessionAPI) HasWebauthnPending(ctx context.Context, userID uuid.UUID) bool {
+	var exists bool
+	_ = s.st.Pool().QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM challenges
+			WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL AND expires_at > now()
+		)`, userID, purposeWAPending).Scan(&exists)
+	return exists
+}
+
 // ---- POST /api/v1/logout ----
 
 // handleLogout удаляет текущую сессию и чистит cookie (требует сессию и
