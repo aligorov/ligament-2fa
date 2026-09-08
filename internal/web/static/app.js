@@ -37,6 +37,87 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // Запрос кода подтверждения на доступный канал (Telegram / Email / SMS)
+  for (const btn of document.querySelectorAll("[data-request-code]")) {
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const field = btn.closest(".field") || btn.closest(".field-with-btn")?.closest(".field");
+      let statusEl = field ? field.querySelector(".request-code-status") : null;
+      if (!statusEl && field) {
+        statusEl = document.createElement("span");
+        statusEl.className = "request-code-status";
+        field.appendChild(statusEl);
+      }
+
+      const metaCsrf = document.querySelector('meta[name="csrf-token"]')?.content;
+      const formCsrf = btn.closest("form")?.querySelector('input[name="csrf_token"]')?.value ||
+                       document.querySelector('input[name="csrf_token"]')?.value;
+      const csrf = metaCsrf || formCsrf || "";
+
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Отправка…";
+
+      const setStatus = (msg, isOk) => {
+        if (statusEl) {
+          statusEl.textContent = msg;
+          statusEl.className = "request-code-status " + (isOk ? "ok" : "err");
+        }
+      };
+
+      try {
+        const formData = new FormData();
+        if (csrf) formData.append("csrf_token", csrf);
+
+        const chanSelect = btn.closest("form")?.querySelector('select[name="channel"]') ||
+                           document.querySelector('select[name="channel"]');
+        if (chanSelect && chanSelect.value) {
+          formData.append("channel", chanSelect.value);
+        }
+
+        const res = await fetch("/me/send-code", {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "X-CSRF-Token": csrf,
+          },
+          body: formData,
+        });
+
+        const data = await res.json().catch(() => null);
+        if (res.ok && data && data.ok) {
+          setStatus("✅ " + (data.message || "Код подтверждения отправлен."), true);
+          const codeInput = field?.querySelector('input[name="code"]') ||
+                            btn.closest(".field-with-btn")?.querySelector('input[name="code"]');
+          if (codeInput) {
+            codeInput.focus();
+          }
+          let countdown = 60;
+          btn.textContent = `Повторить (${countdown}с)`;
+          const timer = setInterval(() => {
+            countdown--;
+            if (countdown <= 0) {
+              clearInterval(timer);
+              btn.disabled = false;
+              btn.textContent = origText;
+            } else {
+              btn.textContent = `Повторить (${countdown}с)`;
+            }
+          }, 1000);
+        } else {
+          const errMsg = data?.message || (res.status === 429 ? "Подождите перед повторной отправкой." : "Не удалось отправить код.");
+          setStatus("⚠️ " + errMsg, false);
+          btn.disabled = false;
+          btn.textContent = origText;
+        }
+      } catch (err) {
+        setStatus("⚠️ Ошибка сети при запросе кода.", false);
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+    });
+  }
+
   // Пресет SMS-шлюза: JSON конфига выбранной option (data-config, креды
   // пустые) — в textarea sms.gateway; описание пресета — в подсказку.
   const presetSel = document.querySelector("[data-sms-preset]");

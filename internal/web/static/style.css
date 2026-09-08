@@ -353,6 +353,36 @@ pre {
   font-size: 1.08rem;
   letter-spacing: 0.08em;
 }
+.field-with-btn {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: stretch;
+}
+.field-with-btn .input {
+  flex: 1;
+  min-width: 0;
+}
+.field-with-btn .btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.request-code-status {
+  display: block;
+  margin-top: var(--sp-1);
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+.request-code-status.ok {
+  color: var(--ok);
+}
+.request-code-status.err {
+  color: var(--danger);
+}
+@media (max-width: 480px) {
+  .field-with-btn {
+    flex-direction: column;
+  }
+}
 .field-row {
   display: grid;
   grid-template-columns: 1fr 1fr;

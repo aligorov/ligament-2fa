@@ -96,6 +96,23 @@ func (c *htmlClient) postForm(path string, form url.Values, csrf bool) *httptest
 	return c.do(req)
 }
 
+func (c *htmlClient) postFetch(path string, form url.Values) *httptest.ResponseRecorder {
+	c.t.Helper()
+	token := c.csrfFromPage()
+	if token == "" {
+		c.t.Fatal("csrf-токен не найден на странице /me")
+	}
+	form.Set("csrf_token", token)
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-CSRF-Token", token)
+	if c.session != nil {
+		req.AddCookie(c.session)
+	}
+	return c.do(req)
+}
+
 func (c *htmlClient) do(req *http.Request) *httptest.ResponseRecorder {
 	c.t.Helper()
 	rec := httptest.NewRecorder()
@@ -1058,6 +1075,92 @@ func TestPagesLoginPasskey(t *testing.T) {
 	}
 	if cli.session == nil {
 		t.Error("cookie twofa_session не установлен после passkey-входа")
+	}
+}
+
+func TestPagesSendCode(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+
+	user := mkUser(t, ctx, st, "sendcode_user", nil)
+	cli := newHTMLClient(t, rt.Handler)
+	rec := cli.login(t, user.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	// Настраиваем Email пользователю
+	user.Email = "sendcode@example.com"
+	if err := st.UserUpdate(ctx, user); err != nil {
+		t.Fatalf("UserUpdate: %v", err)
+	}
+
+	// 1. Стандартный POST формы без указания return_to -> редирект 302 на /me с флешем
+	rec = cli.postForm("/me/send-code", url.Values{}, true)
+	wantStatus(t, rec, http.StatusFound)
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/me?") || !strings.Contains(loc, "flash=") {
+		t.Fatalf("Location = %q, want /me с флешем", loc)
+	}
+	page := cli.get(loc)
+	wantStatus(t, page, http.StatusOK)
+	wantBody(t, page, "Код подтверждения отправлен на Email.")
+
+	// 2. Срабатывание cooldown при немедленном повторе (по форме) с return_to: /me/backup
+	rec = cli.postForm("/me/send-code", url.Values{"return_to": {"/me/backup"}}, true)
+	wantStatus(t, rec, http.StatusFound)
+	loc = rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/me/backup?") {
+		t.Fatalf("Location = %q, want /me/backup с флешем", loc)
+	}
+	page = cli.get(loc)
+	wantStatus(t, page, http.StatusOK)
+	wantBody(t, page, "Подождите перед повторной отправкой кода.")
+
+	// 3. AJAX-запрос (Accept: application/json) во время cooldown -> 429 JSON
+	rec = cli.postFetch("/me/send-code", url.Values{})
+	wantStatus(t, rec, http.StatusTooManyRequests)
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal json: %v", err)
+	}
+	if resp["ok"] != false || resp["error"] != "cooldown" {
+		t.Errorf("resp = %v, want ok:false, error:cooldown", resp)
+	}
+
+	// 4. Пользователь без каналов доставки -> ошибка no_channel
+	uNoChan := mkUser(t, ctx, st, "nochan_user", nil)
+	cliNoChan := newHTMLClient(t, rt.Handler)
+	rec = cliNoChan.login(t, uNoChan.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+
+	rec = cliNoChan.postFetch("/me/send-code", url.Values{})
+	wantStatus(t, rec, http.StatusBadRequest)
+	var respNoChan map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &respNoChan); err != nil {
+		t.Fatalf("unmarshal json: %v", err)
+	}
+	if respNoChan["ok"] != false || respNoChan["error"] != "no_channel" {
+		t.Errorf("resp = %v, want ok:false, error:no_channel", respNoChan)
+	}
+
+	// 5. Успешный AJAX-запрос на свежем пользователе с Email
+	uAjax := mkUser(t, ctx, st, "ajax_user", nil)
+	cliAjax := newHTMLClient(t, rt.Handler)
+	rec = cliAjax.login(t, uAjax.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+	uAjax.Email = "ajax@example.com"
+	if err := st.UserUpdate(ctx, uAjax); err != nil {
+		t.Fatalf("UserUpdate: %v", err)
+	}
+
+	rec = cliAjax.postFetch("/me/send-code", url.Values{})
+	wantStatus(t, rec, http.StatusOK)
+	var respAjax map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &respAjax); err != nil {
+		t.Fatalf("unmarshal json: %v", err)
+	}
+	if respAjax["ok"] != true || respAjax["channel"] != "email" || !strings.Contains(respAjax["message"].(string), "Email") {
+		t.Errorf("respAjax = %v, want ok:true, channel:email", respAjax)
 	}
 }
 

@@ -155,7 +155,7 @@ func TestRenderPages(t *testing.T) {
 			want: []string{
 				"Профиль", `action="/me/contacts"`, `action="/me/contacts/send-code"`,
 				`action="/me/prefer"`, `action="/me/password"`, `value="totp"`, `value="email"`,
-				"Смена пароля", "vasya@example.com", "осталось: 3",
+				"Смена пароля", "vasya@example.com", "осталось: 3", "data-request-code", "field-with-btn",
 			},
 		},
 		{
@@ -176,7 +176,7 @@ func TestRenderPages(t *testing.T) {
 			name: "me_totp_confirmed",
 			tmpl: "me_totp",
 			data: MeTOTPData{BaseData: base("TOTP"), Confirmed: true},
-			want: []string{"TOTP привязан", `action="/me/totp/delete"`},
+			want: []string{"TOTP привязан", `action="/me/totp/delete"`, "data-request-code", "field-with-btn"},
 		},
 		{
 			name: "me_backup",
@@ -184,19 +184,19 @@ func TestRenderPages(t *testing.T) {
 			data: MeBackupData{BaseData: base("Резервные коды"), Generated: true,
 				Codes: []string{"ABCD-EFGH", "IJKL-MNOP"}, Remaining: 2},
 			want: []string{"Резервные коды", `action="/me/backup/regenerate"`, "ABCD-EFGH",
-				"показываются только один раз"},
+				"показываются только один раз", "data-request-code", "field-with-btn"},
 		},
 		{
 			name: "me_telegram_linked",
 			tmpl: "me_telegram",
 			data: MeTelegramData{BaseData: base("Telegram"), Linked: true, ChatID: &chatID},
-			want: []string{"Telegram привязан", `action="/me/telegram/delete"`},
+			want: []string{"Telegram привязан", `action="/me/telegram/delete"`, "data-request-code", "field-with-btn"},
 		},
 		{
 			name: "me_telegram_code",
 			tmpl: "me_telegram",
 			data: MeTelegramData{BaseData: base("Telegram"), LinkCode: "LINK-7Q4X"},
-			want: []string{"LINK-7Q4X", `action="/me/telegram/link"`},
+			want: []string{"LINK-7Q4X", `action="/me/telegram/link"`, "data-request-code", "field-with-btn"},
 		},
 		{
 			name: "me_passkeys",
@@ -208,6 +208,7 @@ func TestRenderPages(t *testing.T) {
 			want: []string{
 				`action="/me/webauthn/credentials"`, `action="/me/webauthn/credentials/7/delete"`,
 				"data-passkey-register", "MacBook · Touch ID", "Добавить passkey",
+				"data-request-code", "field-with-btn",
 			},
 		},
 		{
@@ -689,6 +690,34 @@ func TestAppJSGroupRadiusBuilder(t *testing.T) {
 	} {
 		if !strings.Contains(js, w) {
 			t.Errorf("app.js: нет %q (интерактивный конструктор групп RADIUS)", w)
+		}
+	}
+}
+
+func TestAppJSAndCSSRequestCode(t *testing.T) {
+	// Проверка app.js
+	recJS := httptest.NewRecorder()
+	http.FileServer(Static()).ServeHTTP(recJS, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	if recJS.Code != http.StatusOK {
+		t.Fatalf("GET /app.js: статус %d", recJS.Code)
+	}
+	js := recJS.Body.String()
+	for _, w := range []string{"data-request-code", "/me/send-code", "request-code-status", "csrf-token"} {
+		if !strings.Contains(js, w) {
+			t.Errorf("app.js: нет %q", w)
+		}
+	}
+
+	// Проверка style.css
+	recCSS := httptest.NewRecorder()
+	http.FileServer(Static()).ServeHTTP(recCSS, httptest.NewRequest(http.MethodGet, "/style.css", nil))
+	if recCSS.Code != http.StatusOK {
+		t.Fatalf("GET /style.css: статус %d", recCSS.Code)
+	}
+	css := recCSS.Body.String()
+	for _, w := range []string{".field-with-btn", ".request-code-status"} {
+		if !strings.Contains(css, w) {
+			t.Errorf("style.css: нет %q", w)
 		}
 	}
 }

@@ -94,6 +94,7 @@ func (p *PagesAPI) Register(r chi.Router) {
 
 	authed := r.With(p.requirePage)
 	authed.Get("/me", p.handleMe)
+	authed.Post("/me/send-code", p.handleSendCode)
 	authed.Post("/me/contacts", p.handleContacts)
 	authed.Post("/me/contacts/send-code", p.handleContactsSendCode)
 	authed.Post("/me/prefer", p.handlePrefer)
@@ -732,10 +733,11 @@ func (p *PagesAPI) handleContacts(w http.ResponseWriter, r *http.Request) {
 	redirectFlash(w, r, "/me", "Контакты сохранены.", true)
 }
 
-// handleContactsSendCode — POST /me/contacts/send-code: код подтверждения
-// на выбранный в форме канал (email/sms/telegram); автоподбор — как в
-// JSON API.
-func (p *PagesAPI) handleContactsSendCode(w http.ResponseWriter, r *http.Request) {
+// handleSendCode — POST /me/send-code: запрос одноразового кода подтверждения
+// на доступный канал (Telegram, Email, SMS) для чувствительных операций профиля.
+// Поддерживает как AJAX/JSON запросы (Accept: application/json), так и обычную
+// отправку HTML-формы с редиректом.
+func (p *PagesAPI) handleSendCode(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
 
 	var prefer []channel.Channel
@@ -743,30 +745,107 @@ func (p *PagesAPI) handleContactsSendCode(w http.ResponseWriter, r *http.Request
 	case channel.Email, channel.SMS, channel.Telegram:
 		prefer = []channel.Channel{ch}
 	default:
-		// Канал не выбран/неизвестен — email/telegram из prefer_channels.
+		// Канал не выбран явно — отбираем каналы доставки (Telegram, Email, SMS)
+		// в порядке предпочтений пользователя (user.PreferChannels).
 		for _, c := range user.PreferChannels {
-			if c == channel.Email || c == channel.Telegram {
+			if c == channel.Telegram || c == channel.Email || c == channel.SMS {
 				prefer = append(prefer, c)
 			}
 		}
 		if len(prefer) == 0 {
-			prefer = []channel.Channel{channel.Email, channel.Telegram}
+			prefer = []channel.Channel{channel.Telegram, channel.Email, channel.SMS}
 		}
 	}
 	slim := *user // копия с ограниченным набором каналов; ядро не мутирует user
 	slim.PreferChannels = prefer
 
-	_, err := p.core.StartWithMeta(r.Context(), &slim, purposeUIConfirm, clientIP(r), r.UserAgent())
+	ch, err := p.core.StartWithMeta(r.Context(), &slim, purposeUIConfirm, clientIP(r), r.UserAgent())
+
+	// Вычисляем URL для редиректа при обычной отправке формы
+	target := r.PostFormValue("return_to")
+	if target == "" {
+		if ref := r.Referer(); ref != "" {
+			if u, uErr := url.Parse(ref); uErr == nil && strings.HasPrefix(u.Path, "/me") {
+				target = u.Path
+			}
+		}
+	}
+	if target == "" || !strings.HasPrefix(target, "/me") {
+		target = "/me"
+	}
+
+	var channelMsg string
+	if ch != nil {
+		switch ch.Channel {
+		case channel.Telegram:
+			channelMsg = "Код подтверждения отправлен в Telegram."
+		case channel.Email:
+			channelMsg = "Код подтверждения отправлен на Email."
+		case channel.SMS:
+			channelMsg = "Код подтверждения отправлен по SMS."
+		default:
+			channelMsg = "Код подтверждения отправлен."
+		}
+	} else {
+		channelMsg = "Код подтверждения отправлен."
+	}
+
+	wantsJSON := strings.Contains(r.Header.Get("Accept"), "application/json") ||
+		r.Header.Get("X-Requested-With") == "XMLHttpRequest"
+
+	if wantsJSON {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if err == nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":      true,
+				"channel": string(ch.Channel),
+				"message": channelMsg,
+			})
+			return
+		}
+		if errors.Is(err, auth.ErrCooldown) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":      false,
+				"error":   "cooldown",
+				"message": "Подождите перед повторной отправкой кода.",
+			})
+			return
+		}
+		if errors.Is(err, auth.ErrNoChannel) {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":      false,
+				"error":   "no_channel",
+				"message": "Нет доступного канала доставки кода (Telegram, Email, SMS).",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      false,
+			"error":   "server_error",
+			"message": "Не удалось отправить код.",
+		})
+		return
+	}
+
 	switch {
 	case err == nil:
-		redirectFlash(w, r, "/me", "Код подтверждения отправлен.", true)
+		redirectFlash(w, r, target, channelMsg, true)
 	case errors.Is(err, auth.ErrNoChannel):
-		redirectFlash(w, r, "/me", "Нет доступного канала доставки кода.", false)
+		redirectFlash(w, r, target, "Нет доступного канала доставки кода.", false)
 	case errors.Is(err, auth.ErrCooldown):
-		redirectFlash(w, r, "/me", "Подождите перед повторной отправкой кода.", false)
+		redirectFlash(w, r, target, "Подождите перед повторной отправкой кода.", false)
 	default:
-		flash500(w, r, "/me", err)
+		flash500(w, r, target, err)
 	}
+}
+
+// handleContactsSendCode — POST /me/contacts/send-code: обратная совместимость
+// для формы отправки кода со страницы контактов.
+func (p *PagesAPI) handleContactsSendCode(w http.ResponseWriter, r *http.Request) {
+	p.handleSendCode(w, r)
 }
 
 // handlePrefer — POST /me/prefer: порядок prefer_channels (валидные имена

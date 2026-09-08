@@ -16,8 +16,11 @@
     {{csrf .CSRF}}
     <label class="field">
       <span class="field-label">Код</span>
-      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
-      <span class="help">Текущий код из приложения-аутентификатора.</span>
+      <div class="field-with-btn">
+        <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+        <button type="submit" formaction="/me/send-code" formmethod="post" formnovalidate class="btn secondary" data-request-code>Запросить код</button>
+      </div>
+      <span class="help">Текущий код из приложения-аутентификатора, резервный код или код с привязанного канала.</span>
     </label>
     <div class="form-actions">
       <button type="submit" class="btn danger">Отвязать TOTP</button>

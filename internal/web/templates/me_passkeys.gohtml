@@ -59,7 +59,10 @@
       </label>
       <label class="field">
         <span class="field-label">Код подтверждения</span>
-        <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+        <div class="field-with-btn">
+          <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+          <button type="submit" formaction="/me/send-code" formmethod="post" formnovalidate class="btn secondary" data-request-code>Запросить код</button>
+        </div>
       </label>
     </div>
     <div class="form-actions">

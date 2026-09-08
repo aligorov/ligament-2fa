@@ -15,7 +15,10 @@
     {{csrf .CSRF}}
     <label class="field">
       <span class="field-label">Код подтверждения</span>
-      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+      <div class="field-with-btn">
+        <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+        <button type="submit" formaction="/me/send-code" formmethod="post" formnovalidate class="btn secondary" data-request-code>Запросить код</button>
+      </div>
     </label>
     <div class="form-actions">
       <button type="submit" class="btn danger">Отвязать Telegram</button>
@@ -39,8 +42,11 @@
     {{csrf .CSRF}}
     <label class="field">
       <span class="field-label">Код подтверждения</span>
-      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code"{{if .NeedCode}} required{{end}}>
-      <span class="help">Код из приложения, резервный код или код со старого канала.</span>
+      <div class="field-with-btn">
+        <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code"{{if .NeedCode}} required{{end}}>
+        <button type="submit" formaction="/me/send-code" formmethod="post" formnovalidate class="btn secondary" data-request-code>Запросить код</button>
+      </div>
+      <span class="help">Код из приложения, резервный код или запросите на привязанный канал.</span>
     </label>
     <div class="form-actions">
       <button type="submit" class="btn secondary">Получить новый код</button>
@@ -56,10 +62,13 @@
     {{csrf .CSRF}}
     <label class="field">
       <span class="field-label">Код подтверждения</span>
-      <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code"{{if .NeedCode}} required{{end}}>
+      <div class="field-with-btn">
+        <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code"{{if .NeedCode}} required{{end}}>
+        <button type="submit" formaction="/me/send-code" formmethod="post" formnovalidate class="btn secondary" data-request-code>Запросить код</button>
+      </div>
       <span class="help">Выдача кода привязки — чувствительная операция:
       подтвердите её кодом второго фактора (из приложения, резервным или
-      доставленным на привязанный канал).</span>
+      запросите на привязанный канал).</span>
     </label>
     <div class="form-actions">
       <button type="submit" class="btn primary">Получить код привязки</button>
