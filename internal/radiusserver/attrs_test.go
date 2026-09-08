@@ -10,6 +10,7 @@ import (
 
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
+	"layeh.com/radius/rfc2868"
 	"layeh.com/radius/rfc2869"
 	msm "layeh.com/radius/vendors/microsoft"
 	mt "layeh.com/radius/vendors/mikrotik"
@@ -64,6 +65,48 @@ func TestApplyReplyAttrsSkipsUnknown(t *testing.T) {
 	})
 	if got := len(resp.Attributes); got != 0 {
 		t.Fatalf("все неизвестные/битые атрибуты должны быть пропущены, добавлено %d", got)
+	}
+}
+
+func TestApplyReplyAttrsVLAN(t *testing.T) {
+	resp := radius.New(radius.CodeAccessAccept, []byte("s3cret"))
+	applyReplyAttrs(resp, map[string]string{
+		"Tunnel-Type":             "13",
+		"Tunnel-Medium-Type":      "6",
+		"Tunnel-Private-Group-Id": "100",
+	})
+
+	tag, tt := rfc2868.TunnelType_Get(resp)
+	if tag != 1 || tt != 13 {
+		t.Fatalf("Tunnel-Type = %d (tag %d), want 13 (tag 1)", tt, tag)
+	}
+	tag, tmt := rfc2868.TunnelMediumType_Get(resp)
+	if tag != 1 || tmt != 6 {
+		t.Fatalf("Tunnel-Medium-Type = %d (tag %d), want 6 (tag 1)", tmt, tag)
+	}
+	tag, vid := rfc2868.TunnelPrivateGroupID_GetString(resp)
+	if tag != 1 || vid != "100" {
+		t.Fatalf("Tunnel-Private-Group-Id = %q (tag %d), want \"100\" (tag 1)", vid, tag)
+	}
+}
+
+func TestApplyReplyAttrsAutoVLAN(t *testing.T) {
+	resp := radius.New(radius.CodeAccessAccept, []byte("s3cret"))
+	applyReplyAttrs(resp, map[string]string{
+		"Tunnel-Private-Group-Id": "20",
+	})
+
+	tag, tt := rfc2868.TunnelType_Get(resp)
+	if tag != 1 || tt != 13 {
+		t.Fatalf("Tunnel-Type = %d (tag %d), want 13 (tag 1)", tt, tag)
+	}
+	tag, tmt := rfc2868.TunnelMediumType_Get(resp)
+	if tag != 1 || tmt != 6 {
+		t.Fatalf("Tunnel-Medium-Type = %d (tag %d), want 6 (tag 1)", tmt, tag)
+	}
+	tag, vid := rfc2868.TunnelPrivateGroupID_GetString(resp)
+	if tag != 1 || vid != "20" {
+		t.Fatalf("Tunnel-Private-Group-Id = %q (tag %d), want \"20\" (tag 1)", vid, tag)
 	}
 }
 

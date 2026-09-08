@@ -10,6 +10,8 @@ import (
 
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
+	"layeh.com/radius/rfc2868"
+	"layeh.com/radius/rfc3580"
 	mt "layeh.com/radius/vendors/mikrotik"
 )
 
@@ -44,30 +46,61 @@ var standardAttrs = map[string]struct {
 
 // applyReplyAttrs добавляет reply-атрибуты в ответ Access-Accept. Поддержаны:
 // три именованных MikroTik VSA (vendor 14988 из layeh-пакета mikrotik),
-// Reply-Message и стандартные атрибуты из standardAttrs. Неизвестные
-// «Mikrotik-*» и любые прочие имена пропускаются с предупреждением в лог —
-// конфигурация не должна ронять аутентификацию.
+// Reply-Message, стандартные RFC 2865 атрибуты из standardAttrs, а также
+// RFC 2868 / RFC 3580 атрибуты для динамического VLAN (UniFi, Cisco, Aruba, MikroTik).
 func applyReplyAttrs(resp *radius.Packet, attrs map[string]string) {
 	for name, value := range attrs {
-		switch name {
-		case "Reply-Message":
+		switch {
+		case strings.EqualFold(name, "Reply-Message"):
 			setOrWarn("Reply-Message", func() error {
 				return rfc2865.ReplyMessage_SetString(resp, value)
 			})
-		case "Mikrotik-Group":
+		case strings.EqualFold(name, "Mikrotik-Group"):
 			setOrWarn("Mikrotik-Group", func() error {
 				return mt.MikrotikGroup_SetString(resp, value)
 			})
-		case "Mikrotik-Rate-Limit":
+		case strings.EqualFold(name, "Mikrotik-Rate-Limit"):
 			setOrWarn("Mikrotik-Rate-Limit", func() error {
 				return mt.MikrotikRateLimit_SetString(resp, value)
 			})
-		case "Mikrotik-Address-List":
+		case strings.EqualFold(name, "Mikrotik-Address-List"):
 			setOrWarn("Mikrotik-Address-List", func() error {
 				return mt.MikrotikAddressList_SetString(resp, value)
 			})
+		case strings.EqualFold(name, "Tunnel-Type"):
+			setOrWarn("Tunnel-Type", func() error {
+				var v uint64
+				var err error
+				if strings.EqualFold(value, "VLAN") {
+					v = uint64(rfc3580.TunnelType_Value_VLAN)
+				} else {
+					v, err = strconv.ParseUint(value, 10, 32)
+				}
+				if err != nil {
+					return err
+				}
+				return rfc2868.TunnelType_Add(resp, 1, rfc2868.TunnelType(v))
+			})
+		case strings.EqualFold(name, "Tunnel-Medium-Type"):
+			setOrWarn("Tunnel-Medium-Type", func() error {
+				var v uint64
+				var err error
+				if strings.EqualFold(value, "IEEE-802") || strings.EqualFold(value, "802") {
+					v = uint64(rfc2868.TunnelMediumType_Value_IEEE802)
+				} else {
+					v, err = strconv.ParseUint(value, 10, 32)
+				}
+				if err != nil {
+					return err
+				}
+				return rfc2868.TunnelMediumType_Add(resp, 1, rfc2868.TunnelMediumType(v))
+			})
+		case strings.EqualFold(name, "Tunnel-Private-Group-Id"):
+			setOrWarn("Tunnel-Private-Group-Id", func() error {
+				return rfc2868.TunnelPrivateGroupID_AddString(resp, 1, value)
+			})
 		default:
-			if strings.HasPrefix(name, "Mikrotik-") {
+			if strings.HasPrefix(strings.ToLower(name), "mikrotik-") {
 				slog.Warn("radius: неизвестный Mikrotik-атрибут пропущен", "attr", name)
 				continue
 			}
@@ -77,6 +110,27 @@ func applyReplyAttrs(resp *radius.Packet, attrs map[string]string) {
 				continue
 			}
 			addStandardAttr(resp, name, def.typ, def.kind, value)
+		}
+	}
+
+	// RFC 3580 §3.31, §3.32: если задан Tunnel-Private-Group-Id (номер или имя VLAN),
+	// для динамического назначения VLAN на точках доступа (UniFi, Cisco, Aruba)
+	// обязательно требуются Tunnel-Type=13 (VLAN) и Tunnel-Medium-Type=6 (IEEE-802).
+	// Если администратор не указал их явно, добавляем их автоматически.
+	hasAttr := func(k string) bool {
+		for name := range attrs {
+			if strings.EqualFold(name, k) {
+				return true
+			}
+		}
+		return false
+	}
+	if hasAttr("Tunnel-Private-Group-Id") {
+		if !hasAttr("Tunnel-Type") {
+			_ = rfc2868.TunnelType_Add(resp, 1, rfc2868.TunnelType(rfc3580.TunnelType_Value_VLAN))
+		}
+		if !hasAttr("Tunnel-Medium-Type") {
+			_ = rfc2868.TunnelMediumType_Add(resp, 1, rfc2868.TunnelMediumType_Value_IEEE802)
 		}
 	}
 }
