@@ -226,7 +226,7 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 	}
 	if !verifyMessageAuthenticator(r.Packet) {
 		// BlastRADIUS: подделанный Message-Authenticator — молчаливый drop.
-		slog.Warn("radius: неверный Message-Authenticator — пакет отброшен",
+		slog.Warn("radius: неверный Message-Authenticator (проверьте совпадение RADIUS Secret на NAS и в настройках сервера) — пакет отброшен",
 			"remote", r.RemoteAddr.String())
 		return
 	}

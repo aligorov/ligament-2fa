@@ -584,6 +584,9 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 	push := c.pushNotifier()
 	if !user.RadiusPush || user.TelegramChatID == nil || push == nil {
 		// Пароль верен, но кода нет и push недоступен — Reject.
+		if user.RadiusPush && user.TelegramChatID == nil {
+			slog.Warn("radius: для пользователя включен RADIUS Push, но Telegram не привязан — отказ", "user", username)
+		}
 		audit("bad_credentials", false)
 		return false, "bad_credentials"
 	}

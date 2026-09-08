@@ -38,7 +38,7 @@
         <td>{{if .Enabled}}<span class="badge ok">да</span>{{else}}<span class="badge err">нет</span>{{end}}</td>
         <td>{{range .PreferChannels}}<span class="badge neutral">{{.}}</span> {{end}}</td>
         <td>{{if .VLAN}}<span class="badge info" title="Сетевой сегмент: Tunnel-Private-Group-Id {{.VLAN}}">{{vlanDesc $.VLANProfiles .VLAN}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
-        <td>{{if .RadiusPush}}<span class="badge ok">да</span>{{else}}<span class="badge neutral">нет</span>{{end}}</td>
+        <td>{{if .RadiusPush}}{{if .TelegramLinked}}<span class="badge ok">да</span>{{else}}<span class="badge warn" title="Внимание: Telegram не привязан к аккаунту! Вход по RADIUS будет заблокирован, пока пользователь не привяжет бота в /me.">⚠️ да (ТГ не привязан!)</span>{{end}}{{else}}<span class="badge neutral">нет</span>{{end}}</td>
         <td class="row-actions">
           <a class="btn secondary sm" href="/admin/users/{{.ID}}">Редактировать</a>
           <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="reset-totp">
@@ -150,6 +150,15 @@
   <label class="check"><input type="checkbox" name="prefer_channels" value="sms"{{if and .Edit (hasChan .Edit.PreferChannels "sms")}} checked{{end}}> <span>SMS</span></label>
 </fieldset>
 <label class="check"><input type="checkbox" name="radius_push" value="1"{{if and .Edit .Edit.RadiusPush}} checked{{end}}> <span>RADIUS Push — Telegram-подтверждение вместо кода</span></label>
+{{if and .Edit (not .Edit.TelegramLinked)}}
+<div class="help" style="color: #f59e0b; margin: 4px 0 8px 24px; font-size: 0.85rem;">
+  ⚠️ <b>Внимание:</b> Telegram ещё не привязан к этому аккаунту. Пока пользователь не привяжет бота (в личном кабинете <code>/me</code>) или не введёт TOTP-код слитно с паролем, подключение к Wi-Fi будет <b>заблокировано</b> сервером (защита от неавторизованного входа).
+</div>
+{{else if not .Edit}}
+<div class="help" style="color: var(--muted); margin: 4px 0 8px 24px; font-size: 0.85rem;">
+  ℹ️ Для нового пользователя потребуется привязать Telegram-бота в <code>/me</code> после первого входа, иначе вход по RADIUS Push будет требовать TOTP-код.
+</div>
+{{end}}
 <div class="field" style="margin-top: 0.5rem;">
   <span class="field-label">📶 Сетевой сегмент / VLAN (Wi-Fi)</span>
   <div style="display: flex; gap: 8px; align-items: center; max-width: 500px;">

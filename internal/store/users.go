@@ -55,6 +55,11 @@ func (u *User) VLAN() string {
 	return u.RadiusReply["Tunnel-Private-Group-Id"]
 }
 
+// TelegramLinked сообщает, привязан ли Telegram-аккаунт (наличие chat_id).
+func (u *User) TelegramLinked() bool {
+	return u != nil && u.TelegramChatID != nil
+}
+
 // scanner абстрагирует pgx.Row и pgx.Rows для общего кода сканирования.
 type scanner interface{ Scan(dest ...any) error }
 
