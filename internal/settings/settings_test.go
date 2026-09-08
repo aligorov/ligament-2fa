@@ -50,6 +50,9 @@ func TestBuildTDefaults(t *testing.T) {
 	if snap.Server.Domain != "" {
 		t.Errorf("server.domain = %q, want пусто", snap.Server.Domain)
 	}
+	if snap.Server.Timezone != "Europe/Moscow" {
+		t.Errorf("server.timezone = %q, want Europe/Moscow", snap.Server.Timezone)
+	}
 	if snap.Policy.CodeTTL != 5*time.Minute || snap.Policy.ResendCooldown != 60*time.Second ||
 		snap.Policy.PushCooldown != 30*time.Second || snap.Policy.TrustedDeviceTTL != 720*time.Hour ||
 		snap.Policy.SessionTTL != 12*time.Hour || snap.Policy.FailWindow != 5*time.Minute || snap.Policy.BanTime != 15*time.Minute {
@@ -665,7 +668,7 @@ func TestDefaultsCoverKnownKeys(t *testing.T) {
 	}
 	want := []string{
 		"listen.http", "listen.radius_auth", "listen.radius_acct",
-		"server.domain", "messages", "fail2ban", "ads", "branding", "proxy",
+		"server.domain", "server.timezone", "messages", "fail2ban", "ads", "branding", "proxy",
 		"master_key", "admin_token",
 		"radius.secret", "radius.code_lengths", "radius.max_fail_per_user",
 		"radius.fail_window", "radius.push_wait", "radius.reply_attributes",
@@ -709,5 +712,30 @@ func TestIsKnownKeyExported(t *testing.T) {
 		if IsKnownKey(k) {
 			t.Errorf("IsKnownKey(%q) = true, want false", k)
 		}
+	}
+}
+
+func TestLocationTimezone(t *testing.T) {
+	snap := buildT(nil)
+	loc := snap.Location()
+	if loc.String() != "Europe/Moscow" {
+		t.Fatalf("Default Location = %s, want Europe/Moscow", loc.String())
+	}
+
+	snapCustom := buildT(map[string]json.RawMessage{
+		"server.timezone": json.RawMessage(`"Asia/Yekaterinburg"`),
+	})
+	locCustom := snapCustom.Location()
+	if locCustom.String() != "Asia/Yekaterinburg" {
+		t.Fatalf("Custom Location = %s, want Asia/Yekaterinburg", locCustom.String())
+	}
+
+	// Некорректная зона -> fallback Europe/Moscow
+	snapInvalid := buildT(map[string]json.RawMessage{
+		"server.timezone": json.RawMessage(`"Invalid/Zone"`),
+	})
+	locInvalid := snapInvalid.Location()
+	if locInvalid == nil {
+		t.Fatal("Location returned nil for invalid timezone")
 	}
 }

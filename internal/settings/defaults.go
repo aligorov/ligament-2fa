@@ -14,6 +14,7 @@ var defaults = map[string]json.RawMessage{
 	"listen.radius_auth": json.RawMessage(`":1812"`),
 	"listen.radius_acct": json.RawMessage(`":1813"`),
 	"server.domain":      json.RawMessage(`""`),
+	"server.timezone":    json.RawMessage(`"Europe/Moscow"`),
 	"branding":           json.RawMessage(`{"name":"","mark":"","logo":"","description":""}`),
 	"ads":                json.RawMessage(`{"enabled":false,"provider":"rsya","blocks":{"login_left":"","login_right":"","sidebar":""},"message_footer":"","direct":{"url":"","urls":[],"label":"","image":""}}`),
 	"proxy":              json.RawMessage(`{"trusted_networks":[]}`),

@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/skip2/go-qrcode"
@@ -161,13 +162,42 @@ func templateDict(kv ...any) map[string]any {
 	return out
 }
 
+var (
+	locMu sync.RWMutex
+	locFn func() *time.Location
+)
+
+// SetLocationFunc задаёт поставщик текущего часового пояса для рендера дат в шаблонах.
+func SetLocationFunc(fn func() *time.Location) {
+	locMu.Lock()
+	locFn = fn
+	locMu.Unlock()
+}
+
+func currentLoc() *time.Location {
+	locMu.RLock()
+	fn := locFn
+	locMu.RUnlock()
+	if fn != nil {
+		if l := fn(); l != nil {
+			return l
+		}
+	}
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err == nil {
+		return loc
+	}
+	return time.FixedZone("MSK", 3*3600)
+}
+
 func dt(v any) string {
+	loc := currentLoc()
 	switch t := v.(type) {
 	case time.Time:
-		return t.Format("02.01.2006 15:04")
+		return t.In(loc).Format("02.01.2006 15:04")
 	case *time.Time:
 		if t != nil {
-			return t.Format("02.01.2006 15:04")
+			return t.In(loc).Format("02.01.2006 15:04")
 		}
 	}
 	return "—"

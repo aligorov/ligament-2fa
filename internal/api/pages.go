@@ -288,9 +288,13 @@ func (p *PagesAPI) licenseWarnings(r *http.Request) []string {
 	}
 	if st.Mode == license.ModeLicensed && !st.UpdatesUntil.IsZero() &&
 		time.Until(st.UpdatesUntil) <= 30*24*time.Hour {
+		loc := time.UTC
+		if p.m != nil && p.m.Get() != nil {
+			loc = p.m.Get().Location()
+		}
 		msgs = append(msgs, fmt.Sprintf(
 			"Обновления доступны до %s — продлите maintenance, чтобы ставить новые версии.",
-			st.UpdatesUntil.Format("02.01.2006")))
+			st.UpdatesUntil.In(loc).Format("02.01.2006")))
 	}
 	return msgs
 }
@@ -1615,7 +1619,7 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 			if certIssuer == "" {
 				certIssuer = info.IssuerCN
 			}
-			certNotAfter = info.NotAfter.Format("02.01.2006 15:04")
+			certNotAfter = info.NotAfter.In(t.Location()).Format("02.01.2006 15:04")
 			certDaysLeft = info.DaysLeft
 			certIsSelfSigned = info.IsSelfSigned
 			certIsACME = info.IsACME
@@ -1762,6 +1766,7 @@ var settingsForm = map[string][]settingsField{
 	},
 	"messages": {
 		{name: "server.domain", key: "server.domain"},
+		{name: "server.timezone", key: "server.timezone"},
 		{name: "messages.email_body", key: "messages"},
 		{name: "messages.sms_text", key: "messages"},
 		{name: "messages.telegram_code_text", key: "messages"},
@@ -1997,7 +2002,11 @@ func (p *PagesAPI) handleAdminLicense(w http.ResponseWriter, r *http.Request) {
 		d.LimitText = fmt.Sprintf("%d/%d", st.UsersActive, st.UserLimit)
 	}
 	if !st.UpdatesUntil.IsZero() {
-		d.UpdatesUntil = st.UpdatesUntil.Format("02.01.2006")
+		loc := time.UTC
+		if p.m != nil && p.m.Get() != nil {
+			loc = p.m.Get().Location()
+		}
+		d.UpdatesUntil = st.UpdatesUntil.In(loc).Format("02.01.2006")
 	}
 	d.ModeText = map[license.Mode]string{
 		license.ModeFree:     "Free — без лицензии",

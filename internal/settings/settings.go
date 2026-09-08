@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/jackc/pgx/v5"
 
@@ -49,7 +50,10 @@ type T struct {
 	Server struct {
 		// Domain — базовый URL сервера (https://2fa.example.com, без
 		// слэша на конце): подставляется в шаблоны сообщений {domain}.
-		Domain string
+		Domain string `json:"domain"`
+		// Timezone — часовой пояс сервера (например, "Europe/Moscow"):
+		// используется в уведомлениях, аудите и веб-интерфейсе.
+		Timezone string `json:"timezone"`
 	}
 
 	// Branding — белый лейбл (ключ branding): применяется ТОЛЬКО при
@@ -263,6 +267,7 @@ func defaultT() *T {
 	t.Listen.HTTP = ":8080"
 	t.Listen.RadiusAuth = ":1812"
 	t.Listen.RadiusAcct = ":1813"
+	t.Server.Timezone = "Europe/Moscow"
 	t.Ads.Enabled = false
 	t.Ads.Direct.URLs = []string{}
 	t.Proxy.TrustedNetworks = []string{}
@@ -522,6 +527,22 @@ func (t *T) MessageVars() map[string]string {
 	}
 }
 
+// Location возвращает *time.Location для отображения времени (по умолчанию Europe/Moscow, fallback UTC).
+func (t *T) Location() *time.Location {
+	tz := strings.TrimSpace(t.Server.Timezone)
+	if tz == "" {
+		tz = "Europe/Moscow"
+	}
+	loc, err := time.LoadLocation(tz)
+	if err == nil {
+		return loc
+	}
+	if loc, err := time.LoadLocation("Europe/Moscow"); err == nil {
+		return loc
+	}
+	return time.FixedZone("MSK", 3*3600)
+}
+
 // humanTTL — длительность жизни кода для текста сообщения: «5 мин»,
 // «1 ч», «90 мин».
 func humanTTL(d time.Duration) string {
@@ -544,6 +565,10 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Listen.RadiusAcct = parseString(raw["listen.radius_acct"], def.Listen.RadiusAcct)
 
 	t.Server.Domain = strings.TrimRight(parseString(raw["server.domain"], def.Server.Domain), "/")
+	t.Server.Timezone = strings.TrimSpace(parseString(raw["server.timezone"], def.Server.Timezone))
+	if t.Server.Timezone == "" {
+		t.Server.Timezone = "Europe/Moscow"
+	}
 	br := fields(raw["branding"])
 	t.Branding.Name = parseString(br["name"], def.Branding.Name)
 	t.Branding.Mark = parseString(br["mark"], def.Branding.Mark)
@@ -995,7 +1020,8 @@ func (t *T) masked() map[string]any {
 			"radius_acct": t.Listen.RadiusAcct,
 		},
 		"server": map[string]any{
-			"domain": t.Server.Domain,
+			"domain":   t.Server.Domain,
+			"timezone": t.Server.Timezone,
 		},
 		"branding": map[string]any{
 			"name":        t.Branding.Name,

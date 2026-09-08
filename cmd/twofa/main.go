@@ -239,6 +239,9 @@ func main() {
 		slog.Error("main: шаблоны web-интерфейса", "error", err)
 		os.Exit(1)
 	}
+	web.SetLocationFunc(func() *time.Location {
+		return m.Get().Location()
+	})
 	// OIDC Provider: ключ подписи ID-токенов читается из настроек
 	// (oidc.keys) и при первом старте генерируется и сохраняется.
 	oidcMgr, err := oidc.NewManager(ctx, st, m, rend)

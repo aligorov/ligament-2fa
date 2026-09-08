@@ -705,16 +705,19 @@ func (c *Core) NotifyLoginSuccess(ctx context.Context, username, method, ip, ua 
 			return
 		}
 
-		timeStr := now.Format("02.01.2006 15:04:05")
+		loc := time.UTC
 		domain := ""
 		if c.set != nil && c.set.Get() != nil {
 			t := c.set.Get()
+			loc = t.Location()
 			if t.Server.Domain != "" {
 				domain = t.Server.Domain
 			} else if t.ACME.Domain != "" {
 				domain = t.ACME.Domain
 			}
 		}
+
+		timeStr := now.In(loc).Format("02.01.2006 15:04:05")
 
 		var sb strings.Builder
 		sb.WriteString("🔔 Вход в учётную запись\n\n")

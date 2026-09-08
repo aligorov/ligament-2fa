@@ -296,13 +296,15 @@ func (b *Bot) handleCallback(ctx context.Context, queryID string, chatID, msgID 
 // SendPush отправляет в чат запрос push-подтверждения входа с кнопками
 // "✅ Подтвердить" / "❌ Это не я"; callback_data — approve:<id> / deny:<id>.
 func (b *Bot) SendPush(ctx context.Context, chatID int64, who, ip, ua string, challengeID uuid.UUID) error {
-	pushTpl := snap0(b.set).Messages.TelegramPush
+	snap := snap0(b.set)
+	pushTpl := snap.Messages.TelegramPush
 	if strings.TrimSpace(pushTpl) == "" {
 		pushTpl = settings.DefaultTelegramPush // тесты без менеджера настроек
 	}
+	loc := snap.Location()
 	vars := map[string]string{
 		"username": who, "ip": ip, "ua": ua,
-		"time": time.Now().Format("15:04:05"),
+		"time":     time.Now().In(loc).Format("15:04:05"),
 	}
 	text := delivery.RenderTemplate(pushTpl, "", vars)
 	kb := &InlineKeyboard{InlineKeyboard: [][]InlineButton{
