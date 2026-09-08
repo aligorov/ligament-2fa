@@ -121,6 +121,8 @@ type T struct {
 		FailWindow      time.Duration
 		PushWait        time.Duration
 		ReplyAttributes map[string]string
+		VLANProfiles    map[string]string
+		NASInventory    map[string]string
 		// EAPCert — сырой JSON ключа radius.eap_cert: self-signed пара
 		// сертификата EAP-TTLS {"cert_pem","key_pem"}. Генерируется
 		// RADIUS-сервером при первом старте; nil — ещё не создан.
@@ -284,6 +286,8 @@ func defaultT() *T {
 	t.Radius.FailWindow = 5 * time.Minute
 	t.Radius.PushWait = 20 * time.Second
 	t.Radius.ReplyAttributes = map[string]string{}
+	t.Radius.VLANProfiles = map[string]string{}
+	t.Radius.NASInventory = map[string]string{}
 	t.TOTP.Issuer = "twofa"
 	t.TOTP.Digits = 6
 	t.TOTP.Period = 30
@@ -615,6 +619,8 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Radius.FailWindow = parseDur(raw["radius.fail_window"], def.Radius.FailWindow)
 	t.Radius.PushWait = parseDur(raw["radius.push_wait"], def.Radius.PushWait)
 	t.Radius.ReplyAttributes = parseStringMap(raw["radius.reply_attributes"], def.Radius.ReplyAttributes)
+	t.Radius.VLANProfiles = parseStringMap(raw["radius.vlan_profiles"], def.Radius.VLANProfiles)
+	t.Radius.NASInventory = parseStringMap(raw["radius.nas_inventory"], def.Radius.NASInventory)
 
 	t.Radius.CertFile = parseString(raw["radius.cert_file"], def.Radius.CertFile)
 	if envCert := os.Getenv("EAP_CERT_FILE"); envCert != "" && t.Radius.CertFile == "" {
@@ -1067,6 +1073,8 @@ func (t *T) masked() map[string]any {
 			"fail_window":       t.Radius.FailWindow.String(),
 			"push_wait":         t.Radius.PushWait.String(),
 			"reply_attributes":  t.Radius.ReplyAttributes,
+			"vlan_profiles":     t.Radius.VLANProfiles,
+			"nas_inventory":     t.Radius.NASInventory,
 			"cert_file":         t.Radius.CertFile,
 			"key_file":          secretMask(t.Radius.KeyFile),
 			// eap_cert — секрет: приватный ключ TLS-сертификата.

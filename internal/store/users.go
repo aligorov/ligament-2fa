@@ -47,6 +47,14 @@ type User struct {
 	PasswordEnc    []byte // AES-256-GCM шифрованный пароль под master_key с AAD username (миграция 0005)
 }
 
+// VLAN возвращает номер VLAN из RadiusReply (Tunnel-Private-Group-Id), если он задан.
+func (u *User) VLAN() string {
+	if u == nil || u.RadiusReply == nil {
+		return ""
+	}
+	return u.RadiusReply["Tunnel-Private-Group-Id"]
+}
+
 // scanner абстрагирует pgx.Row и pgx.Rows для общего кода сканирования.
 type scanner interface{ Scan(dest ...any) error }
 

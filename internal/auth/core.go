@@ -726,7 +726,11 @@ func (c *Core) NotifyLoginSuccess(ctx context.Context, username, method, ip, ua 
 			sb.WriteString("🌐 Способ: " + method + "\n")
 		}
 		if ip != "" {
-			sb.WriteString("📍 IP-адрес: " + ip + "\n")
+			label := "📍 IP-адрес"
+			if strings.HasPrefix(method, "Wi-Fi") {
+				label = "📡 Точка доступа (NAS)"
+			}
+			sb.WriteString(label + ": " + ip + "\n")
 		}
 		if ua != "" {
 			sb.WriteString("📱 Устройство: " + ua + "\n")

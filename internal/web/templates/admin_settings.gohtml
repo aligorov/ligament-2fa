@@ -78,8 +78,18 @@
     </div>
     <label class="field">
       <span class="field-label">Reply-атрибуты Accept (JSON)</span>
-      <textarea class="textarea" name="radius.reply_attributes" rows="4">{{.ReplyAttrsJSON}}</textarea>
+      <textarea class="textarea mono" name="radius.reply_attributes" rows="4">{{.ReplyAttrsJSON}}</textarea>
       <span class="help">Атрибуты, добавляемые в Access-Accept всем пользователям.</span>
+    </label>
+    <label class="field">
+      <span class="field-label">🏷️ Справочник VLAN / Сегменты сети (JSON)</span>
+      <textarea class="textarea mono" name="radius.vlan_profiles" rows="3" placeholder='{"10": "Бухгалтерия", "20": "IT отдел", "30": "Гостевой Wi-Fi"}'>{{.VLANProfilesJSON}}</textarea>
+      <span class="help">Сопоставление номеров VLAN с понятными названиями (напр. <code>{"10": "Бухгалтерия", "20": "IT отдел"}</code>). Используется в выпадающих списках пользователей, групп AD и журнале аудита.</span>
+    </label>
+    <label class="field">
+      <span class="field-label">📡 Инвентарь оборудования (NAS / Точки доступа / Коммутаторы) (JSON)</span>
+      <textarea class="textarea mono" name="radius.nas_inventory" rows="3" placeholder='{"192.168.1.50": "UniFi AP-Pro Офис 2 этаж", "10.0.0.1": "MikroTik CCR2004"}'>{{.NASInventoryJSON}}</textarea>
+      <span class="help">Понятные имена точек доступа и серверов доступа по их IP-адресу или NAS-Identifier (напр. <code>{"192.168.1.50": "UniFi AP-Pro Офис 2 этаж"}</code>). Отображаются в уведомлениях Telegram и аудите.</span>
     </label>
     <div class="form-actions">
       <button type="submit" class="btn primary">Сохранить секцию</button>
@@ -666,6 +676,9 @@
 
       <!-- Скрытое поле для отправки в форму (name="ldap.group_radius_map") -->
       <textarea name="ldap.group_radius_map" id="ldap-group-radius-raw" style="display:none;">{{.LDAPGroupRadiusMap}}</textarea>
+
+      <!-- Скрытый блок для передачи справочника VLAN в JavaScript -->
+      <div id="vlan-profiles-data" data-profiles="{{.VLANProfilesJSON}}" style="display:none;"></div>
 
       <!-- Автодополнение для стандартных RADIUS-атрибутов -->
       <datalist id="radius-common-attrs">

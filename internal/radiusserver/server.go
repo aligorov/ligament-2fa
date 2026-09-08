@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"net"
@@ -265,9 +266,26 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 			attrs = user.RadiusReply
 		}
 		applyReplyAttrs(resp, attrs)
+
+		clientMAC, _ := rfc2865.CallingStationID_LookupString(r.Packet)
+		calledStation, _ := rfc2865.CalledStationID_LookupString(r.Packet)
+		nasID, _ := rfc2865.NASIdentifier_LookupString(r.Packet)
+		nasIP := hostOnly(r.RemoteAddr)
+		if nip, err := rfc2865.NASIPAddress_Lookup(r.Packet); err == nil && len(nip) > 0 {
+			nasIP = nip.String()
+		}
+
+		vlan := ExtractVLAN(attrs)
+		method := "Wi-Fi (PAP)"
+		if vlan != "" {
+			method = fmt.Sprintf("Wi-Fi (PAP), VLAN %s", vlan)
+		}
+		nasDesc := ResolveNASDescription(nasIP, nasID, calledStation, s.m.Get().Radius.NASInventory)
+		deviceDesc := FormatDeviceDescription(clientMAC)
+
 		slog.Info("radius: Access-Accept", "user", username, "reason", reason,
-			"remote", hostOnly(r.RemoteAddr))
-		s.core.NotifyLoginSuccess(context.WithoutCancel(r.Context()), username, "Wi-Fi (PAP)", hostOnly(r.RemoteAddr), "")
+			"remote", hostOnly(r.RemoteAddr), "vlan", vlan, "nas", nasDesc, "device", deviceDesc)
+		s.core.NotifyLoginSuccess(context.WithoutCancel(r.Context()), username, method, nasDesc, deviceDesc)
 	} else {
 		resp = r.Response(radius.CodeAccessReject)
 		if err := rfc2865.ReplyMessage_SetString(resp, "rejected"); err != nil {

@@ -151,6 +151,16 @@ function initGroupRadiusBuilder() {
   const jsonPreview = document.getElementById("gr-json-preview");
   if (!container || !rawInput) return;
 
+  const vlanDataEl = document.getElementById("vlan-profiles-data");
+  let vlanProfiles = {};
+  if (vlanDataEl && vlanDataEl.dataset.profiles) {
+    try {
+      vlanProfiles = JSON.parse(vlanDataEl.dataset.profiles);
+    } catch (e) {
+      vlanProfiles = {};
+    }
+  }
+
   function attrCountLabel(n) {
     if (n % 10 === 1 && n % 100 !== 11) return `${n} атрибут`;
     if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) return `${n} атрибута`;
@@ -192,6 +202,26 @@ function initGroupRadiusBuilder() {
 
       if (countBadge) {
         countBadge.textContent = attrCountLabel(validAttrs);
+      }
+
+      // Синхронизация селектора VLAN с атрибутами таблицы
+      const vlanVal = attrs["Tunnel-Private-Group-Id"] || "";
+      const vlanSelect = card.querySelector(".gr-group-vlan-select");
+      const vlanCustom = card.querySelector(".gr-group-vlan-custom");
+      if (vlanSelect && vlanCustom && document.activeElement !== vlanSelect && document.activeElement !== vlanCustom) {
+        if (vlanVal && vlanProfiles[vlanVal]) {
+          vlanSelect.value = vlanVal;
+          vlanCustom.style.display = "none";
+          vlanCustom.value = vlanVal;
+        } else if (vlanVal) {
+          vlanSelect.value = "custom";
+          vlanCustom.value = vlanVal;
+          vlanCustom.style.display = "";
+        } else {
+          vlanSelect.value = "";
+          vlanCustom.value = "";
+          vlanCustom.style.display = "none";
+        }
       }
 
       if (groupName) {
@@ -248,6 +278,7 @@ function initGroupRadiusBuilder() {
   function createGroupCard(groupName = "", attrs = {}) {
     const card = document.createElement("div");
     card.className = "gr-card";
+    const currentVlan = (attrs && attrs["Tunnel-Private-Group-Id"]) || "";
     card.innerHTML = `
       <div class="gr-card-head">
         <div class="gr-group-input-wrap">
@@ -257,6 +288,19 @@ function initGroupRadiusBuilder() {
         <div class="gr-card-head-actions">
           <span class="badge neutral gr-attr-count">0 атрибутов</span>
           <button type="button" class="btn sm ghost danger gr-btn-delete-group" title="Удалить группу">🗑️ Удалить</button>
+        </div>
+      </div>
+      <div class="gr-vlan-selector-bar">
+        <div class="gr-vlan-label">
+          <span class="muted" style="font-weight: 500;">📶 VLAN (сегмент Wi-Fi):</span>
+          <select class="select sm gr-group-vlan-select" style="max-width: 280px;">
+            <option value="">— Без привязки к VLAN —</option>
+            ${Object.entries(vlanProfiles).map(([id, name]) => `
+              <option value="${escapeHtml(id)}" ${currentVlan === id ? "selected" : ""}>VLAN ${escapeHtml(id)} — ${escapeHtml(name)}</option>
+            `).join("")}
+            <option value="custom" ${currentVlan && !vlanProfiles[currentVlan] ? "selected" : ""}>Свой номер VLAN...</option>
+          </select>
+          <input type="text" class="input mono sm gr-group-vlan-custom" placeholder="VLAN ID" style="max-width: 90px; ${currentVlan && !vlanProfiles[currentVlan] ? "" : "display: none;"}" value="${escapeHtml(currentVlan)}">
         </div>
       </div>
       <div class="gr-card-body">
@@ -292,6 +336,54 @@ function initGroupRadiusBuilder() {
     const nameInput = card.querySelector(".gr-group-name");
     if (nameInput) {
       nameInput.addEventListener("input", syncData);
+    }
+
+    const vlanSelect = card.querySelector(".gr-group-vlan-select");
+    const vlanCustom = card.querySelector(".gr-group-vlan-custom");
+
+    function applyVLANToTable(vid) {
+      vid = vid ? vid.trim() : "";
+      const rows = tbody.querySelectorAll(".gr-attr-row");
+      let found = false;
+      rows.forEach((row) => {
+        const kInp = row.querySelector(".gr-attr-key");
+        const vInp = row.querySelector(".gr-attr-val");
+        if (kInp && kInp.value.trim() === "Tunnel-Private-Group-Id") {
+          found = true;
+          if (vid) {
+            vInp.value = vid;
+          } else {
+            row.remove();
+          }
+        }
+      });
+      if (!found && vid) {
+        tbody.appendChild(createAttrRow("Tunnel-Private-Group-Id", vid));
+      }
+      if (tbody.querySelectorAll(".gr-attr-row").length === 0) {
+        tbody.appendChild(createAttrRow("", ""));
+      }
+      syncData();
+    }
+
+    if (vlanSelect) {
+      vlanSelect.addEventListener("change", () => {
+        if (vlanSelect.value === "custom") {
+          vlanCustom.style.display = "";
+          vlanCustom.focus();
+          applyVLANToTable(vlanCustom.value);
+        } else {
+          vlanCustom.style.display = "none";
+          vlanCustom.value = vlanSelect.value;
+          applyVLANToTable(vlanSelect.value);
+        }
+      });
+    }
+
+    if (vlanCustom) {
+      vlanCustom.addEventListener("input", () => {
+        applyVLANToTable(vlanCustom.value);
+      });
     }
 
     const addAttrBtn = card.querySelector(".gr-btn-add-attr");

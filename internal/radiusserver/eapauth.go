@@ -324,9 +324,27 @@ func (s *Server) finishInnerPAP(w radius.ResponseWriter, r *radius.Request,
 	if err := w.Write(resp); err != nil {
 		slog.Warn("radius: ответ не отправлен", "user", inner.UserName, "error", err)
 	}
+
+	clientMAC, _ := rfc2865.CallingStationID_LookupString(r.Packet)
+	calledStation, _ := rfc2865.CalledStationID_LookupString(r.Packet)
+	nasID, _ := rfc2865.NASIdentifier_LookupString(r.Packet)
+	nasIP := srcIP
+	if nip, err := rfc2865.NASIPAddress_Lookup(r.Packet); err == nil && len(nip) > 0 {
+		nasIP = nip.String()
+	}
+
+	vlan := ExtractVLAN(attrs)
+	method := "Wi-Fi (TTLS)"
+	if vlan != "" {
+		method = fmt.Sprintf("Wi-Fi (TTLS), VLAN %s", vlan)
+	}
+	nasDesc := ResolveNASDescription(nasIP, nasID, calledStation, s.m.Get().Radius.NASInventory)
+	deviceDesc := FormatDeviceDescription(clientMAC)
+
 	s.eapSessions.delete(sess)
-	slog.Info("radius: EAP-TTLS Accept", "user", inner.UserName, "remote", srcIP)
-	s.core.NotifyLoginSuccess(context.WithoutCancel(r.Context()), inner.UserName, "Wi-Fi (TTLS)", srcIP, "")
+	slog.Info("radius: EAP-TTLS Accept", "user", inner.UserName, "remote", srcIP,
+		"vlan", vlan, "nas", nasDesc, "device", deviceDesc)
+	s.core.NotifyLoginSuccess(context.WithoutCancel(r.Context()), inner.UserName, method, nasDesc, deviceDesc)
 }
 
 // handlePEAP — шаг PEAPv0 в существующей сессии: сборка входящих
@@ -776,13 +794,30 @@ func (s *Server) finishPEAP(w radius.ResponseWriter, r *radius.Request,
 	}
 	applyReplyAttrs(resp, attrs)
 
+	clientMAC, _ := rfc2865.CallingStationID_LookupString(r.Packet)
+	calledStation, _ := rfc2865.CalledStationID_LookupString(r.Packet)
+	nasID, _ := rfc2865.NASIdentifier_LookupString(r.Packet)
+	nasIP := srcIP
+	if nip, err := rfc2865.NASIPAddress_Lookup(r.Packet); err == nil && len(nip) > 0 {
+		nasIP = nip.String()
+	}
+
+	vlan := ExtractVLAN(attrs)
+	method := "Wi-Fi (PEAP)"
+	if vlan != "" {
+		method = fmt.Sprintf("Wi-Fi (PEAP), VLAN %s", vlan)
+	}
+	nasDesc := ResolveNASDescription(nasIP, nasID, calledStation, s.m.Get().Radius.NASInventory)
+	deviceDesc := FormatDeviceDescription(clientMAC)
+
 	signEAPResponseMessageAuthenticator(r.Packet, resp)
 	if err := w.Write(resp); err != nil {
 		slog.Warn("radius: ответ не отправлен", "user", username, "error", err)
 	}
 	s.eapSessions.delete(sess)
-	slog.Info("radius: EAP-PEAP Accept", "user", username, "remote", srcIP)
-	s.core.NotifyLoginSuccess(context.WithoutCancel(r.Context()), username, "Wi-Fi (PEAP)", srcIP, "")
+	slog.Info("radius: EAP-PEAP Accept", "user", username, "remote", srcIP,
+		"vlan", vlan, "nas", nasDesc, "device", deviceDesc)
+	s.core.NotifyLoginSuccess(context.WithoutCancel(r.Context()), username, method, nasDesc, deviceDesc)
 }
 
 // sendEAP отправляет Access-Challenge с EAP-пакетом и State сессии,

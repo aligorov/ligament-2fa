@@ -217,6 +217,19 @@ func deref(v any) string {
 	return ""
 }
 
+// vlanDesc форматирует отображение VLAN с названием профиля (VLAN 20 (IT отдел)).
+func vlanDesc(profiles map[string]string, vlanID string) string {
+	if vlanID == "" {
+		return ""
+	}
+	if profiles != nil {
+		if name, ok := profiles[vlanID]; ok && name != "" {
+			return fmt.Sprintf("VLAN %s (%s)", vlanID, name)
+		}
+	}
+	return "VLAN " + vlanID
+}
+
 // funcs — общие функции шаблонов.
 var funcs = template.FuncMap{
 	"csrf":       csrf,
@@ -226,4 +239,5 @@ var funcs = template.FuncMap{
 	"dt":         dt,
 	"dict":       templateDict,
 	"deref":      deref,
+	"vlanDesc":   vlanDesc,
 }

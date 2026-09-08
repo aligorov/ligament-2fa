@@ -30,6 +30,8 @@ var defaults = map[string]json.RawMessage{
 	"radius.fail_window":       json.RawMessage(`"5m"`),
 	"radius.push_wait":         json.RawMessage(`"20s"`),
 	"radius.reply_attributes":  json.RawMessage(`{}`),
+	"radius.vlan_profiles":     json.RawMessage(`{}`),
+	"radius.nas_inventory":     json.RawMessage(`{}`),
 	"radius.cert_file":         json.RawMessage(`""`),
 	"radius.key_file":          json.RawMessage(`""`),
 	// radius.eap_cert — пара self-signed сертификата EAP-TTLS (RSA-2048,

@@ -28,7 +28,7 @@
   <div class="table-wrap">
     <table class="table">
       <tr>
-        <th>Имя</th><th>Источник</th><th>Роль</th><th>Включён</th><th>Каналы</th><th>RADIUS Push</th><th>Действия</th>
+        <th>Имя</th><th>Источник</th><th>Роль</th><th>Включён</th><th>Каналы</th><th>VLAN (Wi-Fi)</th><th>RADIUS Push</th><th>Действия</th>
       </tr>
       {{range .Users}}
       <tr{{if not .Enabled}} class="row-off"{{end}}>
@@ -37,6 +37,7 @@
         <td><span class="badge {{if eq .Role "admin"}}ok{{else}}neutral{{end}}">{{.Role}}</span></td>
         <td>{{if .Enabled}}<span class="badge ok">да</span>{{else}}<span class="badge err">нет</span>{{end}}</td>
         <td>{{range .PreferChannels}}<span class="badge neutral">{{.}}</span> {{end}}</td>
+        <td>{{if .VLAN}}<span class="badge info" title="Сетевой сегмент: Tunnel-Private-Group-Id {{.VLAN}}">{{vlanDesc $.VLANProfiles .VLAN}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
         <td>{{if .RadiusPush}}<span class="badge ok">да</span>{{else}}<span class="badge neutral">нет</span>{{end}}</td>
         <td class="row-actions">
           <a class="btn secondary sm" href="/admin/users/{{.ID}}">Редактировать</a>
@@ -149,11 +150,28 @@
   <label class="check"><input type="checkbox" name="prefer_channels" value="sms"{{if and .Edit (hasChan .Edit.PreferChannels "sms")}} checked{{end}}> <span>SMS</span></label>
 </fieldset>
 <label class="check"><input type="checkbox" name="radius_push" value="1"{{if and .Edit .Edit.RadiusPush}} checked{{end}}> <span>RADIUS Push — Telegram-подтверждение вместо кода</span></label>
-<label class="field">
-  <span class="field-label">RADIUS Reply <span class="muted">(JSON)</span></span>
-  <textarea class="textarea" name="radius_reply" rows="4" placeholder='{"Mikrotik-Group": "vpn"}'>{{if .Edit}}{{.EditReplyJSON}}{{end}}</textarea>
-  <span class="help">Атрибуты Access-Accept для этого пользователя.</span>
-</label>
+<div class="field" style="margin-top: 0.5rem;">
+  <span class="field-label">📶 Сетевой сегмент / VLAN (Wi-Fi)</span>
+  <div style="display: flex; gap: 8px; align-items: center; max-width: 500px;">
+    <select class="select" id="user-vlan-select" onchange="var inp=document.getElementById('user-vlan-input'); if(this.value!=='custom'){ inp.value=this.value; } else { inp.focus(); }">
+      <option value="">— По умолчанию (без персонального VLAN) —</option>
+      {{range $vid, $vname := $.VLANProfiles}}
+        <option value="{{$vid}}"{{if and $.Edit (eq $.Edit.VLAN $vid)}} selected{{end}}>VLAN {{$vid}} — {{$vname}}</option>
+      {{end}}
+      <option value="custom"{{if and $.Edit $.Edit.VLAN (not (index $.VLANProfiles $.Edit.VLAN))}} selected{{end}}>Свой номер VLAN...</option>
+    </select>
+    <input class="input mono" type="text" name="vlan_id" id="user-vlan-input" style="max-width: 130px;" placeholder="VLAN ID" value="{{if .Edit}}{{.Edit.VLAN}}{{end}}">
+  </div>
+  <span class="help">Автоматическая изоляция пользователя в указанный VLAN при подключении к корпоративному Wi-Fi или VPN (RFC 3580).</span>
+</div>
+<details class="advanced-details" style="margin: 8px 0 16px;">
+  <summary class="muted" style="cursor: pointer; font-size: 0.9rem; user-select: none;">⚙️ Дополнительные RADIUS-атрибуты (JSON)</summary>
+  <label class="field" style="margin-top: 8px;">
+    <span class="field-label">RADIUS Reply <span class="muted">(JSON)</span></span>
+    <textarea class="textarea mono" name="radius_reply" rows="3" placeholder='{"Mikrotik-Group": "vpn"}'>{{if .Edit}}{{.EditReplyJSON}}{{end}}</textarea>
+    <span class="help">Специальные атрибуты Access-Accept (Mikrotik-Group, Filter-Id, Framed-Pool и др.). VLAN можно задать в поле выше или здесь.</span>
+  </label>
+</details>
 <div class="form-actions">
   <button type="submit" class="btn primary">Сохранить</button>
 </div>

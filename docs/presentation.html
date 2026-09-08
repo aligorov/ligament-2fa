@@ -1,0 +1,1168 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Ligament 2FA — Презентация продукта</title>
+<style>
+  @page {
+    size: 1920px 1080px;
+    margin: 0;
+  }
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #0A0E1A;
+    color: #F3F4F6;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    overflow-x: hidden;
+  }
+  .slide {
+    width: 1920px;
+    height: 1080px;
+    page-break-after: always;
+    page-break-inside: avoid;
+    position: relative;
+    overflow: hidden;
+    padding: 70px 90px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    background: #0A0E1A;
+  }
+  /* Background glows */
+  .glow-cyan {
+    position: absolute;
+    width: 650px;
+    height: 650px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(0, 229, 255, 0.08) 0%, rgba(0, 0, 0, 0) 70%);
+    top: -150px;
+    right: -150px;
+    pointer-events: none;
+  }
+  .glow-blue {
+    position: absolute;
+    width: 600px;
+    height: 600px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(59, 130, 246, 0.07) 0%, rgba(0, 0, 0, 0) 70%);
+    bottom: -150px;
+    left: -150px;
+    pointer-events: none;
+  }
+
+  /* Header elements */
+  .slide-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding-bottom: 24px;
+    position: relative;
+    z-index: 2;
+  }
+  .header-left {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .badge-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #00E5FF;
+    background: rgba(0, 229, 255, 0.1);
+    border: 1px solid rgba(0, 229, 255, 0.3);
+    padding: 4px 12px;
+    border-radius: 6px;
+    width: fit-content;
+  }
+  .slide-title {
+    font-size: 42px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    color: #FFFFFF;
+  }
+  .slide-subtitle {
+    font-size: 20px;
+    color: #94A3B8;
+    font-weight: 400;
+  }
+  .header-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 18px;
+    font-weight: 700;
+    color: #CBD5E1;
+  }
+  .logo-icon {
+    width: 38px;
+    height: 38px;
+    background: linear-gradient(135deg, #00E5FF, #3B82F6);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #0A0E1A;
+    font-weight: 900;
+    font-size: 20px;
+  }
+
+  /* Footer */
+  .slide-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    padding-top: 20px;
+    font-size: 14px;
+    color: #64748B;
+    position: relative;
+    z-index: 2;
+  }
+  .footer-meta {
+    display: flex;
+    gap: 24px;
+  }
+  .slide-num {
+    font-weight: 700;
+    color: #94A3B8;
+  }
+
+  /* Cards Grid */
+  .content-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 30px 0;
+    position: relative;
+    z-index: 2;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 28px;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 32px;
+  }
+  .grid-4 {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 24px;
+  }
+  .card {
+    background: #121829;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    padding: 30px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+  }
+  .card-highlight {
+    background: linear-gradient(145deg, #151D33, #0F1526);
+    border-color: rgba(0, 229, 255, 0.3);
+  }
+  .card-icon {
+    width: 52px;
+    height: 52px;
+    border-radius: 12px;
+    background: rgba(0, 229, 255, 0.1);
+    border: 1px solid rgba(0, 229, 255, 0.25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 20px;
+    color: #00E5FF;
+  }
+  .card-icon.red {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.3);
+    color: #EF4444;
+  }
+  .card-icon.emerald {
+    background: rgba(16, 185, 129, 0.1);
+    border-color: rgba(16, 185, 129, 0.3);
+    color: #10B981;
+  }
+  .card-icon.purple {
+    background: rgba(139, 92, 246, 0.1);
+    border-color: rgba(139, 92, 246, 0.3);
+    color: #8B5CF6;
+  }
+  .card-icon.amber {
+    background: rgba(245, 158, 11, 0.1);
+    border-color: rgba(245, 158, 11, 0.3);
+    color: #F59E0B;
+  }
+  .card-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: #FFFFFF;
+    margin-bottom: 12px;
+  }
+  .card-text {
+    font-size: 16px;
+    color: #94A3B8;
+    line-height: 1.6;
+  }
+
+  /* Badges list */
+  .badge-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .tag {
+    font-size: 13px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 4px 10px;
+    border-radius: 6px;
+    color: #CBD5E1;
+  }
+  .tag.blue {
+    background: rgba(59, 130, 246, 0.12);
+    border-color: rgba(59, 130, 246, 0.3);
+    color: #60A5FA;
+  }
+  .tag.cyan {
+    background: rgba(0, 229, 255, 0.1);
+    border-color: rgba(0, 229, 255, 0.3);
+    color: #00E5FF;
+  }
+  .tag.green {
+    background: rgba(16, 185, 129, 0.12);
+    border-color: rgba(16, 185, 129, 0.3);
+    color: #34D399;
+  }
+
+  /* Title Slide Specifics */
+  .hero-slide {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 0 160px;
+  }
+  .hero-logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 28px;
+    font-weight: 900;
+    letter-spacing: 2px;
+    color: #FFFFFF;
+    margin-bottom: 28px;
+  }
+  .hero-logo-box {
+    width: 64px;
+    height: 64px;
+    border-radius: 16px;
+    background: linear-gradient(135deg, #00E5FF, #3B82F6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #0A0E1A;
+    font-size: 32px;
+    font-weight: 900;
+    box-shadow: 0 0 35px rgba(0, 229, 255, 0.4);
+  }
+  .hero-title {
+    font-size: 72px;
+    font-weight: 900;
+    line-height: 1.1;
+    color: #FFFFFF;
+    margin-bottom: 24px;
+    letter-spacing: -1px;
+  }
+  .gradient-text {
+    background: linear-gradient(90deg, #00E5FF, #3B82F6, #8B5CF6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .hero-desc {
+    font-size: 24px;
+    color: #94A3B8;
+    max-width: 1100px;
+    line-height: 1.5;
+    margin-bottom: 48px;
+  }
+  .hero-badges {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+  }
+  .hero-badge {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    padding: 12px 24px;
+    border-radius: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    color: #F1F5F9;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* Table Style */
+  .comp-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 16px;
+    text-align: left;
+    background: #121829;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .comp-table th {
+    background: #151E33;
+    padding: 16px 20px;
+    font-weight: 700;
+    color: #CBD5E1;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .comp-table td {
+    padding: 16px 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    color: #94A3B8;
+  }
+  .comp-table tr.highlight-row {
+    background: rgba(0, 229, 255, 0.04);
+  }
+  .comp-table tr.highlight-row td {
+    color: #FFFFFF;
+    font-weight: 600;
+  }
+  .status-yes {
+    color: #10B981;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .status-no {
+    color: #EF4444;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .status-warn {
+    color: #F59E0B;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Stats Callout */
+  .stat-block {
+    display: flex;
+    flex-direction: column;
+    background: #151E33;
+    border-radius: 14px;
+    padding: 24px;
+    border-left: 4px solid #00E5FF;
+  }
+  .stat-val {
+    font-size: 40px;
+    font-weight: 800;
+    color: #00E5FF;
+    line-height: 1;
+    margin-bottom: 8px;
+  }
+  .stat-label {
+    font-size: 15px;
+    color: #94A3B8;
+    line-height: 1.4;
+  }
+
+  /* Pricing Cards */
+  .price-card {
+    background: #121829;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    padding: 36px 28px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    position: relative;
+  }
+  .price-card.popular {
+    background: linear-gradient(150deg, #18223D, #0F172A);
+    border: 2px solid #00E5FF;
+    box-shadow: 0 0 35px rgba(0, 229, 255, 0.15);
+  }
+  .popular-badge {
+    position: absolute;
+    top: -14px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: linear-gradient(90deg, #00E5FF, #3B82F6);
+    color: #0A0E1A;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    padding: 4px 16px;
+    border-radius: 20px;
+    text-transform: uppercase;
+  }
+  .price-title {
+    font-size: 24px;
+    font-weight: 800;
+    color: #FFFFFF;
+    margin-bottom: 8px;
+  }
+  .price-users {
+    font-size: 15px;
+    color: #60A5FA;
+    font-weight: 600;
+    margin-bottom: 24px;
+  }
+  .price-amount {
+    font-size: 42px;
+    font-weight: 900;
+    color: #FFFFFF;
+    margin-bottom: 6px;
+  }
+  .price-period {
+    font-size: 14px;
+    color: #64748B;
+    margin-bottom: 24px;
+  }
+  .price-features {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-size: 15px;
+    color: #94A3B8;
+  }
+  .price-features li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .price-features li svg {
+    flex-shrink: 0;
+    color: #10B981;
+  }
+</style>
+</head>
+<body>
+
+<!-- СЛАЙД 1: ОБЛОЖКА -->
+<div class="slide hero-slide">
+  <div class="glow-cyan"></div>
+  <div class="glow-blue"></div>
+  
+  <div class="hero-logo">
+    <div class="hero-logo-box">L</div>
+    <span>LIGAMENT 2FA</span>
+  </div>
+
+  <h1 class="hero-title">
+    Автономный <span class="gradient-text">On-Premise шлюз</span><br>двухфакторной аутентификации
+  </h1>
+
+  <p class="hero-desc">
+    Безопасная защита корпоративного Wi-Fi (802.1X), VPN и Web-сервисов.<br>
+    Никаких внешних облаков. Работа в изолированном контуре. Развёртывание за 15 минут.
+  </p>
+
+  <div class="hero-badges">
+    <div class="hero-badge">
+      <svg width="20" height="20" fill="none" stroke="#00E5FF" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      100% On-Premise & Air-Gapped
+    </div>
+    <div class="hero-badge">
+      <svg width="20" height="20" fill="none" stroke="#00E5FF" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg>
+      RADIUS EAP-PEAP & Dynamic VLAN
+    </div>
+    <div class="hero-badge">
+      <svg width="20" height="20" fill="none" stroke="#00E5FF" stroke-width="2" viewBox="0 0 24 24"><path d="M21 2l-2 2m-2-2l2 2M3 13l3 3 15-15-3-3L3 13z"/></svg>
+      FIDO2 / Passkeys & Telegram Push
+    </div>
+    <div class="hero-badge">
+      <svg width="20" height="20" fill="none" stroke="#00E5FF" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      OpenID Connect (OIDC) IdP
+    </div>
+  </div>
+</div>
+
+<!-- СЛАЙД 2: ПРОБЛЕМЫ РЫНКА -->
+<div class="slide">
+  <div class="slide-header">
+    <div class="header-left">
+      <div class="badge-tag">Контекст & Вызовы</div>
+      <div class="slide-title">Ключевые боли корпоративной безопасности</div>
+      <div class="slide-subtitle">С чем сталкиваются компании при организации 2FA/MFA сегодня</div>
+    </div>
+    <div class="header-brand">
+      <div class="logo-icon">L</div>
+      <span>Ligament 2FA</span>
+    </div>
+  </div>
+
+  <div class="content-area">
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-icon red">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        </div>
+        <div class="card-title">Уход зарубежных сервисов</div>
+        <div class="card-text">
+          Cisco Duo, Okta и Microsoft Authenticator заблокировали доступ или несут критические санкционные риски. Нет поддержки российских SMS-шлюзов и локальных мессенджеров.
+        </div>
+        <div class="badge-list">
+          <span class="tag">Блокировки</span>
+          <span class="tag">Санкции</span>
+          <span class="tag">Нет оплаты по безналу</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon red">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+        </div>
+        <div class="card-title">Опасность облачных ядер (SaaS)</div>
+        <div class="card-text">
+          Популярные российские решения хранят чувствительную аутентификацию в сторонних облаках. При обрыве интернет-канала или DDoS-атаке на вендора доступ в офис и VPN полностью парализуется.
+        </div>
+        <div class="badge-list">
+          <span class="tag">152-ФЗ риски</span>
+          <span class="tag">Точка отказа</span>
+          <span class="tag">Запрещено в КИИ/банках</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon red">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        </div>
+        <div class="card-title">Высокая цена и сложность</div>
+        <div class="card-text">
+          Тяжелый enterprise-софт (Indeed, Аванпост) требует недели внедрения интеграторами и сотни тысяч рублей. Open Source (Keycloak + FreeRADIUS) требует высокой квалификации Linux-инженеров.
+        </div>
+        <div class="badge-list">
+          <span class="tag">От 400 000 ₽ / год</span>
+          <span class="tag">Месяцы внедрения</span>
+          <span class="tag">Сложная поддержка</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <div class="footer-meta">
+      <span>Ligament 2FA Overview</span>
+      <span>Конфиденциально</span>
+    </div>
+    <div class="slide-num">02 / 10</div>
+  </div>
+</div>
+
+<!-- СЛАЙД 3: АРХИТЕКТУРА И АВТОНОМНОСТЬ -->
+<div class="slide">
+  <div class="slide-header">
+    <div class="header-left">
+      <div class="badge-tag">Технологический стек</div>
+      <div class="slide-title">Архитектура: 100% On-Premise монолит</div>
+      <div class="slide-subtitle">Максимальная производительность, безопасность и простота обслуживания</div>
+    </div>
+    <div class="header-brand">
+      <div class="logo-icon">L</div>
+      <span>Ligament 2FA</span>
+    </div>
+  </div>
+
+  <div class="content-area">
+    <div class="grid-4">
+      <div class="stat-block">
+        <div class="stat-val">~50 МБ</div>
+        <div class="stat-label">Потребление оперативной памяти (в 30 раз меньше Java-аналогов)</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-val">&lt; 1 сек</div>
+        <div class="stat-label">Холодный старт контейнера со всеми сервисами и миграциями</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-val">0 deps</div>
+        <div class="stat-label">Никаких внешних рантаймов, Node.js, Python или системных утилит</div>
+      </div>
+      <div class="stat-block">
+        <div class="stat-val">Air-Gap</div>
+        <div class="stat-label">Полная функциональность в изолированных контурах без интернета</div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top: 28px;">
+      <div class="card card-highlight">
+        <div class="card-icon cyan">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+        </div>
+        <div class="card-title">Единый контейнер (Distroless Docker)</div>
+        <div class="card-text">
+          Приложение скомпилировано в единый статический бинарник на Go 1.27 (`CGO_ENABLED=0`) и упаковано в образ `gcr.io/distroless/static-debian12:nonroot`. В контейнере полностью отсутствуют командная оболочка (shell), утилиты и лишние библиотеки, что исключает возможность закрепления злоумышленников.
+        </div>
+      </div>
+
+      <div class="card card-highlight">
+        <div class="card-icon cyan">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        </div>
+        <div class="card-title">Надёжное хранилище PostgreSQL</div>
+        <div class="card-text">
+          Все данные (пользователи, сессии, токены, журнал аудита, настройки) персистируются в реляционной СУБД PostgreSQL. Приложение автоматически накатывает версионированные SQL-миграции с advisory locks, поддерживает репликацию и стандартные процедуры резервного копирования.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <div class="footer-meta">
+      <span>Ligament 2FA Architecture</span>
+      <span>Конфиденциально</span>
+    </div>
+    <div class="slide-num">03 / 10</div>
+  </div>
+</div>
+
+<!-- СЛАЙД 4: ФАКТОРЫ АУТЕНТИФИКАЦИИ -->
+<div class="slide">
+  <div class="slide-header">
+    <div class="header-left">
+      <div class="badge-tag">Безопасность & Доступ</div>
+      <div class="slide-title">Все современные факторы аутентификации (MFA)</div>
+      <div class="slide-subtitle">Максимальное удобство для пользователей без установки лишних приложений</div>
+    </div>
+    <div class="header-brand">
+      <div class="logo-icon">L</div>
+      <span>Ligament 2FA</span>
+    </div>
+  </div>
+
+  <div class="content-area">
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-icon emerald">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm0 2a3 3 0 0 1 3 3v3H9V7a3 3 0 0 1 3-3z"/></svg>
+        </div>
+        <div class="card-title">Passkeys / WebAuthn (FIDO2)</div>
+        <div class="card-text">
+          Вход без ввода паролей: биометрия Face ID, Touch ID, Windows Hello, а также аппаратные ключи YubiKey. Защита от фишинга на аппаратном уровне и поддержка автозаполнения (Conditional UI).
+        </div>
+        <div class="badge-list">
+          <span class="tag green">FIDO2 Level 3</span>
+          <span class="tag">Touch/Face ID</span>
+          <span class="tag">YubiKey</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon cyan">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </div>
+        <div class="card-title">Интерактивный Telegram Push & OTP</div>
+        <div class="card-text">
+          Собственный Telegram-бот отправляет интерактивные Push-уведомления с кнопками «Подтвердить / Отклонить». Никаких платных SMS: подтверждение входа в Web, VPN и Wi-Fi в один клик.
+        </div>
+        <div class="badge-list">
+          <span class="tag cyan">Push в 1 клик</span>
+          <span class="tag">Telegram OTP</span>
+          <span class="tag">0 ₽ за сообщения</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon purple">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </div>
+        <div class="card-title">TOTP (Google Auth, Яндекс Ключ)</div>
+        <div class="card-text">
+          Классические 6-значные коды по стандарту RFC 6238. Генерация QR-кодов происходит прямо в браузере (без обращения к Google Charts API). Защита от повторного использования кодов.
+        </div>
+        <div class="badge-list">
+          <span class="tag">RFC 6238</span>
+          <span class="tag">Google Authenticator</span>
+          <span class="tag">2FAS</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top: 24px;">
+      <div class="card">
+        <div class="card-title" style="font-size: 19px;">Российские SMS-шлюзы & Webhook</div>
+        <div class="card-text">
+          Готовые встроенные пресеты интеграции с ведущими операторами: <strong>SMS.ru, SMS Aero, SMSC, Простор</strong>. Возможность подключения любого корпоративного шлюза через настраиваемый HTTP Webhook.
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="font-size: 19px;">Резервные коды (Backup Codes)</div>
+        <div class="card-text">
+          Пакет одноразовых 8-значных аварийных кодов доступа для сотрудников. Коды сохраняются в базе данных исключительно в виде криптографических SHA-256 хешей с защитой от компрометации.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <div class="footer-meta">
+      <span>Ligament 2FA Factors</span>
+      <span>Конфиденциально</span>
+    </div>
+    <div class="slide-num">04 / 10</div>
+  </div>
+</div>
+
+<!-- СЛАЙД 5: СЕТЕВОЙ УРОВЕНЬ & DYNAMIC VLAN -->
+<div class="slide">
+  <div class="slide-header">
+    <div class="header-left">
+      <div class="badge-tag">Killer Feature</div>
+      <div class="slide-title">Enterprise RADIUS & Сетевая безопасность</div>
+      <div class="slide-subtitle">Защита Wi-Fi WPA2/WPA3-Enterprise (802.1X), VPN и коммутаторов</div>
+    </div>
+    <div class="header-brand">
+      <div class="logo-icon">L</div>
+      <span>Ligament 2FA</span>
+    </div>
+  </div>
+
+  <div class="content-area">
+    <div class="grid-3">
+      <div class="card card-highlight">
+        <div class="card-icon cyan">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg>
+        </div>
+        <div class="card-title">EAP-PEAPv0 & MSCHAPv2</div>
+        <div class="card-text">
+          Собственная реализация EAP state machine и TLS-туннелирования в ядре Go. Позволяет сотрудникам подключать Windows, macOS, Android и iOS к корпоративному Wi-Fi по доменным учетным записям без необходимости выпуска клиентских сертификатов на каждое устройство.
+        </div>
+      </div>
+
+      <div class="card card-highlight">
+        <div class="card-icon emerald">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+        </div>
+        <div class="card-title">Динамический VLAN (RFC 2868 / 3580)</div>
+        <div class="card-text">
+          Автоматическое назначение изолированного VLAN при подключении. Инженер попадает в VLAN 10 (DevOps), бухгалтер — в VLAN 20 (Финансы), гости — в гостевой сегмент. Полная совместимость с <strong>UniFi, Cisco, MikroTik, Aruba</strong> на основе групп Active Directory.
+        </div>
+      </div>
+
+      <div class="card card-highlight">
+        <div class="card-icon purple">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </div>
+        <div class="card-title">2FA Push при входе в Wi-Fi</div>
+        <div class="card-text">
+          Уникальная возможность: при подключении ноутбука к корпоративной Wi-Fi сети RADIUS-сервер приостанавливает сессию и присылает Push-запрос в Telegram сотрудника. Доступ к локальной сети открывается только после нажатия кнопки «Разрешить».
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 24px; background: rgba(0, 229, 255, 0.03); border-color: rgba(0, 229, 255, 0.2);">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <span style="font-weight: 700; color: #FFFFFF; font-size: 18px;">Поддерживаемое оборудование:</span>
+          <span style="color: #94A3B8; font-size: 16px; margin-left: 12px;">Ubiquiti UniFi, Cisco Catalyst / Meraki, MikroTik RouterOS, Aruba, Huawei, Eltex, OpenVPN, WireGuard, WirenBoard</span>
+        </div>
+        <span class="tag cyan">RFC 2865, RFC 2866, RFC 2868, RFC 3580</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <div class="footer-meta">
+      <span>Ligament 2FA Network Security</span>
+      <span>Конфиденциально</span>
+    </div>
+    <div class="slide-num">05 / 10</div>
+  </div>
+</div>
+
+<!-- СЛАЙД 6: ИНТЕГРАЦИЯ И OIDC PROVIDER -->
+<div class="slide">
+  <div class="slide-header">
+    <div class="header-left">
+      <div class="badge-tag">Единая точка входа</div>
+      <div class="slide-title">OIDC Identity Provider & Active Directory</div>
+      <div class="slide-subtitle">Бесшовная интеграция с корпоративным ландшафтом и веб-приложениями</div>
+    </div>
+    <div class="header-brand">
+      <div class="logo-icon">L</div>
+      <span>Ligament 2FA</span>
+    </div>
+  </div>
+
+  <div class="content-area">
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-icon cyan">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>
+        </div>
+        <div class="card-title">Синхронизация с Active Directory / LDAP</div>
+        <div class="card-text">
+          Ligament 2FA интегрируется с Microsoft Active Directory, Samba DC или FreeIPA. Проверка первичного пароля делегируется домен-контроллеру, а группы безопасности автоматически транслируются в роли Ligament и сетевые VLAN. Администраторам не нужно заводить пользователей вручную.
+        </div>
+        <div class="badge-list" style="margin-top: 20px;">
+          <span class="tag blue">Microsoft Active Directory</span>
+          <span class="tag">OpenLDAP</span>
+          <span class="tag">FreeIPA</span>
+          <span class="tag">Group Mapping</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon emerald">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <div class="card-title">Встроенный OpenID Connect (OIDC 1.0) IdP</div>
+        <div class="card-text">
+          Сервер выступает эталонным Identity Provider. Поддержка стандарта Authorization Code Flow с обязательным PKCE (S256), Discovery endpoint (`/.well-known/openid-configuration`), JWKS ротация ключей и выдача стандартизированных токенов доступа.
+        </div>
+        <div class="badge-list" style="margin-top: 20px;">
+          <span class="tag green">OIDC Core 1.0</span>
+          <span class="tag">PKCE S256</span>
+          <span class="tag">JWKS Endpoint</span>
+          <span class="tag">ID Tokens</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 28px;">
+      <div class="card-title" style="font-size: 20px; margin-bottom: 16px;">Готовые интеграции по протоколу OIDC:</div>
+      <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+        <span class="tag" style="font-size: 15px; padding: 8px 16px;">GitLab</span>
+        <span class="tag" style="font-size: 15px; padding: 8px 16px;">Nextcloud / ownCloud</span>
+        <span class="tag" style="font-size: 15px; padding: 8px 16px;">Grafana</span>
+        <span class="tag" style="font-size: 15px; padding: 8px 16px;">Zabbix 6+</span>
+        <span class="tag" style="font-size: 15px; padding: 8px 16px;">Proxmox VE</span>
+        <span class="tag" style="font-size: 15px; padding: 8px 16px;">Почтовые серверы (Roundcube, Mailcow)</span>
+        <span class="tag" style="font-size: 15px; padding: 8px 16px;">Корпоративные CRM и ERP</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <div class="footer-meta">
+      <span>Ligament 2FA Federation</span>
+      <span>Конфиденциально</span>
+    </div>
+    <div class="slide-num">06 / 10</div>
+  </div>
+</div>
+
+<!-- СЛАЙД 7: БЕЗОПАСНОСТЬ И КРИПТОГРАФИЯ -->
+<div class="slide">
+  <div class="slide-header">
+    <div class="header-left">
+      <div class="badge-tag">Криптографическая гигиена</div>
+      <div class="slide-title">Информационная безопасность & Харденинг</div>
+      <div class="slide-subtitle">Архитектура глубоко эшелонированной защиты (Defense-in-Depth)</div>
+    </div>
+    <div class="header-brand">
+      <div class="logo-icon">L</div>
+      <span>Ligament 2FA</span>
+    </div>
+  </div>
+
+  <div class="content-area">
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-icon cyan">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <div class="card-title">Argon2id & AES-256-GCM</div>
+        <div class="card-text">
+          Хеширование паролей по стандарту <strong>RFC 9106 Argon2id</strong> (64 MiB RAM, устойчивость к ASIC/GPU перебору). Секреты и токены шифруются AES-256-GCM с криптографической привязкой контекста (AAD).
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon red">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </div>
+        <div class="card-title">Встроенный Fail2ban & WAF</div>
+        <div class="card-text">
+          Автоматический подсчет аномалий и мгновенная блокировка IP-адресов нарушителей в БД. Защищает не только Web-интерфейс, но и сетевые порты RADIUS (1812/1813 UDP) от подбора кредов.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon emerald">
+          <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        </div>
+        <div class="card-title">Автоматический ACME (Let's Encrypt)</div>
+        <div class="card-text">
+          Встроенный HTTP-01 ACME клиент. Сервер самостоятельно получает, устанавливает и пролонгирует доверенные SSL/TLS сертификаты без необходимости разворачивать внешний Nginx или Certbot.
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top: 24px;">
+      <div class="card">
+        <div class="card-title" style="font-size: 18px;">Строгие Web-заголовки и Zero-XSS</div>
+        <div class="card-text">
+          Политика Content Security Policy (CSP) блокирует любые внешние скрипты (`default-src 'self'`). Куки защищены флагами `HttpOnly`, `SameSite=Strict`, `Secure`. Все изменяющие действия требуют валидации CSRF-токенов.
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="font-size: 18px;">Тотальный аудит действий (Audit Log)</div>
+        <div class="card-text">
+          Каждое событие (успешный вход, сбой пароля, подтверждение в Telegram, смена прав администратором, выпуск лицензии) регистрируется в неизменяемом журнале аудита с фиксацией IP, устройства и таймстемпа.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <div class="footer-meta">
+      <span>Ligament 2FA Security</span>
+      <span>Конфиденциально</span>
+    </div>
+    <div class="slide-num">07 / 10</div>
+  </div>
+</div>
+
+<!-- СЛАЙД 8: СРАВНЕНИЕ С КОНКУРЕНТАМИ -->
+<div class="slide">
+  <div class="slide-header">
+    <div class="header-left">
+      <div class="badge-tag">Рыночное сравнение</div>
+      <div class="slide-title">Матрица сравнения с аналогами</div>
+      <div class="slide-subtitle">Почему бизнес выбирает Ligament 2FA вместо устаревших и облачных систем</div>
+    </div>
+    <div class="header-brand">
+      <div class="logo-icon">L</div>
+      <span>Ligament 2FA</span>
+    </div>
+  </div>
+
+  <div class="content-area">
+    <table class="comp-table">
+      <thead>
+        <tr>
+          <th>Параметр / Возможность</th>
+          <th style="color: #00E5FF; background: rgba(0, 229, 255, 0.1);">Ligament 2FA</th>
+          <th>Мультифактор</th>
+          <th>Indeed AM</th>
+          <th>Cisco Duo</th>
+          <th>FreeRADIUS + Keycloak</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="highlight-row">
+          <td><strong>Модель развертывания</strong></td>
+          <td style="color: #00E5FF;"><span class="status-yes">✓</span> 100% On-Premise</td>
+          <td><span class="status-warn">⚠</span> Облако (SaaS)</td>
+          <td><span class="status-yes">✓</span> On-Premise</td>
+          <td><span class="status-no">✗</span> Облако (США)</td>
+          <td><span class="status-yes">✓</span> On-Premise</td>
+        </tr>
+        <tr>
+          <td><strong>Скорость развертывания</strong></td>
+          <td style="color: #00E5FF;"><span class="status-yes">✓</span> 15 минут (Docker)</td>
+          <td><span class="status-warn">⚠</span> 1–2 дня</td>
+          <td><span class="status-no">✗</span> Недели (Интеграторы)</td>
+          <td><span class="status-yes">✓</span> 1 час</td>
+          <td><span class="status-no">✗</span> Дни / недели</td>
+        </tr>
+        <tr>
+          <td><strong>Потребление RAM</strong></td>
+          <td style="color: #00E5FF;"><span class="status-yes">✓</span> ~50 МБ (Go)</td>
+          <td><span class="status-yes">✓</span> ~150 МБ</td>
+          <td><span class="status-no">✗</span> 8–16 ГБ (Windows)</td>
+          <td><span class="status-yes">✓</span> Облако</td>
+          <td><span class="status-no">✗</span> 2–3 ГБ (Java)</td>
+        </tr>
+        <tr>
+          <td><strong>Wi-Fi 802.1X EAP & Dynamic VLAN</strong></td>
+          <td style="color: #00E5FF;"><span class="status-yes">✓</span> Из коробки (нативно)</td>
+          <td><span class="status-warn">⚠</span> Ограниченно</td>
+          <td><span class="status-yes">✓</span> Поддерживает</td>
+          <td><span class="status-no">✗</span> Нет фокуса</td>
+          <td><span class="status-warn">⚠</span> Сложные unlang-скрипты</td>
+        </tr>
+        <tr>
+          <td><strong>2FA Push в Telegram при входе в Wi-Fi</strong></td>
+          <td style="color: #00E5FF;"><span class="status-yes">✓</span> Уникальная фича</td>
+          <td><span class="status-no">✗</span> Нет (только VPN/RDP)</td>
+          <td><span class="status-no">✗</span> Нет</td>
+          <td><span class="status-no">✗</span> Нет (только Duo App)</td>
+          <td><span class="status-no">✗</span> Нет</td>
+        </tr>
+        <tr>
+          <td><strong>WebAuthn / Passkeys (FIDO2 L3)</strong></td>
+          <td style="color: #00E5FF;"><span class="status-yes">✓</span> Полная поддержка</td>
+          <td><span class="status-yes">✓</span> Есть</td>
+          <td><span class="status-yes">✓</span> Есть</td>
+          <td><span class="status-yes">✓</span> Есть</td>
+          <td><span class="status-warn">⚠</span> Только для Web</td>
+        </tr>
+        <tr>
+          <td><strong>Стоимость за 100 мест в год</strong></td>
+          <td style="color: #00E5FF;"><strong>120 000 ₽</strong></td>
+          <td>~412 000 ₽</td>
+          <td>От 400 000 ₽ + внедрение</td>
+          <td>~700 000 ₽ ($)</td>
+          <td>0 ₽ (но дорогой оклад)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="slide-footer">
+    <div class="footer-meta">
+      <span>Ligament 2FA Benchmarks</span>
+      <span>Конфиденциально</span>
+    </div>
+    <div class="slide-num">08 / 10</div>
+  </div>
+</div>
+
+<!-- СЛАЙД 9: ТАРИФЫ И ЭКОНОМИКА -->
+<div class="slide">
+  <div class="slide-header">
+    <div class="header-left">
+      <div class="badge-tag">Экономическая выгода</div>
+      <div class="slide-title">Прозрачные тарифы и окупаемость (ROI)</div>
+      <div class="slide-subtitle">В 3 раза выгоднее облачных монополистов. Оплата по безналичному расчету.</div>
+    </div>
+    <div class="header-brand">
+      <div class="logo-icon">L</div>
+      <span>Ligament 2FA</span>
+    </div>
+  </div>
+
+  <div class="content-area">
+    <div class="grid-4">
+      <div class="price-card">
+        <div>
+          <div class="price-title">Starter</div>
+          <div class="price-users">До 5 пользователей</div>
+          <div class="price-amount">0 ₽</div>
+          <div class="price-period">Бесплатно навсегда</div>
+          <ul class="price-features">
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Все факторы 2FA</li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Полноценный RADIUS</li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Домашние лаборатории</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="price-card">
+        <div>
+          <div class="price-title">Team 25</div>
+          <div class="price-users">До 25 пользователей</div>
+          <div class="price-amount">37 500 ₽</div>
+          <div class="price-period">в год (125 ₽ / чел / мес)</div>
+          <ul class="price-features">
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Полный функционал</li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Active Directory Sync</li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Dynamic VLAN (UniFi/Cisco)</li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Поддержка по email</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="price-card popular">
+        <div class="popular-badge">Хит продаж</div>
+        <div>
+          <div class="price-title">Corp 100</div>
+          <div class="price-users">До 100 пользователей</div>
+          <div class="price-amount">120 000 ₽</div>
+          <div class="price-period">в год (100 ₽ / чел / мес)</div>
+          <ul class="price-features">
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> <strong>Экономия ~300 000 ₽ / год</strong></li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Неограниченный OIDC IdP</li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Telegram Push для Wi-Fi/VPN</li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Приоритетная поддержка</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="price-card">
+        <div>
+          <div class="price-title">Enterprise</div>
+          <div class="price-users">От 250+ пользователей</div>
+          <div class="price-amount">Индивид.</div>
+          <div class="price-period">от 70 ₽ / чел / мес</div>
+          <ul class="price-features">
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Бессрочные лицензии (Perpetual)</li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Air-Gapped закрытый контур</li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Выделенный инженер внедрения</li>
+            <li><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> SLA 99.9%</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <div class="footer-meta">
+      <span>Ligament 2FA Pricing</span>
+      <span>Конфиденциально</span>
+    </div>
+    <div class="slide-num">09 / 10</div>
+  </div>
+</div>
+
+<!-- СЛАЙД 10: КОНТАКТЫ И ЗАПУСК -->
+<div class="slide hero-slide" style="text-align: center;">
+  <div class="glow-cyan"></div>
+  
+  <div class="badge-tag" style="margin-bottom: 24px;">Старт за 15 минут</div>
+
+  <h2 style="font-size: 56px; font-weight: 900; color: #FFFFFF; margin-bottom: 20px;">
+    Запустите пилотный проект <span class="gradient-text">уже сегодня</span>
+  </h2>
+
+  <p style="font-size: 22px; color: #94A3B8; max-width: 900px; line-height: 1.6; margin-bottom: 48px;">
+    Разверните Ligament 2FA в своей виртуальной машине или сервере одной командой.<br>
+    30 дней полнофункционального демо-периода без ограничений.
+  </p>
+
+  <div class="card" style="background: #151E33; border: 1px solid rgba(0, 229, 255, 0.4); border-radius: 14px; padding: 20px 36px; display: inline-block; font-family: monospace; font-size: 20px; color: #00E5FF; margin-bottom: 48px;">
+    docker compose up -d
+  </div>
+
+  <div style="display: flex; gap: 48px; justify-content: center; font-size: 18px; color: #CBD5E1;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <svg width="24" height="24" fill="none" stroke="#00E5FF" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/></svg>
+      <span>Docker Hub: <strong>aligorov/ligament_2fa</strong></span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <svg width="24" height="24" fill="none" stroke="#00E5FF" stroke-width="2" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      <span>Контакты отдела внедрения: <strong>info@ligament.ru</strong></span>
+    </div>
+  </div>
+
+  <div style="margin-top: 60px; font-size: 14px; color: #64748B;">
+    © 2026 Ligament Security Systems. Все права защищены.
+  </div>
+</div>
+
+</body>
+</html>

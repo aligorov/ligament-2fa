@@ -17,7 +17,20 @@
         <td><span class="badge neutral">{{.Event}}</span></td>
         <td>{{.SrcIP}}</td>
         <td>{{if eq .Result "ok"}}<span class="badge ok">ok</span>{{else if .Result}}<span class="badge err">{{.Result}}</span>{{end}}</td>
-        <td class="detail">{{if .Detail}}<pre>{{jsonPretty .Detail}}</pre>{{else}}<span class="muted">—</span>{{end}}</td>
+        <td class="detail">
+          {{if .Detail}}
+            {{if or (index .Detail "vlan") (index .Detail "nas") (index .Detail "device")}}
+              <div style="margin-bottom: 4px; display: flex; gap: 4px; flex-wrap: wrap;">
+                {{with index .Detail "vlan"}}<span class="badge info">VLAN {{.}}</span>{{end}}
+                {{with index .Detail "device"}}<span class="badge neutral" title="Устройство">📱 {{.}}</span>{{end}}
+                {{with index .Detail "nas"}}<span class="badge neutral" title="Точка доступа (NAS)">📡 {{.}}</span>{{end}}
+              </div>
+            {{end}}
+            <pre>{{jsonPretty .Detail}}</pre>
+          {{else}}
+            <span class="muted">—</span>
+          {{end}}
+        </td>
       </tr>
       {{end}}
     </table>

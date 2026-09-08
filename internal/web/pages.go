@@ -144,6 +144,7 @@ type AdminUsersData struct {
 	Edit          *store.User
 	EditReplyJSON string
 	BackupCodes   []string // новые резервные коды (показ один раз)
+	VLANProfiles  map[string]string
 }
 
 // AdminAuditData — /admin/audit: последние записи журнала.
@@ -188,15 +189,17 @@ type SMSPresetChoice struct {
 // показывается один раз в теле ответа (пусто — блок не рендерится).
 type AdminSettingsData struct {
 	BaseData
-	S                *settings.T
-	RadiusSecretSet  bool
-	SMTPPasswordSet  bool
-	TGBotTokenSet    bool
-	LDAPPasswordSet  bool              // задан ли ldap.bind_password
-	SMSGatewayJSON   string            // сырой JSON sms.gateway для textarea
-	SMSPresetsJSON   string            // сырой JSON sms.presets для textarea
-	SMSPresetChoices []SMSPresetChoice // пресеты шлюзов для select (заполняют textarea через JS)
+	S                  *settings.T
+	RadiusSecretSet    bool
+	SMTPPasswordSet    bool
+	TGBotTokenSet      bool
+	LDAPPasswordSet    bool              // задан ли ldap.bind_password
+	SMSGatewayJSON     string            // сырой JSON sms.gateway для textarea
+	SMSPresetsJSON     string            // сырой JSON sms.presets для textarea
+	SMSPresetChoices   []SMSPresetChoice // пресеты шлюзов для select (заполняют textarea через JS)
 	ReplyAttrsJSON     string            // radius.reply_attributes для textarea
+	VLANProfilesJSON   string            // radius.vlan_profiles для textarea
+	NASInventoryJSON   string            // radius.nas_inventory для textarea
 	LDAPAllowGroups    string            // ldap.allow_groups (JSON) для textarea
 	LDAPRoleMap        string            // ldap.role_map (JSON) для textarea
 	LDAPGroupRadiusMap string            // ldap.group_radius_map (JSON) для textarea

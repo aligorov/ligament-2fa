@@ -173,3 +173,14 @@ func setOrWarn(name string, set func() error) {
 		slog.Warn("radius: установка reply-атрибута не удалось — пропущен", "attr", name, "error", err)
 	}
 }
+
+// ExtractVLAN извлекает номер или имя VLAN из словаря reply-атрибутов (Tunnel-Private-Group-Id).
+func ExtractVLAN(attrs map[string]string) string {
+	for k, v := range attrs {
+		if strings.EqualFold(k, "Tunnel-Private-Group-Id") {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+

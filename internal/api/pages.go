@@ -1331,8 +1331,9 @@ func (p *PagesAPI) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
-		BaseData: p.baseData(r, "Пользователи", "admin-users"),
-		Users:    derefUsers(users),
+		BaseData:     p.baseData(r, "Пользователи", "admin-users"),
+		Users:        derefUsers(users),
+		VLANProfiles: p.m.Get().Radius.VLANProfiles,
 	})
 }
 
@@ -1413,6 +1414,20 @@ func (p *PagesAPI) handleAdminUserCreate(w http.ResponseWriter, r *http.Request)
 		redirectFlash(w, r, "/admin/users", "RADIUS Reply: ожидается JSON-объект.", false)
 		return
 	}
+	vlanID := strings.TrimSpace(r.PostFormValue("vlan_id"))
+	if vlanID != "" {
+		if reply == nil {
+			reply = make(map[string]string)
+		}
+		reply["Tunnel-Private-Group-Id"] = vlanID
+	} else if reply != nil && r.PostForm.Has("vlan_id") {
+		delete(reply, "Tunnel-Private-Group-Id")
+		delete(reply, "Tunnel-Type")
+		delete(reply, "Tunnel-Medium-Type")
+		if len(reply) == 0 {
+			reply = nil
+		}
+	}
 	u.RadiusReply = reply
 	if pwd == "" {
 		rnd := secrets.RandomToken(32)
@@ -1475,6 +1490,7 @@ func (p *PagesAPI) handleAdminUserEdit(w http.ResponseWriter, r *http.Request) {
 		Users:         derefUsers(users),
 		Edit:          u,
 		EditReplyJSON: replyJSON,
+		VLANProfiles:  p.m.Get().Radius.VLANProfiles,
 	})
 }
 
@@ -1532,6 +1548,20 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 			redirectFlash(w, r, back, "RADIUS Reply: ожидается JSON-объект.", false)
 			return
 		}
+		vlanID := strings.TrimSpace(r.PostFormValue("vlan_id"))
+		if vlanID != "" {
+			if reply == nil {
+				reply = make(map[string]string)
+			}
+			reply["Tunnel-Private-Group-Id"] = vlanID
+		} else if reply != nil && r.PostForm.Has("vlan_id") {
+			delete(reply, "Tunnel-Private-Group-Id")
+			delete(reply, "Tunnel-Type")
+			delete(reply, "Tunnel-Medium-Type")
+			if len(reply) == 0 {
+				reply = nil
+			}
+		}
 		u.RadiusReply = reply
 		if err := p.st.UserUpdate(ctx, u); err != nil {
 			if isUniqueViolation(err) {
@@ -1564,9 +1594,10 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
-			BaseData:    p.baseData(r, "Пользователи", "admin-users"),
-			Users:       derefUsers(users),
-			BackupCodes: codes,
+			BaseData:     p.baseData(r, "Пользователи", "admin-users"),
+			Users:        derefUsers(users),
+			BackupCodes:  codes,
+			VLANProfiles: p.m.Get().Radius.VLANProfiles,
 		})
 
 	case "reset-webauthn":
@@ -1693,6 +1724,17 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 			replyJSON = string(b)
 		}
 	}
+	vlanProfilesJSON, nasInventoryJSON := "", ""
+	if t.Radius.VLANProfiles != nil {
+		if b, err := json.MarshalIndent(t.Radius.VLANProfiles, "", "  "); err == nil {
+			vlanProfilesJSON = string(b)
+		}
+	}
+	if t.Radius.NASInventory != nil {
+		if b, err := json.MarshalIndent(t.Radius.NASInventory, "", "  "); err == nil {
+			nasInventoryJSON = string(b)
+		}
+	}
 	allowJSON, roleJSON, groupRadiusJSON := "", "", ""
 	if t.LDAP.AllowGroups != nil {
 		if b, err := json.MarshalIndent(t.LDAP.AllowGroups, "", "  "); err == nil {
@@ -1753,6 +1795,8 @@ func (p *PagesAPI) adminSettingsData(r *http.Request) web.AdminSettingsData {
 		SMSPresetsJSON:     settings.MaskedJSONTree(t.SMSPresets),
 		SMSPresetChoices:   smsPresetChoices(),
 		ReplyAttrsJSON:     replyJSON,
+		VLANProfilesJSON:   vlanProfilesJSON,
+		NASInventoryJSON:   nasInventoryJSON,
 		LDAPAllowGroups:    allowJSON,
 		LDAPRoleMap:        roleJSON,
 		LDAPGroupRadiusMap: groupRadiusJSON,
@@ -1843,6 +1887,8 @@ var settingsForm = map[string][]settingsField{
 		{name: "radius.fail_window", key: "radius.fail_window"},
 		{name: "radius.push_wait", key: "radius.push_wait"},
 		{name: "radius.reply_attributes", key: "radius.reply_attributes", kind: 'j'},
+		{name: "radius.vlan_profiles", key: "radius.vlan_profiles", kind: 'j'},
+		{name: "radius.nas_inventory", key: "radius.nas_inventory", kind: 'j'},
 	},
 	"acme": {
 		{name: "acme.enabled", key: "acme", kind: 'b'},
