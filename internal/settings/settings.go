@@ -198,6 +198,17 @@ type T struct {
 		MaxFail          int
 		DefaultPrefer    []channel.Channel
 	}
+
+	Support SupportSettings
+}
+
+// SupportSettings — конфигурация экстренной удаленной помощи и уведомлений (ключ support).
+type SupportSettings struct {
+	Enabled        bool     `json:"enabled"`
+	EmailsIT       []string `json:"emails_it"`
+	Emails1C       []string `json:"emails_1c"`
+	TelegramChatIT int64    `json:"telegram_chat_it"`
+	TelegramChat1C int64    `json:"telegram_chat_1c"`
 }
 
 // LDAPSettings — конфигурация внешнего каталога LDAP/Active Directory
@@ -316,6 +327,9 @@ func defaultT() *T {
 	t.Policy.DefaultPrefer = []channel.Channel{channel.TOTP, channel.Telegram, channel.Email, channel.SMS}
 	t.SMS = json.RawMessage(`{}`)
 	t.SMSPresets = json.RawMessage(`{}`)
+	t.Support.Enabled = true
+	t.Support.EmailsIT = []string{}
+	t.Support.Emails1C = []string{}
 	return t
 }
 
@@ -348,6 +362,18 @@ func parseInt(raw json.RawMessage, def int) int {
 	var n int
 	if err := json.Unmarshal(raw, &n); err != nil {
 		log.Printf("settings: значение %s не целое — использую дефолт %d", raw, def)
+		return def
+	}
+	return n
+}
+
+func parseInt64(raw json.RawMessage, def int64) int64 {
+	if isNullJSON(raw) {
+		return def
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		log.Printf("settings: значение %s не int64 — использую дефолт %d", raw, def)
 		return def
 	}
 	return n
@@ -725,6 +751,13 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Policy.PushPerHour = parseInt(pol["push_per_hour"], def.Policy.PushPerHour)
 	t.Policy.DefaultPrefer = parseChannels(pol["default_prefer_channels"], def.Policy.DefaultPrefer)
 	t.Policy.SessionTTL = parseDur(raw["web.session_ttl"], def.Policy.SessionTTL)
+
+	sup := fields(raw["support"])
+	t.Support.Enabled = parseBool(sup["enabled"], def.Support.Enabled)
+	t.Support.EmailsIT = parseStringsFlex(sup["emails_it"], def.Support.EmailsIT)
+	t.Support.Emails1C = parseStringsFlex(sup["emails_1c"], def.Support.Emails1C)
+	t.Support.TelegramChatIT = parseInt64(sup["telegram_chat_it"], def.Support.TelegramChatIT)
+	t.Support.TelegramChat1C = parseInt64(sup["telegram_chat_1c"], def.Support.TelegramChat1C)
 
 	return t
 }
@@ -1148,6 +1181,13 @@ func (t *T) masked() map[string]any {
 			"allow_groups":     t.LDAP.AllowGroups,
 			"role_map":         t.LDAP.RoleMap,
 			"group_radius_map": t.LDAP.GroupRadiusMap,
+		},
+		"support": map[string]any{
+			"enabled":          t.Support.Enabled,
+			"emails_it":        t.Support.EmailsIT,
+			"emails_1c":        t.Support.Emails1C,
+			"telegram_chat_it": t.Support.TelegramChatIT,
+			"telegram_chat_1c": t.Support.TelegramChat1C,
 		},
 		"policy": map[string]any{
 			"code_ttl":                t.Policy.CodeTTL.String(),

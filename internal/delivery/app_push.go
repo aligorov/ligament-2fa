@@ -26,11 +26,12 @@ type AppPushPrompt struct {
 	Timestamp        time.Time `json:"timestamp"`
 }
 
-// AppHub управляет постоянными WebSocket и SSE соединениями авторизованных клиентских приложений.
+// AppHub управляет постоянными WebSocket и SSE соединениями авторизованных клиентских приложений и веб-консолей.
 type AppHub struct {
 	mu         sync.RWMutex
 	wsClients  map[uuid.UUID]map[*websocket.Conn]bool
 	sseClients map[uuid.UUID]map[chan []byte]bool
+	adminConns map[uuid.UUID]map[*websocket.Conn]bool // session_id -> websocket connections
 	upgrader   websocket.Upgrader
 }
 
@@ -39,9 +40,10 @@ func NewAppHub() *AppHub {
 	return &AppHub{
 		wsClients:  make(map[uuid.UUID]map[*websocket.Conn]bool),
 		sseClients: make(map[uuid.UUID]map[chan []byte]bool),
+		adminConns: make(map[uuid.UUID]map[*websocket.Conn]bool),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
-				// Разрешаем подключения от нативных десктопных и мобильных клиентов
+				// Разрешаем подключения от нативных десктопных, мобильных клиентов и браузерной админки
 				return true
 			},
 		},
@@ -167,3 +169,153 @@ func (h *AppHub) SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua,
 		"user_id", userID, "who", who, "challenge_id", challengeID, "online_clients", delivered, "expires_in", expiresInSeconds)
 	return nil
 }
+
+// SupportPushPrompt — структура оповещения о запросе на удаленное подключение от инженера.
+type SupportPushPrompt struct {
+	Type           string    `json:"type"` // "support_prompt"
+	SessionID      uuid.UUID `json:"session_id"`
+	AdminName      string    `json:"admin_name"`
+	Category       string    `json:"category"`
+	NumberMatch    string    `json:"number_match"`
+	AccessMode     string    `json:"access_mode"`
+	ProblemSummary string    `json:"problem_summary"`
+	Timestamp      time.Time `json:"timestamp"`
+}
+
+// RegisterAdminWS регистрирует WebSocket-соединение веб-консоли оператора для данной сессии.
+func (h *AppHub) RegisterAdminWS(sessionID uuid.UUID, conn *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.adminConns[sessionID] == nil {
+		h.adminConns[sessionID] = make(map[*websocket.Conn]bool)
+	}
+	h.adminConns[sessionID][conn] = true
+	slog.Debug("app_push: зарегистрирована веб-консоль оператора", "session_id", sessionID)
+}
+
+// UnregisterAdminWS удаляет WebSocket-соединение веб-консоли.
+func (h *AppHub) UnregisterAdminWS(sessionID uuid.UUID, conn *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if conns, ok := h.adminConns[sessionID]; ok {
+		delete(conns, conn)
+		if len(conns) == 0 {
+			delete(h.adminConns, sessionID)
+		}
+	}
+	_ = conn.Close()
+	slog.Debug("app_push: отключена веб-консоль оператора", "session_id", sessionID)
+}
+
+// SendSupportPrompt отправляет 2FA-челлендж на подключение инженера в приложение пользователя.
+func (h *AppHub) SendSupportPrompt(userID uuid.UUID, prompt *SupportPushPrompt) int {
+	data, err := json.Marshal(prompt)
+	if err != nil {
+		slog.Error("app_push: маршалинг support_prompt", "error", err)
+		return 0
+	}
+	return h.broadcastToUser(userID, data)
+}
+
+// SendSupportSignal отправляет сигнальное WebRTC-сообщение (SDP Offer/Answer/ICE) на клиент пользователя.
+func (h *AppHub) SendSupportSignal(userID uuid.UUID, sessionID uuid.UUID, data map[string]any) int {
+	payload := map[string]any{
+		"type":       "support_signal",
+		"session_id": sessionID,
+		"data":       data,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return 0
+	}
+	return h.broadcastToUser(userID, b)
+}
+
+// SendSupportTransferred оповещает пользователя на клиенте о передаче сеанса новому специалисту.
+func (h *AppHub) SendSupportTransferred(userID uuid.UUID, sessionID uuid.UUID, newAdminName, category string) int {
+	payload := map[string]any{
+		"type":           "support_transferred",
+		"session_id":     sessionID,
+		"new_admin_name": newAdminName,
+		"category":       category,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return 0
+	}
+	return h.broadcastToUser(userID, b)
+}
+
+// SendSupportEnd оповещает клиента о завершении сеанса поддержки.
+func (h *AppHub) SendSupportEnd(userID uuid.UUID, sessionID uuid.UUID) int {
+	payload := map[string]any{
+		"type":       "support_ended",
+		"session_id": sessionID,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return 0
+	}
+	return h.broadcastToUser(userID, b)
+}
+
+// SendSignalToAdmin пересылает WebRTC SDP/ICE от клиента в браузерную консоль оператора.
+func (h *AppHub) SendSignalToAdmin(sessionID uuid.UUID, data map[string]any) int {
+	payload := map[string]any{
+		"type":       "webrtc_signal",
+		"session_id": sessionID,
+		"data":       data,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return 0
+	}
+	return h.broadcastToAdmin(sessionID, b)
+}
+
+// SendEventToAdmin отправляет статусное событие (approved, denied, ended) в браузерную консоль оператора.
+func (h *AppHub) SendEventToAdmin(sessionID uuid.UUID, eventType string, extra map[string]any) int {
+	payload := map[string]any{
+		"type":       eventType,
+		"session_id": sessionID,
+	}
+	for k, v := range extra {
+		payload[k] = v
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return 0
+	}
+	return h.broadcastToAdmin(sessionID, b)
+}
+
+func (h *AppHub) broadcastToUser(userID uuid.UUID, data []byte) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	count := 0
+	if conns, ok := h.wsClients[userID]; ok {
+		for conn := range conns {
+			_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+			if err := conn.WriteMessage(websocket.TextMessage, data); err == nil {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func (h *AppHub) broadcastToAdmin(sessionID uuid.UUID, data []byte) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	count := 0
+	if conns, ok := h.adminConns[sessionID]; ok {
+		for conn := range conns {
+			_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+			if err := conn.WriteMessage(websocket.TextMessage, data); err == nil {
+				count++
+			}
+		}
+	}
+	return count
+}
+

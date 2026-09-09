@@ -35,12 +35,18 @@ const (
 
 // AppAPI предоставляет API для клиентских приложений Ligament Authenticator.
 type AppAPI struct {
-	core *auth.Core
-	st   *store.Store
-	pv   auth.PasswordVerifier
-	set  *settings.M
-	hub  *delivery.AppHub
-	oidc *oidc.Manager
+	core     *auth.Core
+	st       *store.Store
+	pv       auth.PasswordVerifier
+	set      *settings.M
+	hub      *delivery.AppHub
+	oidc     *oidc.Manager
+	notifier *delivery.SupportNotifier
+}
+
+// SetSupportNotifier подключает диспетчер оповещений поддержки.
+func (a *AppAPI) SetSupportNotifier(n *delivery.SupportNotifier) {
+	a.notifier = n
 }
 
 // NewAppAPI создает обработчик клиентского API.
@@ -70,6 +76,13 @@ func (a *AppAPI) Register(r chi.Router) {
 
 			r.Get("/challenges/pending", a.handlePendingChallenges)
 			r.Post("/challenges/{id}/decision", a.handleChallengeDecision)
+
+			// Удаленная поддержка (SOS / Quick Assist)
+			r.Post("/support/request", a.handleSupportRequest)
+			r.Get("/support/current", a.handleSupportCurrent)
+			r.Post("/support/{id}/decision", a.handleSupportDecision)
+			r.Post("/support/{id}/signal", a.handleSupportSignal)
+			r.Post("/support/{id}/end", a.handleSupportEnd)
 
 			r.Get("/me/profile", a.handleProfile)
 			r.Get("/me/apps", a.handleAllowedApps)
@@ -692,3 +705,221 @@ func (a *AppAPI) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+type supportRequestPayload struct {
+	Category       string `json:"category"`        // "it" | "1c"
+	ProblemSummary string `json:"problem_summary"` // обязательное описание проблемы
+	AccessMode     string `json:"access_mode"`     // "full_control" | "view_only"
+}
+
+// handleSupportRequest обрабатывает отправку экстренного SOS-запроса от пользователя.
+func (a *AppAPI) handleSupportRequest(w http.ResponseWriter, r *http.Request) {
+	device, _ := appDeviceFromCtx(r.Context())
+	user, _ := appUserFromCtx(r.Context())
+
+	var req supportRequestPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json")
+		return
+	}
+
+	req.ProblemSummary = strings.TrimSpace(req.ProblemSummary)
+	if req.ProblemSummary == "" || len([]rune(req.ProblemSummary)) < 3 {
+		writeError(w, http.StatusBadRequest, "empty_problem_summary")
+		return
+	}
+
+	req.Category = strings.ToLower(strings.TrimSpace(req.Category))
+	if req.Category != "1c" {
+		req.Category = "it"
+	}
+
+	req.AccessMode = strings.ToLower(strings.TrimSpace(req.AccessMode))
+	if req.AccessMode != "view_only" {
+		req.AccessMode = "full_control"
+	}
+
+	// Завершаем старую активную сессию, если она была в ожидании
+	if old, err := a.st.SupportSessionActiveByUser(r.Context(), user.ID); err == nil && old != nil {
+		_ = a.st.SupportSessionEnd(r.Context(), old.ID, "cancelled")
+	}
+
+	ss := &store.SupportSession{
+		UserID:         user.ID,
+		DeviceID:       device.ID,
+		Category:       req.Category,
+		Status:         "requested",
+		ProblemSummary: req.ProblemSummary,
+		AccessMode:     req.AccessMode,
+		Metadata: map[string]any{
+			"ip":               clientIP(r),
+			"platform":         device.Platform,
+			"os_version":       device.OSVersion,
+			"device_name":      device.DeviceName,
+			"security_posture": device.SecurityPosture,
+		},
+	}
+
+	if err := a.st.SupportSessionCreate(r.Context(), ss); err != nil {
+		slog.Error("app_api: ошибка создания support_session", "error", err)
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+
+	ss.Username = user.Username
+	ss.DisplayName = user.DisplayName
+	ss.DeviceName = device.DeviceName
+	ss.Platform = device.Platform
+	ss.LastIP = clientIP(r)
+
+	// Многоканальное оповещение инженеров (Email / Telegram / Web)
+	if a.notifier != nil {
+		a.notifier.NotifyNewSession(r.Context(), ss, user, device)
+	}
+
+	a.audit(r.Context(), user.Username, "support_requested", map[string]any{
+		"session_id": ss.ID.String(),
+		"category":   ss.Category,
+		"summary":    ss.ProblemSummary,
+	}, clientIP(r), "ok")
+
+	writeJSON(w, http.StatusOK, ss)
+}
+
+// handleSupportCurrent возвращает текущую активную сессию пользователя.
+func (a *AppAPI) handleSupportCurrent(w http.ResponseWriter, r *http.Request) {
+	user, _ := appUserFromCtx(r.Context())
+
+	ss, err := a.st.SupportSessionActiveByUser(r.Context(), user.ID)
+	if errors.Is(err, store.ErrNotFound) || ss == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"active": false})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"active":  true,
+		"session": ss,
+	})
+}
+
+// handleSupportDecision принимает решение пользователя (approve / deny) по запросу на подключение.
+func (a *AppAPI) handleSupportDecision(w http.ResponseWriter, r *http.Request) {
+	user, _ := appUserFromCtx(r.Context())
+
+	idStr := chi.URLParam(r, "id")
+	sessID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_id")
+		return
+	}
+
+	var req struct {
+		Decision    string `json:"decision"` // approve | deny
+		NumberMatch string `json:"number_match,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json")
+		return
+	}
+	req.Decision = strings.ToLower(strings.TrimSpace(req.Decision))
+
+	ss, err := a.st.SupportSessionGet(r.Context(), sessID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "session_not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+
+	if ss.UserID != user.ID {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+
+	ip := clientIP(r)
+
+	if req.Decision == "approve" {
+		// Проверка 2FA Number Matching
+		if ss.NumberMatch != "" && strings.TrimSpace(req.NumberMatch) != ss.NumberMatch {
+			a.audit(r.Context(), user.Username, "support_decision_mismatch", map[string]any{
+				"session_id": ss.ID.String(),
+				"expected":   ss.NumberMatch,
+				"entered":    req.NumberMatch,
+			}, ip, "fail")
+			writeError(w, http.StatusBadRequest, "number_match_mismatch")
+			return
+		}
+
+		_ = a.st.SupportSessionUpdateStatus(r.Context(), ss.ID, "active", ss.AssignedAdminID, "")
+		if a.hub != nil {
+			a.hub.SendEventToAdmin(ss.ID, "session_approved", map[string]any{"user": user.Username})
+		}
+
+		a.audit(r.Context(), user.Username, "support_decision_approved", map[string]any{
+			"session_id": ss.ID.String(),
+		}, ip, "ok")
+	} else {
+		_ = a.st.SupportSessionEnd(r.Context(), ss.ID, "rejected")
+		if a.hub != nil {
+			a.hub.SendEventToAdmin(ss.ID, "session_rejected", map[string]any{"user": user.Username})
+		}
+
+		a.audit(r.Context(), user.Username, "support_decision_denied", map[string]any{
+			"session_id": ss.ID.String(),
+		}, ip, "ok")
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleSupportSignal транслирует сигнальные сообщения WebRTC от клиента в браузер оператора.
+func (a *AppAPI) handleSupportSignal(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	sessID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_id")
+		return
+	}
+
+	var signal map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&signal); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json")
+		return
+	}
+
+	if a.hub != nil {
+		a.hub.SendSignalToAdmin(sessID, signal)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleSupportEnd завершает активный сеанс удаленного доступа по инициативе пользователя.
+func (a *AppAPI) handleSupportEnd(w http.ResponseWriter, r *http.Request) {
+	user, _ := appUserFromCtx(r.Context())
+
+	idStr := chi.URLParam(r, "id")
+	sessID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_id")
+		return
+	}
+
+	_ = a.st.SupportSessionEnd(r.Context(), sessID, "completed")
+	if a.hub != nil {
+		a.hub.SendEventToAdmin(sessID, "session_ended", map[string]any{"by": "user"})
+	}
+
+	a.audit(r.Context(), user.Username, "support_session_ended_by_user", map[string]any{
+		"session_id": sessID.String(),
+	}, clientIP(r), "ok")
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
