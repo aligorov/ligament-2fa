@@ -1339,12 +1339,17 @@ func (p *PagesAPI) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	userGroups, _ := p.st.AllUserGroupsMap(r.Context())
 	allGroups, _ := p.st.GroupList(r.Context())
+	inheritedVLAN, inheritedVLANGroup, _ := p.st.AllUserInheritedVLANMap(r.Context())
+	inheritedPushGroup, _ := p.st.AllUserInheritedPushMap(r.Context())
 	p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
-		BaseData:     p.baseData(r, "Пользователи", "admin-users"),
-		Users:        derefUsers(users),
-		VLANProfiles: p.m.Get().Radius.VLANProfiles,
-		UserGroups:   userGroups,
-		AllGroups:    allGroups,
+		BaseData:           p.baseData(r, "Пользователи", "admin-users"),
+		Users:              derefUsers(users),
+		VLANProfiles:       p.m.Get().Radius.VLANProfiles,
+		UserGroups:         userGroups,
+		AllGroups:          allGroups,
+		InheritedVLAN:      inheritedVLAN,
+		InheritedVLANGroup: inheritedVLANGroup,
+		InheritedPushGroup: inheritedPushGroup,
 	})
 }
 
@@ -1512,15 +1517,23 @@ func (p *PagesAPI) handleAdminUserEdit(w http.ResponseWriter, r *http.Request) {
 	for i, g := range curGroups {
 		editGroupIDs[i] = g.ID
 	}
+	inheritedVLAN, inheritedVLANGroup, _ := p.st.AllUserInheritedVLANMap(r.Context())
+	inheritedPushGroup, _ := p.st.AllUserInheritedPushMap(r.Context())
+	editVLAN, editGroup := p.st.UserInheritedVLANInfo(r.Context(), u)
 	p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
-		BaseData:      p.baseData(r, "Пользователи", "admin-users"),
-		Users:         derefUsers(users),
-		Edit:          u,
-		EditReplyJSON: replyJSON,
-		VLANProfiles:  p.m.Get().Radius.VLANProfiles,
-		UserGroups:    userGroups,
-		AllGroups:     allGroups,
-		EditGroupIDs:  editGroupIDs,
+		BaseData:           p.baseData(r, "Пользователи", "admin-users"),
+		Users:              derefUsers(users),
+		Edit:               u,
+		EditReplyJSON:      replyJSON,
+		VLANProfiles:       p.m.Get().Radius.VLANProfiles,
+		UserGroups:         userGroups,
+		AllGroups:          allGroups,
+		EditGroupIDs:       editGroupIDs,
+		InheritedVLAN:      inheritedVLAN,
+		InheritedVLANGroup: inheritedVLANGroup,
+		InheritedPushGroup: inheritedPushGroup,
+		EditInheritedVLAN:  editVLAN,
+		EditInheritedGroup: editGroup,
 	})
 }
 
@@ -1675,6 +1688,46 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// groupFormFields читает поля группы из формы (название, описание, приоритет, каналы 2FA, push, reply/vlan).
+func (p *PagesAPI) groupFormFields(r *http.Request, g *store.Group) error {
+	g.Name = strings.TrimSpace(r.PostFormValue("name"))
+	g.Description = strings.TrimSpace(r.PostFormValue("description"))
+	prio, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("priority")))
+	if err != nil || prio < 1 || prio > 100 {
+		prio = 50
+	}
+	g.Priority = prio
+
+	if chs, ok := parseChannels(r.PostForm["prefer_channels"]); ok {
+		g.PreferChannels = chs
+	} else {
+		g.PreferChannels = nil
+	}
+
+	g.RadiusPush = r.PostFormValue("radius_push") == "1"
+
+	reply, ok := radiusReplyFromForm(r.PostFormValue("radius_reply"))
+	if !ok {
+		return fmt.Errorf("RADIUS Reply: ожидается корректный JSON-объект")
+	}
+	vlanID := strings.TrimSpace(r.PostFormValue("vlan_id"))
+	if vlanID != "" {
+		if reply == nil {
+			reply = make(map[string]string)
+		}
+		reply["Tunnel-Private-Group-Id"] = vlanID
+	} else if reply != nil && r.PostForm.Has("vlan_id") {
+		delete(reply, "Tunnel-Private-Group-Id")
+		delete(reply, "Tunnel-Type")
+		delete(reply, "Tunnel-Medium-Type")
+		if len(reply) == 0 {
+			reply = nil
+		}
+	}
+	g.RadiusReply = reply
+	return nil
+}
+
 // handleAdminGroups — GET /admin/groups: список групп и форма создания.
 func (p *PagesAPI) handleAdminGroups(w http.ResponseWriter, r *http.Request) {
 	groups, err := p.st.GroupList(r.Context())
@@ -1688,24 +1741,24 @@ func (p *PagesAPI) handleAdminGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.render(w, http.StatusOK, "admin_groups", web.AdminGroupsData{
-		BaseData: p.baseData(r, "Группы пользователей", "admin-groups"),
-		Groups:   groups,
-		AllUsers: users,
+		BaseData:     p.baseData(r, "Группы пользователей", "admin-groups"),
+		Groups:       groups,
+		AllUsers:     users,
+		VLANProfiles: p.m.Get().Radius.VLANProfiles,
 	})
 }
 
 // handleAdminGroupCreate — POST /admin/groups: создание группы.
 func (p *PagesAPI) handleAdminGroupCreate(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
-	name := strings.TrimSpace(r.PostFormValue("name"))
-	desc := strings.TrimSpace(r.PostFormValue("description"))
-	if name == "" {
-		redirectFlash(w, r, "/admin/groups", "Название группы не может быть пустым.", false)
+	g := &store.Group{}
+	if err := p.groupFormFields(r, g); err != nil {
+		redirectFlash(w, r, "/admin/groups", err.Error(), false)
 		return
 	}
-	g := &store.Group{
-		Name:        name,
-		Description: desc,
+	if g.Name == "" {
+		redirectFlash(w, r, "/admin/groups", "Название группы не может быть пустым.", false)
+		return
 	}
 	if err := p.st.GroupCreate(r.Context(), g); err != nil {
 		if isUniqueViolation(err) {
@@ -1755,12 +1808,20 @@ func (p *PagesAPI) handleAdminGroupEdit(w http.ResponseWriter, r *http.Request) 
 	for i, m := range members {
 		memberIDs[i] = m.ID
 	}
+	replyJSON := ""
+	if g.RadiusReply != nil {
+		if b, err := json.MarshalIndent(g.RadiusReply, "", "  "); err == nil {
+			replyJSON = string(b)
+		}
+	}
 	p.render(w, http.StatusOK, "admin_groups", web.AdminGroupsData{
 		BaseData:      p.baseData(r, "Группы пользователей", "admin-groups"),
 		Groups:        groups,
 		Edit:          g,
 		AllUsers:      users,
 		EditMemberIDs: memberIDs,
+		VLANProfiles:  p.m.Get().Radius.VLANProfiles,
+		EditReplyJSON: replyJSON,
 	})
 }
 
@@ -1772,13 +1833,20 @@ func (p *PagesAPI) handleAdminGroupUpdate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_ = r.ParseForm()
-	name := strings.TrimSpace(r.PostFormValue("name"))
-	desc := strings.TrimSpace(r.PostFormValue("description"))
-	if name == "" {
+	g, err := p.st.GroupByID(r.Context(), id)
+	if err != nil {
+		redirectFlash(w, r, "/admin/groups", "Группа не найдена.", false)
+		return
+	}
+	if err := p.groupFormFields(r, g); err != nil {
+		redirectFlash(w, r, "/admin/groups/"+id.String(), err.Error(), false)
+		return
+	}
+	if g.Name == "" {
 		redirectFlash(w, r, "/admin/groups/"+id.String(), "Название группы не может быть пустым.", false)
 		return
 	}
-	if err := p.st.GroupUpdate(r.Context(), id, name, desc); err != nil {
+	if err := p.st.GroupUpdate(r.Context(), g); err != nil {
 		if isUniqueViolation(err) {
 			redirectFlash(w, r, "/admin/groups/"+id.String(), "Группа с таким названием уже существует.", false)
 			return
@@ -1793,6 +1861,13 @@ func (p *PagesAPI) handleAdminGroupUpdate(w http.ResponseWriter, r *http.Request
 		}
 	}
 	_ = p.st.SetGroupMembers(r.Context(), id, memberIDs)
+
+	if r.PostFormValue("apply_to_members") == "1" {
+		if err := p.st.ApplyGroupSettingsToMembers(r.Context(), id); err != nil {
+			slog.Warn("admin: ошибка применения настроек группы к участникам", "group_id", id, "err", err)
+		}
+	}
+
 	p.auditPage(r.Context(), "admin", "group_update", clientIP(r), "ok", map[string]any{"group_id": id.String()})
 	redirectFlash(w, r, "/admin/groups", "Группа сохранена.", true)
 }

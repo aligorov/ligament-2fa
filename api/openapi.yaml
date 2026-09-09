@@ -2571,6 +2571,11 @@ paths:
               properties:
                 name: {type: string, example: "Отдел разработки"}
                 description: {type: string, example: "Инженеры и разработчики"}
+                priority: {type: integer, minimum: 1, maximum: 100, example: 50, description: "Приоритет группы (1..100)"}
+                prefer_channels: {type: array, items: {type: string}}
+                radius_push: {type: boolean}
+                radius_reply: {type: object, additionalProperties: {type: string}}
+                vlan: {type: string, example: "20"}
       responses:
         '201':
           description: Группа создана.
@@ -2624,6 +2629,12 @@ paths:
               properties:
                 name: {type: string, example: "Отдел разработки"}
                 description: {type: string, example: "Инженеры и разработчики"}
+                priority: {type: integer, minimum: 1, maximum: 100, example: 50, description: "Приоритет группы (1..100)"}
+                prefer_channels: {type: array, items: {type: string}}
+                radius_push: {type: boolean}
+                radius_reply: {type: object, additionalProperties: {type: string}}
+                vlan: {type: string, example: "20"}
+                apply_to_members: {type: boolean, description: "Применить настройки к существующим участникам прямо сейчас"}
       responses:
         '200':
           description: Группа обновлена.
@@ -3250,11 +3261,15 @@ components:
     Group:
       type: object
       description: "Локальная группа пользователей."
-      required: [id, name, description, member_count, created_at, updated_at]
+      required: [id, name, description, priority, radius_push, member_count, created_at, updated_at]
       properties:
         id: {type: string, format: uuid}
         name: {type: string, example: "Отдел разработки"}
         description: {type: string, example: "Инженеры и разработчики"}
+        priority: {type: integer, minimum: 1, maximum: 100, example: 50, description: "Приоритет группы при разрешении конфликтов настроек (1..100)"}
+        prefer_channels: {type: array, items: {type: string}, description: "Каналы второго фактора для участников группы"}
+        radius_push: {type: boolean, example: false, description: "Требовать Telegram-подтверждение для участников группы"}
+        radius_reply: {type: object, additionalProperties: {type: string}, description: "Словарь дополнительных RADIUS-атрибутов (включая Tunnel-Private-Group-Id)"}
         member_count: {type: integer, example: 5}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}

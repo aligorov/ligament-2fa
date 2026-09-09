@@ -2,7 +2,7 @@
 {{define "content"}}
 <header class="page-head">
   <h1>Группы пользователей</h1>
-  <p class="page-sub">Локальные группы для распределения прав доступа к приложениям OpenID Connect и структурирования пользователей.</p>
+  <p class="page-sub">Локальные группы для распределения политик (VLAN, 2FA, RADIUS Push), прав доступа к приложениям OpenID Connect и структурирования пользователей.</p>
 </header>
 
 <section class="card">
@@ -14,16 +14,24 @@
   <div class="table-wrap">
     <table class="table">
       <tr>
+        <th>Приоритет</th>
         <th>Название</th>
         <th>Описание</th>
+        <th>Каналы 2FA</th>
+        <th>VLAN (Wi-Fi)</th>
+        <th>RADIUS Push</th>
         <th>Участников</th>
         <th>Создана</th>
         <th>Действия</th>
       </tr>
       {{range .Groups}}
       <tr>
+        <td><span class="badge neutral" title="Вес группы при участии пользователя в нескольких группах (1–100, чем выше, тем приоритетнее)">{{.Priority}}</span></td>
         <td class="cell-strong"><span class="badge info">{{.Name}}</span></td>
         <td>{{if .Description}}{{.Description}}{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{if .PreferChannels}}{{range .PreferChannels}}<span class="badge neutral">{{.}}</span> {{end}}{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{if .VLAN}}<span class="badge info" title="Сетевой сегмент: Tunnel-Private-Group-Id {{.VLAN}}">{{vlanDesc $.VLANProfiles .VLAN}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{if .RadiusPush}}<span class="badge ok">да</span>{{else}}<span class="badge neutral">нет</span>{{end}}</td>
         <td><span class="badge neutral">{{.MemberCount}} польз.</span></td>
         <td>{{dt .CreatedAt}}</td>
         <td class="row-actions">
@@ -48,16 +56,21 @@
 <section class="card">
   <div class="card-head">
     <h2>Редактирование группы: {{.Edit.Name}}</h2>
-    <p>Изменение названия, описания и состава участников.</p>
+    <p>Изменение названия, описания, приоритета, политик 2FA, VLAN и состава участников.</p>
   </div>
   <form action="/admin/groups/{{.Edit.ID}}" method="post" class="form wide">
     {{csrf .CSRF}}
     <div class="field-row">
-      <label class="field">
+      <label class="field" style="flex: 2;">
         <span class="field-label">Название группы</span>
         <input class="input" type="text" name="name" value="{{.Edit.Name}}" required placeholder="Например: DevOps, Бухгалтерия">
       </label>
-      <label class="field">
+      <label class="field" style="flex: 1; max-width: 150px;">
+        <span class="field-label">Приоритет (1–100)</span>
+        <input class="input mono" type="number" name="priority" min="1" max="100" value="{{.Edit.Priority}}" required>
+        <span class="help">Вес при конфликте</span>
+      </label>
+      <label class="field" style="flex: 3;">
         <span class="field-label">Описание</span>
         <input class="input" type="text" name="description" value="{{.Edit.Description}}" placeholder="Краткое назначение группы">
       </label>
@@ -82,6 +95,48 @@
       {{end}}
     </div>
 
+    <fieldset class="check-group">
+      <legend>Каналы второго фактора для группы</legend>
+      <label class="check"><input type="checkbox" name="prefer_channels" value="totp"{{if hasChan .Edit.PreferChannels "totp"}} checked{{end}}> <span>TOTP</span></label>
+      <label class="check"><input type="checkbox" name="prefer_channels" value="telegram"{{if hasChan .Edit.PreferChannels "telegram"}} checked{{end}}> <span>Telegram</span></label>
+      <label class="check"><input type="checkbox" name="prefer_channels" value="email"{{if hasChan .Edit.PreferChannels "email"}} checked{{end}}> <span>Email</span></label>
+      <label class="check"><input type="checkbox" name="prefer_channels" value="sms"{{if hasChan .Edit.PreferChannels "sms"}} checked{{end}}> <span>SMS</span></label>
+    </fieldset>
+
+    <label class="check"><input type="checkbox" name="radius_push" value="1"{{if .Edit.RadiusPush}} checked{{end}}> <span>RADIUS Push — требовать Telegram-подтверждение для участников группы</span></label>
+
+    <div class="field" style="margin-top: 0.5rem;">
+      <span class="field-label">📶 Сетевой сегмент / VLAN (Wi-Fi) для участников группы</span>
+      <div style="display: flex; gap: 8px; align-items: center; max-width: 500px;">
+        <select class="select" id="group-vlan-select" onchange="var inp=document.getElementById('group-vlan-input'); if(this.value!=='custom'){ inp.value=this.value; } else { inp.focus(); }">
+          <option value="">— По умолчанию (без группового VLAN) —</option>
+          {{range $vid, $vname := $.VLANProfiles}}
+            <option value="{{$vid}}"{{if eq $.Edit.VLAN $vid}} selected{{end}}>VLAN {{$vid}} — {{$vname}}</option>
+          {{end}}
+          <option value="custom"{{if and $.Edit.VLAN (not (index $.VLANProfiles $.Edit.VLAN))}} selected{{end}}>Свой номер VLAN...</option>
+        </select>
+        <input class="input mono" type="text" name="vlan_id" id="group-vlan-input" style="max-width: 130px;" placeholder="VLAN ID" value="{{.Edit.VLAN}}">
+      </div>
+      <span class="help">Автоматическая изоляция участников группы в указанный VLAN при подключении к корпоративному Wi-Fi или VPN (RFC 3580).</span>
+    </div>
+
+    <details class="advanced-details" style="margin: 8px 0 16px;">
+      <summary class="muted" style="cursor: pointer; font-size: 0.9rem; user-select: none;">⚙️ Дополнительные RADIUS-атрибуты группы (JSON)</summary>
+      <label class="field" style="margin-top: 8px;">
+        <span class="field-label">RADIUS Reply <span class="muted">(JSON)</span></span>
+        <textarea class="textarea mono" name="radius_reply" rows="3" placeholder='{"Mikrotik-Group": "vpn"}'>{{$.EditReplyJSON}}</textarea>
+        <span class="help">Специальные атрибуты Access-Accept для участников группы (Mikrotik-Group, Filter-Id, Framed-Pool и др.).</span>
+      </label>
+    </details>
+
+    <div style="margin: 8px 0 16px; padding: 12px; background: var(--bg-card); border: 1px dashed var(--line); border-radius: 8px;">
+      <label class="check">
+        <input type="checkbox" name="apply_to_members" value="1">
+        <span><b>Применить эти настройки ко всем текущим участникам группы прямо сейчас</b></span>
+      </label>
+      <span class="help" style="display:block; margin-left: 24px; margin-top: 4px;">Принудительно обновит каналы 2FA, RADIUS Push, VLAN и RADIUS Reply в профилях всех пользователей, входящих в группу.</span>
+    </div>
+
     <div class="form-actions" style="display:flex; gap:8px;">
       <button type="submit" class="btn primary">Сохранить изменения</button>
       <a href="/admin/groups" class="btn secondary">Отмена</a>
@@ -92,16 +147,21 @@
 <section class="card">
   <div class="card-head">
     <h2>Новая группа</h2>
-    <p>Создание группы и назначение начальных участников.</p>
+    <p>Создание группы, назначение политик (VLAN, 2FA, Push) и начальных участников.</p>
   </div>
   <form action="/admin/groups" method="post" class="form wide">
     {{csrf .CSRF}}
     <div class="field-row">
-      <label class="field">
+      <label class="field" style="flex: 2;">
         <span class="field-label">Название группы</span>
         <input class="input" type="text" name="name" required placeholder="Например: DevOps, Бухгалтерия, Руководство">
       </label>
-      <label class="field">
+      <label class="field" style="flex: 1; max-width: 150px;">
+        <span class="field-label">Приоритет (1–100)</span>
+        <input class="input mono" type="number" name="priority" min="1" max="100" value="50" required>
+        <span class="help">Вес при конфликте</span>
+      </label>
+      <label class="field" style="flex: 3;">
         <span class="field-label">Описание</span>
         <input class="input" type="text" name="description" placeholder="Краткое описание группы">
       </label>
@@ -125,6 +185,40 @@
       <p class="muted">Пользователи ещё не созданы.</p>
       {{end}}
     </div>
+
+    <fieldset class="check-group">
+      <legend>Каналы второго фактора для группы</legend>
+      <label class="check"><input type="checkbox" name="prefer_channels" value="totp"> <span>TOTP</span></label>
+      <label class="check"><input type="checkbox" name="prefer_channels" value="telegram"> <span>Telegram</span></label>
+      <label class="check"><input type="checkbox" name="prefer_channels" value="email"> <span>Email</span></label>
+      <label class="check"><input type="checkbox" name="prefer_channels" value="sms"> <span>SMS</span></label>
+    </fieldset>
+
+    <label class="check"><input type="checkbox" name="radius_push" value="1"> <span>RADIUS Push — требовать Telegram-подтверждение для участников группы</span></label>
+
+    <div class="field" style="margin-top: 0.5rem;">
+      <span class="field-label">📶 Сетевой сегмент / VLAN (Wi-Fi) для участников группы</span>
+      <div style="display: flex; gap: 8px; align-items: center; max-width: 500px;">
+        <select class="select" id="new-group-vlan-select" onchange="var inp=document.getElementById('new-group-vlan-input'); if(this.value!=='custom'){ inp.value=this.value; } else { inp.focus(); }">
+          <option value="">— По умолчанию (без группового VLAN) —</option>
+          {{range $vid, $vname := $.VLANProfiles}}
+            <option value="{{$vid}}">VLAN {{$vid}} — {{$vname}}</option>
+          {{end}}
+          <option value="custom">Свой номер VLAN...</option>
+        </select>
+        <input class="input mono" type="text" name="vlan_id" id="new-group-vlan-input" style="max-width: 130px;" placeholder="VLAN ID">
+      </div>
+      <span class="help">Автоматическая изоляция участников группы в указанный VLAN при подключении к корпоративному Wi-Fi или VPN (RFC 3580).</span>
+    </div>
+
+    <details class="advanced-details" style="margin: 8px 0 16px;">
+      <summary class="muted" style="cursor: pointer; font-size: 0.9rem; user-select: none;">⚙️ Дополнительные RADIUS-атрибуты группы (JSON)</summary>
+      <label class="field" style="margin-top: 8px;">
+        <span class="field-label">RADIUS Reply <span class="muted">(JSON)</span></span>
+        <textarea class="textarea mono" name="radius_reply" rows="3" placeholder='{"Mikrotik-Group": "vpn"}'></textarea>
+        <span class="help">Специальные атрибуты Access-Accept для участников группы (Mikrotik-Group, Filter-Id, Framed-Pool и др.).</span>
+      </label>
+    </details>
 
     <div class="form-actions">
       <button type="submit" class="btn primary">Создать группу</button>

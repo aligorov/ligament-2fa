@@ -262,8 +262,11 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 	if accept {
 		resp = r.Response(radius.CodeAccessAccept)
 		attrs := s.m.Get().Radius.ReplyAttributes
-		if user, err := s.st.UserByUsername(ctx, username); err == nil && len(user.RadiusReply) > 0 {
-			attrs = user.RadiusReply
+		if user, err := s.st.UserByUsername(ctx, username); err == nil {
+			eff, errEff := s.st.UserEffectiveRadiusReply(ctx, user)
+			if errEff == nil && len(eff) > 0 {
+				attrs = eff
+			}
 		}
 		applyReplyAttrs(resp, attrs)
 

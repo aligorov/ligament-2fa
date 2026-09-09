@@ -47,8 +47,30 @@
           {{if and (not $ug) (not .LDAPGroups)}}<span class="muted">—</span>{{end}}
         </td>
         <td>{{range .PreferChannels}}<span class="badge neutral">{{.}}</span> {{end}}</td>
-        <td>{{if .VLAN}}<span class="badge info" title="Сетевой сегмент: Tunnel-Private-Group-Id {{.VLAN}}">{{vlanDesc $.VLANProfiles .VLAN}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
-        <td>{{if .RadiusPush}}{{if .TelegramLinked}}<span class="badge ok">да</span>{{else}}<span class="badge warn" title="Внимание: Telegram не привязан к аккаунту! Вход по RADIUS будет заблокирован, пока пользователь не привяжет бота в /me.">⚠️ да (ТГ не привязан!)</span>{{end}}{{else}}<span class="badge neutral">нет</span>{{end}}</td>
+        <td>
+          {{if .VLAN}}
+            <span class="badge info" title="Сетевой сегмент: Tunnel-Private-Group-Id {{.VLAN}}">{{vlanDesc $.VLANProfiles .VLAN}}</span>
+          {{else}}
+            {{$gVlan := index $.InheritedVLAN .ID}}
+            {{if $gVlan}}
+              <span class="badge info" title="Унаследован от группы {{index $.InheritedVLANGroup .ID}}">{{vlanDesc $.VLANProfiles $gVlan}}</span> <span class="muted" style="font-size: 0.75rem;">({{index $.InheritedVLANGroup .ID}})</span>
+            {{else}}
+              <span class="muted">—</span>
+            {{end}}
+          {{end}}
+        </td>
+        <td>
+          {{if .RadiusPush}}
+            {{if .TelegramLinked}}<span class="badge ok">да</span>{{else}}<span class="badge warn" title="Внимание: Telegram не привязан к аккаунту! Вход по RADIUS будет заблокирован, пока пользователь не привяжет бота в /me.">⚠️ да (ТГ не привязан!)</span>{{end}}
+          {{else}}
+            {{$pushG := index $.InheritedPushGroup .ID}}
+            {{if $pushG}}
+              {{if .TelegramLinked}}<span class="badge ok" title="Включен политикой группы {{$pushG}}">да ({{$pushG}})</span>{{else}}<span class="badge warn" title="Включен политикой группы {{$pushG}}, но Telegram не привязан к аккаунту!">⚠️ да ({{$pushG}})</span>{{end}}
+            {{else}}
+              <span class="badge neutral">нет</span>
+            {{end}}
+          {{end}}
+        </td>
         <td class="row-actions">
           <a class="btn secondary sm" href="/admin/users/{{.ID}}">Редактировать</a>
           <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="reset-totp">
@@ -200,7 +222,7 @@
   <span class="field-label">📶 Сетевой сегмент / VLAN (Wi-Fi)</span>
   <div style="display: flex; gap: 8px; align-items: center; max-width: 500px;">
     <select class="select" id="user-vlan-select" onchange="var inp=document.getElementById('user-vlan-input'); if(this.value!=='custom'){ inp.value=this.value; } else { inp.focus(); }">
-      <option value="">— По умолчанию (без персонального VLAN) —</option>
+      <option value="">— По умолчанию (наследовать из группы / без VLAN) —</option>
       {{range $vid, $vname := $.VLANProfiles}}
         <option value="{{$vid}}"{{if and $.Edit (eq $.Edit.VLAN $vid)}} selected{{end}}>VLAN {{$vid}} — {{$vname}}</option>
       {{end}}
@@ -208,7 +230,11 @@
     </select>
     <input class="input mono" type="text" name="vlan_id" id="user-vlan-input" style="max-width: 130px;" placeholder="VLAN ID" value="{{if .Edit}}{{.Edit.VLAN}}{{end}}">
   </div>
-  <span class="help">Автоматическая изоляция пользователя в указанный VLAN при подключении к корпоративному Wi-Fi или VPN (RFC 3580).</span>
+  {{if and .Edit $.EditInheritedVLAN (not .Edit.VLAN)}}
+    <span class="help" style="color: var(--accent); font-weight: 500;">💡 Сейчас унаследован от группы <b>{{$.EditInheritedGroup}}</b>: <b>{{vlanDesc $.VLANProfiles $.EditInheritedVLAN}}</b>. Укажите номер только если нужно переопределить сегмент персонально для этого пользователя.</span>
+  {{else}}
+    <span class="help">Автоматическая изоляция пользователя в указанный VLAN при подключении к корпоративному Wi-Fi или VPN (RFC 3580). Если не задан, наследуется из группы с наивысшим приоритетом.</span>
+  {{end}}
 </div>
 <details class="advanced-details" style="margin: 8px 0 16px;">
   <summary class="muted" style="cursor: pointer; font-size: 0.9rem; user-select: none;">⚙️ Дополнительные RADIUS-атрибуты (JSON)</summary>

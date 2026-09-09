@@ -190,7 +190,11 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 	pol := c.set.Get().Policy
 	prefer := user.PreferChannels
 	if len(prefer) == 0 {
-		prefer = pol.DefaultPrefer
+		if grpPrefer, err := c.st.UserEffectivePreferChannels(ctx, user); err == nil && len(grpPrefer) > 0 {
+			prefer = grpPrefer
+		} else {
+			prefer = pol.DefaultPrefer
+		}
 	}
 	now := time.Now()
 
@@ -582,9 +586,10 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 
 	pol := c.set.Get().Policy
 	push := c.pushNotifier()
-	if !user.RadiusPush || user.TelegramChatID == nil || push == nil {
+	radiusPush := c.st.UserEffectiveRadiusPush(ctx, user)
+	if !radiusPush || user.TelegramChatID == nil || push == nil {
 		// Пароль верен, но кода нет и push недоступен — Reject.
-		if user.RadiusPush && user.TelegramChatID == nil {
+		if radiusPush && user.TelegramChatID == nil {
 			slog.Warn("radius: для пользователя включен RADIUS Push, но Telegram не привязан — отказ", "user", username)
 		}
 		audit("bad_credentials", false)

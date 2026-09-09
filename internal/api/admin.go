@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aligorov/twofa/internal/acme"
+	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/oidc"
 	"github.com/aligorov/twofa/internal/radiusserver"
@@ -1179,28 +1180,59 @@ func (a *AdminAPI) handleOIDCClientDelete(w http.ResponseWriter, r *http.Request
 // ---- Groups: локальные группы пользователей ----
 
 type adminGroup struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	MemberCount int       `json:"member_count"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Description    string            `json:"description"`
+	Priority       int               `json:"priority"`
+	PreferChannels []string          `json:"prefer_channels"`
+	RadiusPush     bool              `json:"radius_push"`
+	RadiusReply    map[string]string `json:"radius_reply"`
+	MemberCount    int               `json:"member_count"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
 }
 
 func toAdminGroup(g store.Group) adminGroup {
+	var chs []string
+	if g.PreferChannels != nil {
+		chs = make([]string, len(g.PreferChannels))
+		for i, c := range g.PreferChannels {
+			chs[i] = string(c)
+		}
+	} else {
+		chs = []string{}
+	}
+	reply := g.RadiusReply
+	if reply == nil {
+		reply = make(map[string]string)
+	}
+	prio := g.Priority
+	if prio <= 0 {
+		prio = 50
+	}
 	return adminGroup{
-		ID:          g.ID.String(),
-		Name:        g.Name,
-		Description: g.Description,
-		MemberCount: g.MemberCount,
-		CreatedAt:   g.CreatedAt,
-		UpdatedAt:   g.UpdatedAt,
+		ID:             g.ID.String(),
+		Name:           g.Name,
+		Description:    g.Description,
+		Priority:       prio,
+		PreferChannels: chs,
+		RadiusPush:     g.RadiusPush,
+		RadiusReply:    reply,
+		MemberCount:    g.MemberCount,
+		CreatedAt:      g.CreatedAt,
+		UpdatedAt:      g.UpdatedAt,
 	}
 }
 
 type groupCreateReq struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name           string            `json:"name"`
+	Description    string            `json:"description"`
+	Priority       *int              `json:"priority,omitempty"`
+	PreferChannels *[]string         `json:"prefer_channels,omitempty"`
+	RadiusPush     *bool             `json:"radius_push,omitempty"`
+	RadiusReply    map[string]string `json:"radius_reply,omitempty"`
+	VLAN           *string           `json:"vlan,omitempty"`
+	ApplyToMembers bool              `json:"apply_to_members,omitempty"`
 }
 
 func (a *AdminAPI) handleGroupsList(w http.ResponseWriter, r *http.Request) {
@@ -1227,9 +1259,47 @@ func (a *AdminAPI) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
+	prio := 50
+	if req.Priority != nil && *req.Priority >= 1 && *req.Priority <= 100 {
+		prio = *req.Priority
+	}
+	var prefer []channel.Channel
+	if req.PreferChannels != nil {
+		chs, ok := parseChannels(*req.PreferChannels)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "bad_channels")
+			return
+		}
+		prefer = chs
+	}
+	var radiusPush bool
+	if req.RadiusPush != nil {
+		radiusPush = *req.RadiusPush
+	}
+	reply := req.RadiusReply
+	if req.VLAN != nil {
+		vid := strings.TrimSpace(*req.VLAN)
+		if vid != "" {
+			if reply == nil {
+				reply = make(map[string]string)
+			}
+			reply["Tunnel-Private-Group-Id"] = vid
+		} else if reply != nil {
+			delete(reply, "Tunnel-Private-Group-Id")
+			delete(reply, "Tunnel-Type")
+			delete(reply, "Tunnel-Medium-Type")
+			if len(reply) == 0 {
+				reply = nil
+			}
+		}
+	}
 	g := &store.Group{
-		Name:        name,
-		Description: strings.TrimSpace(req.Description),
+		Name:           name,
+		Description:    strings.TrimSpace(req.Description),
+		Priority:       prio,
+		PreferChannels: prefer,
+		RadiusPush:     radiusPush,
+		RadiusReply:    reply,
 	}
 	if err := a.st.GroupCreate(r.Context(), g); err != nil {
 		slog.Error("api: admin создать группу", "error", err)
@@ -1286,10 +1356,52 @@ func (a *AdminAPI) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	g.Name = name
 	g.Description = strings.TrimSpace(req.Description)
-	if err := a.st.GroupUpdate(r.Context(), id, g.Name, g.Description); err != nil {
+	if req.Priority != nil {
+		prio := *req.Priority
+		if prio < 1 || prio > 100 {
+			prio = 50
+		}
+		g.Priority = prio
+	}
+	if req.PreferChannels != nil {
+		chs, ok := parseChannels(*req.PreferChannels)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "bad_channels")
+			return
+		}
+		g.PreferChannels = chs
+	}
+	if req.RadiusPush != nil {
+		g.RadiusPush = *req.RadiusPush
+	}
+	if req.RadiusReply != nil {
+		g.RadiusReply = req.RadiusReply
+	}
+	if req.VLAN != nil {
+		vid := strings.TrimSpace(*req.VLAN)
+		if vid != "" {
+			if g.RadiusReply == nil {
+				g.RadiusReply = make(map[string]string)
+			}
+			g.RadiusReply["Tunnel-Private-Group-Id"] = vid
+		} else if g.RadiusReply != nil {
+			delete(g.RadiusReply, "Tunnel-Private-Group-Id")
+			delete(g.RadiusReply, "Tunnel-Type")
+			delete(g.RadiusReply, "Tunnel-Medium-Type")
+			if len(g.RadiusReply) == 0 {
+				g.RadiusReply = nil
+			}
+		}
+	}
+	if err := a.st.GroupUpdate(r.Context(), g); err != nil {
 		slog.Error("api: admin обновить группу", "error", err)
 		writeError(w, http.StatusBadRequest, "update_failed")
 		return
+	}
+	if req.ApplyToMembers {
+		if err := a.st.ApplyGroupSettingsToMembers(r.Context(), id); err != nil {
+			slog.Warn("api: admin применить настройки к участникам", "group_id", id, "error", err)
+		}
 	}
 	a.audit(r.Context(), "group_update", map[string]any{"id": g.ID.String(), "name": g.Name})
 	writeJSON(w, http.StatusOK, toAdminGroup(*g))

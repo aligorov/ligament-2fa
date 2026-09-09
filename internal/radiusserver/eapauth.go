@@ -315,8 +315,11 @@ func (s *Server) finishInnerPAP(w radius.ResponseWriter, r *radius.Request,
 	}
 	// Обычные reply-атрибуты — как в PAP-пути.
 	attrs := s.m.Get().Radius.ReplyAttributes
-	if user, err := s.st.UserByUsername(ctx, inner.UserName); err == nil && len(user.RadiusReply) > 0 {
-		attrs = user.RadiusReply
+	if user, err := s.st.UserByUsername(ctx, inner.UserName); err == nil {
+		eff, errEff := s.st.UserEffectiveRadiusReply(ctx, user)
+		if errEff == nil && len(eff) > 0 {
+			attrs = eff
+		}
 	}
 	applyReplyAttrs(resp, attrs)
 
@@ -656,9 +659,9 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 
 		// Пароль сошёлся!
 		// Если это чистый пароль без 2FA-кода:
-		// - при user.RadiusPush && Telegram: запускаем Telegram push-удержание через RADIUSAuth.
-		// - при !user.RadiusPush: пользователь аутентифицируется по чистому паролю (нативный вход Wi-Fi).
-		if matched.isClean && !user.RadiusPush {
+		// - при user.RadiusPush || group.RadiusPush && Telegram: запускаем Telegram push-удержание через RADIUSAuth.
+		// - иначе: пользователь аутентифицируется по чистому паролю (нативный вход Wi-Fi).
+		if matched.isClean && !s.st.UserEffectiveRadiusPush(ctx, user) {
 			// Прямой вход по логину/паролю без 2FA-кода
 			_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "password_ok"}, srcIP, "ok")
 		} else {
@@ -789,8 +792,11 @@ func (s *Server) finishPEAP(w radius.ResponseWriter, r *radius.Request,
 	}
 
 	attrs := s.m.Get().Radius.ReplyAttributes
-	if user, err := s.st.UserByUsername(r.Context(), username); err == nil && len(user.RadiusReply) > 0 {
-		attrs = user.RadiusReply
+	if user, err := s.st.UserByUsername(r.Context(), username); err == nil {
+		eff, errEff := s.st.UserEffectiveRadiusReply(r.Context(), user)
+		if errEff == nil && len(eff) > 0 {
+			attrs = eff
+		}
 	}
 	applyReplyAttrs(resp, attrs)
 

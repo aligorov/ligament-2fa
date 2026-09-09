@@ -140,14 +140,19 @@ type MeDevicesData struct {
 // ответа (nil — блок не рендерится).
 type AdminUsersData struct {
 	BaseData
-	Users         []store.User
-	Edit          *store.User
-	EditReplyJSON string
-	BackupCodes   []string // новые резервные коды (показ один раз)
-	VLANProfiles  map[string]string
-	UserGroups    map[uuid.UUID][]string
-	AllGroups     []store.Group
-	EditGroupIDs  []uuid.UUID
+	Users              []store.User
+	Edit               *store.User
+	EditReplyJSON      string
+	BackupCodes        []string // новые резервные коды (показ один раз)
+	VLANProfiles       map[string]string
+	UserGroups         map[uuid.UUID][]string
+	AllGroups          []store.Group
+	EditGroupIDs       []uuid.UUID
+	InheritedVLAN      map[uuid.UUID]string // user_id -> vlan от группы
+	InheritedVLANGroup map[uuid.UUID]string // user_id -> имя группы, от которой унаследован vlan
+	InheritedPushGroup map[uuid.UUID]string // user_id -> имя группы, включившей Push
+	EditInheritedVLAN  string
+	EditInheritedGroup string
 }
 
 // AdminGroupsData — /admin/groups: список локальных групп и форма создания/редактирования.
@@ -157,6 +162,8 @@ type AdminGroupsData struct {
 	Edit          *store.Group
 	AllUsers      []*store.User
 	EditMemberIDs []uuid.UUID
+	VLANProfiles  map[string]string
+	EditReplyJSON string
 }
 
 // AdminAuditData — /admin/audit: последние записи журнала.
