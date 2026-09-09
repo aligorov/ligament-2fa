@@ -130,3 +130,11 @@ type AppPushNotifier interface {
 // BackupChannel — псевдоканал в возвращаемом значении VerifyAnyCode:
 // код опознан как резервный (backup-коды не входят в channel.Channel).
 const BackupChannel channel.Channel = "backup"
+
+// CtxKey — строковый тип для ключей контекста auth.
+type CtxKey string
+
+const (
+	CtxKeyService CtxKey = "auth_service"
+	CtxKeyDevice  CtxKey = "auth_device"
+)

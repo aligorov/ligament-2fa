@@ -23,13 +23,21 @@ class _HomeScreenState extends State<HomeScreen> {
     final auth = context.watch<AuthState>();
     if (auth.activePrompt != null && !_modalShown) {
       _modalShown = true;
+      final prompt = auth.activePrompt!;
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          _modalShown = false;
+          return;
+        }
         showDialog(
           context: context,
-          barrierDismissible: false,
-          builder: (_) => ApprovalModal(prompt: auth.activePrompt!),
+          barrierDismissible: true,
+          builder: (_) => ApprovalModal(prompt: prompt),
         ).then((_) {
           _modalShown = false;
+          if (mounted) {
+            context.read<AuthState>().dismissPrompt(prompt['challenge_id']?.toString());
+          }
         });
       });
     }
@@ -180,19 +188,27 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     trailing: ElevatedButton(
                       onPressed: () {
+                        if (_modalShown) return;
+                        _modalShown = true;
+                        final promptData = {
+                          'challenge_id': ch['id'],
+                          'who': meta['username'] ?? auth.currentUser?['username'],
+                          'ip': meta['ip'] ?? '—',
+                          'ua': meta['ua'] ?? '—',
+                          'service': ch['purpose'] ?? '2FA Login',
+                          'number_match': meta['number_match'],
+                          'expires_in_seconds': ch['expires_in_seconds'],
+                        };
                         showDialog(
                           context: context,
-                          barrierDismissible: false,
-                          builder: (_) => ApprovalModal(prompt: {
-                            'challenge_id': ch['id'],
-                            'who': meta['username'] ?? auth.currentUser?['username'],
-                            'ip': meta['ip'] ?? '—',
-                            'ua': meta['ua'] ?? '—',
-                            'service': ch['purpose'] ?? '2FA Login',
-                            'number_match': meta['number_match'],
-                            'expires_in_seconds': ch['expires_in_seconds'],
-                          }),
-                        );
+                          barrierDismissible: true,
+                          builder: (_) => ApprovalModal(prompt: promptData),
+                        ).then((_) {
+                          _modalShown = false;
+                          if (mounted) {
+                            context.read<AuthState>().dismissPrompt(ch['id']?.toString());
+                          }
+                        });
                       },
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
                       child: const Text('Открыть'),

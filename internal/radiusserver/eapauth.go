@@ -268,8 +268,26 @@ func (s *Server) pumpTTLS(w radius.ResponseWriter, r *radius.Request, sess *eapS
 // §10) и обычными reply-атрибутами; неудача — Reject + EAP-Failure.
 func (s *Server) finishInnerPAP(w radius.ResponseWriter, r *radius.Request,
 	sess *eapSession, eapID byte, inner *eap.InnerPAP, srcIP string) {
+
+	clientMAC, _ := rfc2865.CallingStationID_LookupString(r.Packet)
+	calledStation, _ := rfc2865.CalledStationID_LookupString(r.Packet)
+	nasID, _ := rfc2865.NASIdentifier_LookupString(r.Packet)
+	nasIP := srcIP
+	if nip, err := rfc2865.NASIPAddress_Lookup(r.Packet); err == nil && len(nip) > 0 {
+		nasIP = nip.String()
+	}
+	nasDesc := ResolveNASDescription(nasIP, nasID, calledStation, s.m.Get().Radius.NASInventory)
+	deviceDesc := FormatDeviceDescription(clientMAC)
+
+	svc := "Подключение к Wi-Fi (802.1X)"
+	if nasDesc != "" {
+		svc = "Wi-Fi: " + nasDesc
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), s.m.Get().Radius.PushWait+authTimeoutMargin)
 	defer cancel()
+	ctx = context.WithValue(ctx, auth.CtxKeyService, svc)
+	ctx = context.WithValue(ctx, auth.CtxKeyDevice, deviceDesc)
 
 	accept, reason := s.core.RADIUSAuth(ctx, inner.UserName, inner.UserPassword, srcIP)
 
@@ -328,21 +346,11 @@ func (s *Server) finishInnerPAP(w radius.ResponseWriter, r *radius.Request,
 		slog.Warn("radius: ответ не отправлен", "user", inner.UserName, "error", err)
 	}
 
-	clientMAC, _ := rfc2865.CallingStationID_LookupString(r.Packet)
-	calledStation, _ := rfc2865.CalledStationID_LookupString(r.Packet)
-	nasID, _ := rfc2865.NASIdentifier_LookupString(r.Packet)
-	nasIP := srcIP
-	if nip, err := rfc2865.NASIPAddress_Lookup(r.Packet); err == nil && len(nip) > 0 {
-		nasIP = nip.String()
-	}
-
 	vlan := ExtractVLAN(attrs)
 	method := "Wi-Fi (TTLS)"
 	if vlan != "" {
 		method = fmt.Sprintf("Wi-Fi (TTLS), VLAN %s", vlan)
 	}
-	nasDesc := ResolveNASDescription(nasIP, nasID, calledStation, s.m.Get().Radius.NASInventory)
-	deviceDesc := FormatDeviceDescription(clientMAC)
 
 	s.eapSessions.delete(sess)
 	slog.Info("radius: EAP-TTLS Accept", "user", inner.UserName, "remote", srcIP,
@@ -540,8 +548,25 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 		}
 		sess.outerIdentity = username
 
+		clientMAC, _ := rfc2865.CallingStationID_LookupString(r.Packet)
+		calledStation, _ := rfc2865.CalledStationID_LookupString(r.Packet)
+		nasID, _ := rfc2865.NASIdentifier_LookupString(r.Packet)
+		nasIP := srcIP
+		if nip, err := rfc2865.NASIPAddress_Lookup(r.Packet); err == nil && len(nip) > 0 {
+			nasIP = nip.String()
+		}
+		nasDesc := ResolveNASDescription(nasIP, nasID, calledStation, s.m.Get().Radius.NASInventory)
+		deviceDesc := FormatDeviceDescription(clientMAC)
+
+		svc := "Подключение к Wi-Fi (802.1X)"
+		if nasDesc != "" {
+			svc = "Wi-Fi: " + nasDesc
+		}
+
 		ctx, cancel := context.WithTimeout(r.Context(), s.m.Get().Radius.PushWait+authTimeoutMargin)
 		defer cancel()
+		ctx = context.WithValue(ctx, auth.CtxKeyService, svc)
+		ctx = context.WithValue(ctx, auth.CtxKeyDevice, deviceDesc)
 
 		user, err := s.st.UserByUsername(ctx, username)
 		if err != nil {

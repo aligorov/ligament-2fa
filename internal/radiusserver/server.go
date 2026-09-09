@@ -254,8 +254,33 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 	username, _ := rfc2865.UserName_LookupString(r.Packet)
 	password, _ := rfc2865.UserPassword_LookupString(r.Packet)
 
+	portType, _ := rfc2865.NASPortType_Lookup(r.Packet)
+	clientMAC, _ := rfc2865.CallingStationID_LookupString(r.Packet)
+	calledStation, _ := rfc2865.CalledStationID_LookupString(r.Packet)
+	nasID, _ := rfc2865.NASIdentifier_LookupString(r.Packet)
+	nasIP := hostOnly(r.RemoteAddr)
+	if nip, err := rfc2865.NASIPAddress_Lookup(r.Packet); err == nil && len(nip) > 0 {
+		nasIP = nip.String()
+	}
+	nasDesc := ResolveNASDescription(nasIP, nasID, calledStation, s.m.Get().Radius.NASInventory)
+	deviceDesc := FormatDeviceDescription(clientMAC)
+
+	svc := "Корпоративная сеть (RADIUS)"
+	if portType == 19 {
+		svc = "Подключение к Wi-Fi"
+		if nasDesc != "" {
+			svc = "Wi-Fi: " + nasDesc
+		}
+	} else if portType == 5 {
+		svc = "VPN доступ (RADIUS)"
+	} else if nasDesc != "" {
+		svc = nasDesc
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), s.m.Get().Radius.PushWait+authTimeoutMargin)
 	defer cancel()
+	ctx = context.WithValue(ctx, auth.CtxKeyService, svc)
+	ctx = context.WithValue(ctx, auth.CtxKeyDevice, deviceDesc)
 
 	accept, reason := s.core.RADIUSAuth(ctx, username, password, hostOnly(r.RemoteAddr))
 	var resp *radius.Packet

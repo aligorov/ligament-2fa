@@ -20,7 +20,7 @@ void main() async {
       size: Size(440, 720),
       minimumSize: Size(380, 600),
       center: true,
-      backgroundColor: Colors.transparent,
+      backgroundColor: Color(0xFF0F172A),
       skipTaskbar: false,
       title: 'Ligament 2FA Authenticator',
     );
@@ -44,6 +44,8 @@ void main() async {
 
 class LigamentApp extends StatefulWidget {
   const LigamentApp({super.key});
+
+  static final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
   @override
   State<LigamentApp> createState() => _LigamentAppState();
@@ -123,6 +125,7 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
     final auth = context.watch<AuthState>();
 
     return MaterialApp(
+      navigatorKey: LigamentApp.navigatorKey,
       title: 'Ligament 2FA',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(

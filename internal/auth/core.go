@@ -701,14 +701,26 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		return false, "push_limit"
 	}
 
+	svc := "Корпоративный Wi-Fi / Сеть"
+	if s, ok := ctx.Value(CtxKeyService).(string); ok && s != "" {
+		svc = s
+	}
+	clientDesc := ""
+	if d, ok := ctx.Value(CtxKeyDevice).(string); ok && d != "" {
+		clientDesc = d
+	}
+
 	// Push-челлендж (pending) и отправка в приложение или Telegram.
 	var pushCh *store.Challenge
 	if useAppPush {
-		numMatch := secrets.GenDigits(2)
+		// Для RADIUS (Wi-Fi 802.1X / VPN) клиент подключается через сетевой стек ОС,
+		// где невозможно показать проверочный номер на экране.
+		// Поэтому подтверждение выполняется в один клик (Принять / Отклонить) без Number Match.
 		meta := map[string]any{
-			"ip":           srcIP,
-			"purpose":      "radius",
-			"number_match": numMatch,
+			"ip":       srcIP,
+			"purpose":  svc,
+			"device":   clientDesc,
+			"username": username,
 		}
 		pushCh = &store.Challenge{
 			UserID:       user.ID,
@@ -716,14 +728,14 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 			PushState:    ptrString("pending"),
 			ExpiresAt:    time.Now().Add(pol.CodeTTL),
 			AttemptsLeft: 1,
-			Purpose:      "radius",
+			Purpose:      svc,
 			Metadata:     meta,
 		}
 		if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
 			audit("push_send_fail", false)
 			return false, "push_send_fail"
 		}
-		if err := appPush.SendAppPush(ctx, user.ID, username, srcIP, "", "RADIUS VPN", numMatch, pushCh.ID); err != nil {
+		if err := appPush.SendAppPush(ctx, user.ID, username, srcIP, clientDesc, svc, "", pushCh.ID); err != nil {
 			if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
 				`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
 				slog.Warn("auth: удаление app_push челленджа после ошибки доставки",

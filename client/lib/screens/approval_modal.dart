@@ -26,7 +26,8 @@ class _ApprovalModalState extends State<ApprovalModal> {
       if (_secondsLeft <= 1) {
         timer.cancel();
         if (mounted) {
-          Navigator.of(context).maybePop();
+          context.read<AuthState>().dismissPrompt(widget.prompt['challenge_id']?.toString());
+          Navigator.of(context, rootNavigator: true).maybePop();
         }
       } else {
         setState(() => _secondsLeft--);
@@ -56,6 +57,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
 
     final auth = context.read<AuthState>();
     final challengeId = widget.prompt['challenge_id']?.toString() ?? '';
+    final navigator = Navigator.of(context, rootNavigator: true);
 
     try {
       await auth.submitDecision(
@@ -63,8 +65,8 @@ class _ApprovalModalState extends State<ApprovalModal> {
         approve: approve,
         selectedNumberMatch: _selectedMatch,
       );
-      if (mounted) {
-        Navigator.of(context).maybePop();
+      if (mounted && navigator.canPop()) {
+        navigator.pop();
       }
     } catch (e) {
       if (mounted) {
@@ -95,29 +97,22 @@ class _ApprovalModalState extends State<ApprovalModal> {
     }
 
     return Dialog(
-      backgroundColor: Colors.transparent,
+      backgroundColor: const Color(0xFF1E293B),
+      elevation: 24,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(color: const Color(0xFF38BDF8).withOpacity(0.4), width: 2),
+      ),
       insetPadding: const EdgeInsets.all(16),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 440),
         child: Container(
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E293B),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: const Color(0xFF38BDF8).withOpacity(0.4), width: 2),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF0284C7).withOpacity(0.25),
-                blurRadius: 30,
-                spreadRadius: 5,
-              ),
-            ],
-          ),
           padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Заголовок и таймер
+              // Заголовок, таймер и кнопка закрытия
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -138,20 +133,35 @@ class _ApprovalModalState extends State<ApprovalModal> {
                       ),
                     ],
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0F172A),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFF475569)),
-                    ),
-                    child: Text(
-                      '$_secondsLeft с',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: _secondsLeft < 15 ? Colors.redAccent : const Color(0xFF38BDF8),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F172A),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFF475569)),
+                        ),
+                        child: Text(
+                          '$_secondsLeft с',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: _secondsLeft < 15 ? Colors.redAccent : const Color(0xFF38BDF8),
+                          ),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
+                        tooltip: 'Закрыть',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () {
+                          context.read<AuthState>().dismissPrompt(widget.prompt['challenge_id']?.toString());
+                          Navigator.of(context, rootNavigator: true).maybePop();
+                        },
+                      ),
+                    ],
                   ),
                 ],
               ),

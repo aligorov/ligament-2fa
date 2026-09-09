@@ -31,8 +31,21 @@ class AuthState extends ChangeNotifier {
   bool isOnline = false;
 
   Map<String, dynamic>? activePrompt;
+  final Set<String> _resolvedChallengeIds = {};
 
   bool get isLoggedIn => token != null && currentUser != null;
+
+  void dismissPrompt([String? challengeId]) {
+    if (challengeId != null && challengeId.isNotEmpty) {
+      _resolvedChallengeIds.add(challengeId);
+    } else if (activePrompt != null) {
+      final cid = activePrompt!['challenge_id']?.toString();
+      if (cid != null && cid.isNotEmpty) _resolvedChallengeIds.add(cid);
+    }
+    activePrompt = null;
+    alert.resetWindowPriority();
+    notifyListeners();
+  }
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -68,11 +81,15 @@ class AuthState extends ChangeNotifier {
 
     // 1. WebSocket для мгновенных push-оповещений
     ws.onPrompt = (prompt) {
+      final cid = prompt['challenge_id']?.toString();
+      if (cid != null && _resolvedChallengeIds.contains(cid)) {
+        return;
+      }
       activePrompt = prompt;
       alert.triggerAlert(
         title: 'Запрос на авторизацию: ${prompt['service'] ?? 'Ligament 2FA'}',
         body: 'Инициатор: ${prompt['who'] ?? 'Сотрудник'} (IP: ${prompt['ip'] ?? '—'})',
-        challengeId: prompt['challenge_id']?.toString(),
+        challengeId: cid,
       );
       loadPendingChallenges();
       notifyListeners();
@@ -194,7 +211,12 @@ class AuthState extends ChangeNotifier {
   Future<void> loadPendingChallenges() async {
     if (api == null) return;
     try {
-      pendingChallenges = await api!.getPendingChallenges();
+      final list = await api!.getPendingChallenges();
+      pendingChallenges = list.where((c) {
+        final id = c['id']?.toString();
+        return id != null && !_resolvedChallengeIds.contains(id);
+      }).toList();
+
       if (pendingChallenges.isEmpty) {
         activePrompt = null;
         alert.resetWindowPriority();
@@ -254,6 +276,12 @@ class AuthState extends ChangeNotifier {
   }) async {
     if (api == null) return;
 
+    if (challengeId.isNotEmpty) {
+      _resolvedChallengeIds.add(challengeId);
+    }
+    activePrompt = null;
+    await alert.resetWindowPriority();
+
     if (approve) {
       // 1. Если включена GPO политика Windows Hello или системная биометрия
       if (gpo.requireWindowsHello) {
@@ -279,8 +307,6 @@ class AuthState extends ChangeNotifier {
       );
     }
 
-    activePrompt = null;
-    await alert.resetWindowPriority();
     await loadPendingChallenges();
     await loadHistory();
     notifyListeners();
