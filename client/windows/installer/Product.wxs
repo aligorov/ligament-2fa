@@ -4,7 +4,7 @@
            Name="Ligament 2FA Authenticator"
            Language="1033"
            Codepage="1252"
-           Version="0.4.37"
+           Version="1.0.1"
            Manufacturer="Ligament Security"
            UpgradeCode="4B5F3776-E1E7-44E8-BAA5-7FD81CE1B732">
     <Package InstallerVersion="301" Compressed="yes" InstallScope="perMachine" Platform="x64" Description="Ligament 2FA Client Installer" />

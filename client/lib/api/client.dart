@@ -56,7 +56,7 @@ class ApiClient {
     required String deviceName,
     required String platform,
     String osVersion = '',
-    String appVersion = '1.0.0',
+    String appVersion = '1.0.1',
     String pushToken = '',
     Map<String, dynamic>? securityPosture,
   }) async {

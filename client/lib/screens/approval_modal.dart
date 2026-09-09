@@ -207,7 +207,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
                     const SizedBox(height: 8),
                     _metaRow(Icons.language, 'IP-адрес:', ip),
                     const SizedBox(height: 8),
-                    _metaRow(Icons.devices, 'Клиент:', ua),
+                    _metaRow(Icons.devices, service.contains('Wi-Fi') ? 'Устройство:' : 'Клиент:', ua),
                   ],
                 ),
               ),

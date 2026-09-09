@@ -158,7 +158,7 @@ class AuthState extends ChangeNotifier {
       deviceName: deviceName,
       platform: platform,
       osVersion: osVersion,
-      appVersion: '1.0.0',
+      appVersion: '1.0.1',
       securityPosture: initialPosture,
     );
 
