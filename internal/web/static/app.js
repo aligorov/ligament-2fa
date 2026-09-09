@@ -142,6 +142,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Интерактивный визуальный конструктор RADIUS-атрибутов по группам AD
   initGroupRadiusBuilder();
+
+  // Компактный список пользователей (поиск, фильтры, дропдаун действий, пагинация)
+  initUsersTable();
 });
 
 function initGroupRadiusBuilder() {
@@ -478,5 +481,260 @@ function initGroupRadiusBuilder() {
     form.addEventListener("submit", syncData);
   }
 }
+
+function initUsersTable() {
+  const table = document.getElementById("users-table");
+  if (!table) return;
+
+  const tbody = table.querySelector("tbody");
+  if (!tbody) return;
+
+  const rows = Array.from(tbody.querySelectorAll("tr.user-row"));
+  const searchInput = document.getElementById("users-search");
+  const searchClear = document.getElementById("users-search-clear");
+  const pills = document.querySelectorAll(".users-pill");
+  const paginationInfo = document.getElementById("users-pagination-info");
+  const pageBtnsContainer = document.getElementById("users-page-btns");
+  const perPageSelect = document.getElementById("users-per-page");
+  const emptyMsg = document.getElementById("users-empty");
+
+  // Статистика для бейджей на фильтр-чипсах
+  let countAll = rows.length;
+  let countLdap = 0;
+  let countLocal = 0;
+  let countAdmin = 0;
+  let countDisabled = 0;
+
+  rows.forEach((r) => {
+    if (r.dataset.source === "ldap") countLdap++;
+    else countLocal++;
+
+    if (r.dataset.role === "admin") countAdmin++;
+    if (r.dataset.enabled === "0") countDisabled++;
+  });
+
+  const elAll = document.getElementById("count-all");
+  const elLdap = document.getElementById("count-ldap");
+  const elLocal = document.getElementById("count-local");
+  const elAdmin = document.getElementById("count-admin");
+  const elDisabled = document.getElementById("count-disabled");
+
+  if (elAll) elAll.textContent = countAll;
+  if (elLdap) elLdap.textContent = countLdap;
+  if (elLocal) elLocal.textContent = countLocal;
+  if (elAdmin) elAdmin.textContent = countAdmin;
+  if (elDisabled) elDisabled.textContent = countDisabled;
+
+  let currentFilter = "all";
+  let currentQuery = "";
+  let currentPage = 1;
+
+  function render() {
+    const q = currentQuery.toLowerCase().trim();
+
+    // Фильтрация
+    const filtered = rows.filter((r) => {
+      if (currentFilter === "ldap" && r.dataset.source !== "ldap") return false;
+      if (currentFilter === "local" && r.dataset.source === "ldap") return false;
+      if (currentFilter === "admin" && r.dataset.role !== "admin") return false;
+      if (currentFilter === "disabled" && r.dataset.enabled !== "0") return false;
+
+      if (q) {
+        const u = (r.dataset.username || "").toLowerCase();
+        const n = (r.dataset.name || "").toLowerCase();
+        const e = (r.dataset.email || "").toLowerCase();
+        const p = (r.dataset.phone || "").toLowerCase();
+        const g = (r.dataset.groups || "").toLowerCase();
+        if (!u.includes(q) && !n.includes(q) && !e.includes(q) && !p.includes(q) && !g.includes(q)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const total = filtered.length;
+    const perPageVal = perPageSelect ? perPageSelect.value : "25";
+    const isAll = perPageVal === "all";
+    const pageSize = isAll ? Math.max(1, total) : (parseInt(perPageVal, 10) || 25);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+    if (currentPage > totalPages) currentPage = totalPages;
+    if (currentPage < 1) currentPage = 1;
+
+    const startIdx = (currentPage - 1) * pageSize;
+    const endIdx = startIdx + pageSize;
+
+    const visibleSet = new Set(filtered.slice(startIdx, endIdx));
+    rows.forEach((r) => {
+      r.style.display = visibleSet.has(r) ? "" : "none";
+    });
+
+    if (emptyMsg) {
+      emptyMsg.style.display = total === 0 ? "block" : "none";
+    }
+    table.style.display = total === 0 ? "none" : "";
+
+    if (paginationInfo) {
+      if (total === 0) {
+        paginationInfo.textContent = "Пользователи не найдены";
+      } else {
+        const from = startIdx + 1;
+        const to = Math.min(total, endIdx);
+        if (total === countAll) {
+          paginationInfo.textContent = `Показано ${from}–${to} из ${total}`;
+        } else {
+          paginationInfo.textContent = `Показано ${from}–${to} из ${total} (найдено из ${countAll})`;
+        }
+      }
+    }
+
+    if (pageBtnsContainer) {
+      pageBtnsContainer.innerHTML = "";
+      if (totalPages > 1 && !isAll) {
+        const prevBtn = document.createElement("button");
+        prevBtn.type = "button";
+        prevBtn.className = "page-btn";
+        prevBtn.textContent = "«";
+        prevBtn.disabled = currentPage === 1;
+        prevBtn.title = "Предыдущая страница";
+        prevBtn.addEventListener("click", () => {
+          if (currentPage > 1) {
+            currentPage--;
+            render();
+            scrollToTable();
+          }
+        });
+        pageBtnsContainer.appendChild(prevBtn);
+
+        const pagesToDisplay = getPageNumbers(currentPage, totalPages);
+        pagesToDisplay.forEach((p) => {
+          if (p === "...") {
+            const ellipsis = document.createElement("span");
+            ellipsis.className = "page-ellipsis";
+            ellipsis.textContent = "…";
+            ellipsis.style.padding = "0 4px";
+            ellipsis.style.color = "var(--muted)";
+            pageBtnsContainer.appendChild(ellipsis);
+          } else {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "page-btn" + (p === currentPage ? " active" : "");
+            btn.textContent = p;
+            btn.addEventListener("click", () => {
+              currentPage = p;
+              render();
+              scrollToTable();
+            });
+            pageBtnsContainer.appendChild(btn);
+          }
+        });
+
+        const nextBtn = document.createElement("button");
+        nextBtn.type = "button";
+        nextBtn.className = "page-btn";
+        nextBtn.textContent = "»";
+        nextBtn.disabled = currentPage === totalPages;
+        nextBtn.title = "Следующая страница";
+        nextBtn.addEventListener("click", () => {
+          if (currentPage < totalPages) {
+            currentPage++;
+            render();
+            scrollToTable();
+          }
+        });
+        pageBtnsContainer.appendChild(nextBtn);
+      }
+    }
+  }
+
+  function scrollToTable() {
+    const box = table.getBoundingClientRect();
+    if (box.top < 0) {
+      table.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
+  function getPageNumbers(current, total) {
+    if (total <= 7) {
+      const pages = [];
+      for (let i = 1; i <= total; i++) pages.push(i);
+      return pages;
+    }
+    if (current <= 4) {
+      return [1, 2, 3, 4, 5, "...", total];
+    }
+    if (current >= total - 3) {
+      return [1, "...", total - 4, total - 3, total - 2, total - 1, total];
+    }
+    return [1, "...", current - 1, current, current + 1, "...", total];
+  }
+
+  // Дропдаун действий пользователя
+  document.querySelectorAll(".user-dropdown-toggle").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const dropdown = btn.closest(".user-dropdown");
+      const wasActive = dropdown.classList.contains("active");
+      document.querySelectorAll(".user-dropdown.active").forEach((d) => d.classList.remove("active"));
+      if (!wasActive) {
+        dropdown.classList.add("active");
+      }
+    });
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".user-dropdown")) {
+      document.querySelectorAll(".user-dropdown.active").forEach((d) => d.classList.remove("active"));
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      document.querySelectorAll(".user-dropdown.active").forEach((d) => d.classList.remove("active"));
+    }
+  });
+
+  // Обработчики тулбара поиска и фильтров
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      currentQuery = searchInput.value;
+      if (searchClear) searchClear.style.display = currentQuery ? "block" : "none";
+      currentPage = 1;
+      render();
+    });
+  }
+
+  if (searchClear) {
+    searchClear.addEventListener("click", () => {
+      searchInput.value = "";
+      currentQuery = "";
+      searchClear.style.display = "none";
+      currentPage = 1;
+      render();
+      searchInput.focus();
+    });
+  }
+
+  pills.forEach((pill) => {
+    pill.addEventListener("click", () => {
+      pills.forEach((p) => p.classList.remove("active"));
+      pill.classList.add("active");
+      currentFilter = pill.dataset.filter || "all";
+      currentPage = 1;
+      render();
+    });
+  });
+
+  if (perPageSelect) {
+    perPageSelect.addEventListener("change", () => {
+      currentPage = 1;
+      render();
+    });
+  }
+
+  // Первоначальный рендер
+  render();
+}
+
 
 

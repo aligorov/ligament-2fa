@@ -21,77 +21,232 @@
 {{end}}
 
 <section class="card">
-  <div class="card-head">
-    <h2>Список</h2>
-    <p>Действия применяются сразу; удаление необратимо.</p>
+  <div class="card-head users-card-head">
+    <div>
+      <h2>Список</h2>
+      <p>Действия применяются сразу; удаление необратимо.</p>
+    </div>
+    <div>
+      <a href="#new-user" class="btn primary sm">➕ Новый пользователь</a>
+    </div>
   </div>
+
+  <div class="users-toolbar">
+    <div class="users-search-box">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="users-search" class="input" placeholder="Поиск по имени, логину, почте, телефону или группе..." autocomplete="off">
+      <button type="button" id="users-search-clear" class="search-clear" style="display: none;" title="Очистить">&times;</button>
+    </div>
+    <div class="users-filter-pills" id="users-filter-pills">
+      <button type="button" class="users-pill active" data-filter="all">Все <span class="count" id="count-all">0</span></button>
+      <button type="button" class="users-pill" data-filter="ldap">🏢 LDAP <span class="count" id="count-ldap">0</span></button>
+      <button type="button" class="users-pill" data-filter="local">🔑 Локальные <span class="count" id="count-local">0</span></button>
+      <button type="button" class="users-pill" data-filter="admin">🛡️ Админы <span class="count" id="count-admin">0</span></button>
+      <button type="button" class="users-pill" data-filter="disabled">⚠️ Отключённые <span class="count" id="count-disabled">0</span></button>
+    </div>
+  </div>
+
   <div class="table-wrap">
-    <table class="table">
-      <tr>
-        <th>Имя</th><th>Источник</th><th>Роль</th><th>Включён</th><th>Группы</th><th>Каналы</th><th>VLAN (Wi-Fi)</th><th>RADIUS Push</th><th>Действия</th>
-      </tr>
+    <table class="table users-table" id="users-table">
+      <thead>
+        <tr>
+          <th>Пользователь</th>
+          <th>Источник / Статус</th>
+          <th>Группы</th>
+          <th>2FA & Сеть</th>
+          <th style="text-align: right;">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
       {{range .Users}}
-      <tr{{if not .Enabled}} class="row-off"{{end}}>
-        <td class="cell-strong">{{.Username}}{{if .DisplayName}} <span class="muted">({{.DisplayName}})</span>{{end}}</td>
-        <td>{{if eq .Source "ldap"}}<span class="badge warn">ldap</span>{{else}}<span class="badge neutral">local</span>{{end}}</td>
-        <td><span class="badge {{if eq .Role "admin"}}ok{{else}}neutral{{end}}">{{.Role}}</span></td>
-        <td>{{if .Enabled}}<span class="badge ok">да</span>{{else}}<span class="badge err">нет</span>{{end}}</td>
+      {{$ug := index $.UserGroups .ID}}
+      <tr class="user-row{{if not .Enabled}} row-off{{end}}"
+          data-username="{{.Username}}"
+          data-name="{{.DisplayName}}"
+          data-email="{{.Email}}"
+          data-phone="{{.Phone}}"
+          data-source="{{.Source}}"
+          data-role="{{.Role}}"
+          data-enabled="{{if .Enabled}}1{{else}}0{{end}}"
+          data-groups="{{range $ug}}{{.}} {{end}}{{range .LDAPGroups}}{{groupCN .}} {{.}}{{end}}">
         <td>
-          {{$ug := index $.UserGroups .ID}}
-          {{if $ug}}
-            {{range $ug}}<span class="badge info" title="Локальная группа">{{.}}</span> {{end}}
-          {{end}}
-          {{if .LDAPGroups}}
-            {{range .LDAPGroups}}<span class="badge neutral" title="LDAP/AD группа">{{.}}</span> {{end}}
-          {{end}}
-          {{if and (not $ug) (not .LDAPGroups)}}<span class="muted">—</span>{{end}}
+          <div class="user-profile-cell">
+            <div class="user-avatar" style="background-color: {{userAvatarBg .Username}};">
+              {{userInitials .DisplayName .Username}}
+            </div>
+            <div class="user-names">
+              <div class="user-primary-name">
+                <a class="user-name-link" href="/admin/users/{{.ID}}">
+                  {{if .DisplayName}}{{.DisplayName}}{{else}}{{.Username}}{{end}}
+                </a>
+                {{if and .DisplayName (ne .DisplayName .Username)}}
+                  <span class="muted" style="font-size: 0.8rem; font-weight: normal;">@{{.Username}}</span>
+                {{end}}
+              </div>
+              <div class="user-secondary-name">
+                {{if .Email}}<span>✉️ {{.Email}}</span>{{end}}
+                {{if and .Email .Phone}}<span class="dot-sep">•</span>{{end}}
+                {{if .Phone}}<span>📱 {{.Phone}}</span>{{end}}
+                {{if and (not .Email) (not .Phone)}}
+                  <span class="muted">ID: {{printf "%.8s" .ID}}</span>
+                {{end}}
+              </div>
+            </div>
+          </div>
         </td>
-        <td>{{range .PreferChannels}}<span class="badge neutral">{{.}}</span> {{end}}</td>
         <td>
-          {{if .VLAN}}
-            <span class="badge info" title="Сетевой сегмент: Tunnel-Private-Group-Id {{.VLAN}}">{{vlanDesc $.VLANProfiles .VLAN}}</span>
-          {{else}}
-            {{$gVlan := index $.InheritedVLAN .ID}}
-            {{if $gVlan}}
-              <span class="badge info" title="Унаследован от группы {{index $.InheritedVLANGroup .ID}}">{{vlanDesc $.VLANProfiles $gVlan}}</span> <span class="muted" style="font-size: 0.75rem;">({{index $.InheritedVLANGroup .ID}})</span>
-            {{else}}
-              <span class="muted">—</span>
+          <div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
+            <div style="display: flex; gap: 4px; align-items: center;">
+              {{if eq .Source "ldap"}}
+                <span class="badge warn" title="Синхронизирован из Active Directory / LDAP">ldap</span>
+              {{else}}
+                <span class="badge neutral" title="Локальная учётная запись сервера">local</span>
+              {{end}}
+              <span class="badge {{if eq .Role "admin"}}ok{{else}}neutral{{end}}">{{.Role}}</span>
+            </div>
+            <div>
+              {{if .Enabled}}
+                <span class="badge ok" style="font-size: 0.72rem;">активен</span>
+              {{else}}
+                <span class="badge err" style="font-size: 0.72rem;">отключён</span>
+              {{end}}
+            </div>
+          </div>
+        </td>
+        <td>
+          <div class="user-groups-cell">
+            {{if $ug}}
+              {{range $ug}}<span class="badge info" title="Локальная группа">{{.}}</span>{{end}}
             {{end}}
-          {{end}}
+            {{if .LDAPGroups}}
+              {{$ldapLen := len .LDAPGroups}}
+              {{if le $ldapLen 3}}
+                {{range .LDAPGroups}}
+                  <span class="badge neutral" title="LDAP DN: {{.}}">{{groupCN .}}</span>
+                {{end}}
+              {{else}}
+                {{range $i, $g := .LDAPGroups}}
+                  {{if lt $i 2}}
+                    <span class="badge neutral" title="LDAP DN: {{$g}}">{{groupCN $g}}</span>
+                  {{end}}
+                {{end}}
+                <span class="badge neutral" style="cursor: help;" title="{{range .LDAPGroups}}{{.}}&#10;{{end}}">+{{sub $ldapLen 2}} ещё</span>
+              {{end}}
+            {{end}}
+            {{if and (not $ug) (not .LDAPGroups)}}
+              <span class="muted" style="font-size: 0.8rem;">—</span>
+            {{end}}
+          </div>
         </td>
         <td>
-          {{if .RadiusPush}}
-            {{if .TelegramLinked}}<span class="badge ok">да</span>{{else}}<span class="badge warn" title="Внимание: Telegram не привязан к аккаунту! Вход по RADIUS будет заблокирован, пока пользователь не привяжет бота в /me.">⚠️ да (ТГ не привязан!)</span>{{end}}
-          {{else}}
-            {{$pushG := index $.InheritedPushGroup .ID}}
-            {{if $pushG}}
-              {{if .TelegramLinked}}<span class="badge ok" title="Включен политикой группы {{$pushG}}">да ({{$pushG}})</span>{{else}}<span class="badge warn" title="Включен политикой группы {{$pushG}}, но Telegram не привязан к аккаунту!">⚠️ да ({{$pushG}})</span>{{end}}
-            {{else}}
-              <span class="badge neutral">нет</span>
-            {{end}}
-          {{end}}
+          <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem;">
+            <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
+              {{if .PreferChannels}}
+                {{range .PreferChannels}}<span class="badge neutral" style="font-size: 0.72rem;">{{.}}</span>{{end}}
+              {{else}}
+                <span class="muted" style="font-size: 0.75rem;" title="Каналы не настроены">2FA: —</span>
+              {{end}}
+              {{if .RadiusPush}}
+                {{if .TelegramLinked}}
+                  <span class="badge ok" style="font-size: 0.72rem;" title="RADIUS Push включен в профиле">Push: да</span>
+                {{else}}
+                  <span class="badge warn" style="font-size: 0.72rem;" title="Push включен, но Telegram не привязан">⚠️ Push (нет ТГ)</span>
+                {{end}}
+              {{else}}
+                {{$pushG := index $.InheritedPushGroup .ID}}
+                {{if $pushG}}
+                  {{if .TelegramLinked}}
+                    <span class="badge ok" style="font-size: 0.72rem;" title="Push унаследован от группы {{$pushG}}">Push: {{$pushG}}</span>
+                  {{else}}
+                    <span class="badge warn" style="font-size: 0.72rem;" title="Push унаследован от группы {{$pushG}}, но Telegram не привязан">⚠️ Push: {{$pushG}} (нет ТГ)</span>
+                  {{end}}
+                {{end}}
+              {{end}}
+            </div>
+            <div>
+              {{if .VLAN}}
+                <span class="badge info" style="font-size: 0.72rem;" title="VLAN {{.VLAN}} задан индивидуально">VLAN: {{vlanDesc $.VLANProfiles .VLAN}}</span>
+              {{else}}
+                {{$gVlan := index $.InheritedVLAN .ID}}
+                {{if $gVlan}}
+                  <span class="badge info" style="font-size: 0.72rem;" title="VLAN унаследован от группы {{index $.InheritedVLANGroup .ID}}">VLAN: {{vlanDesc $.VLANProfiles $gVlan}} <span style="opacity: 0.8;">({{index $.InheritedVLANGroup .ID}})</span></span>
+                {{end}}
+              {{end}}
+            </div>
+          </div>
         </td>
-        <td class="row-actions">
-          <a class="btn secondary sm" href="/admin/users/{{.ID}}">Редактировать</a>
-          <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="reset-totp">
-            <button type="submit" class="btn secondary sm" title="Сбросить TOTP и перегенерировать резервные коды">Сброс TOTP</button>
-          </form>
-          <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="reset-webauthn">
-            <button type="submit" class="btn secondary sm">Сброс passkeys</button>
-          </form>
-          <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="unlink-telegram">
-            <button type="submit" class="btn secondary sm">Отвязать Telegram</button>
-          </form>
-          <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="revoke-devices">
-            <button type="submit" class="btn secondary sm">Отозвать устройства</button>
-          </form>
-          <form action="/admin/users/{{.ID}}" method="post" class="form-inline">{{csrf $.CSRF}}<input type="hidden" name="do" value="delete">
-            <button type="submit" class="btn danger sm" data-confirm="Удалить пользователя {{.Username}}?">Удалить</button>
-          </form>
+        <td>
+          <div class="users-actions-wrap">
+            <a class="btn secondary sm" href="/admin/users/{{.ID}}">Редактировать</a>
+            <div class="user-dropdown">
+              <button type="button" class="btn secondary sm user-dropdown-toggle" title="Дополнительные действия">•••</button>
+              <div class="user-dropdown-menu">
+                <form action="/admin/users/{{.ID}}" method="post">
+                  {{csrf $.CSRF}}
+                  <input type="hidden" name="do" value="reset-totp">
+                  <button type="submit" class="user-dropdown-item">
+                    <span>🔑</span> <span>Сброс TOTP</span>
+                  </button>
+                </form>
+                <form action="/admin/users/{{.ID}}" method="post">
+                  {{csrf $.CSRF}}
+                  <input type="hidden" name="do" value="reset-webauthn">
+                  <button type="submit" class="user-dropdown-item">
+                    <span>🛡️</span> <span>Сброс passkeys</span>
+                  </button>
+                </form>
+                <form action="/admin/users/{{.ID}}" method="post">
+                  {{csrf $.CSRF}}
+                  <input type="hidden" name="do" value="unlink-telegram">
+                  <button type="submit" class="user-dropdown-item">
+                    <span>✈️</span> <span>Отвязать Telegram</span>
+                  </button>
+                </form>
+                <form action="/admin/users/{{.ID}}" method="post">
+                  {{csrf $.CSRF}}
+                  <input type="hidden" name="do" value="revoke-devices">
+                  <button type="submit" class="user-dropdown-item">
+                    <span>📱</span> <span>Отозвать устройства</span>
+                  </button>
+                </form>
+                <div class="user-dropdown-divider"></div>
+                <form action="/admin/users/{{.ID}}" method="post">
+                  {{csrf $.CSRF}}
+                  <input type="hidden" name="do" value="delete">
+                  <button type="submit" class="user-dropdown-item danger" data-confirm="Удалить пользователя {{.Username}}?">
+                    <span>🗑️</span> <span>Удалить</span>
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
         </td>
       </tr>
       {{end}}
+      </tbody>
     </table>
+    <div id="users-empty" class="users-empty-search" style="display: none;">
+      Пользователи по заданным критериям не найдены
+    </div>
+  </div>
+
+  <div class="users-pagination-bar" id="users-pagination">
+    <div class="users-pagination-info" id="users-pagination-info">
+      Показано 0 из 0
+    </div>
+    <div class="users-pagination-controls">
+      <div style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted);">
+        <span>На странице:</span>
+        <select id="users-per-page" class="select" style="padding: 0.25rem 0.5rem; font-size: 0.82rem; height: auto;">
+          <option value="25" selected>25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="all">Все</option>
+        </select>
+      </div>
+      <div class="users-page-btns" id="users-page-btns">
+      </div>
+    </div>
   </div>
 </section>
 
@@ -108,7 +263,7 @@
   </form>
 </section>
 {{else}}
-<section class="card">
+<section class="card" id="new-user">
   <div class="card-head">
     <h2>Новый пользователь</h2>
     <p>Имя и пароль обязательны; остальное можно изменить позже.</p>

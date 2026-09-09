@@ -231,17 +231,75 @@ func vlanDesc(profiles map[string]string, vlanID string) string {
 	return "VLAN " + vlanID
 }
 
+// groupCN извлекает короткое имя (CN или OU) из Distinguished Name.
+func groupCN(dn string) string {
+	for _, part := range strings.Split(dn, ",") {
+		part = strings.TrimSpace(part)
+		if idx := strings.Index(part, "="); idx > 0 {
+			key := strings.ToUpper(strings.TrimSpace(part[:idx]))
+			val := strings.TrimSpace(part[idx+1:])
+			if key == "CN" || key == "OU" {
+				return val
+			}
+		}
+	}
+	return dn
+}
+
+// userInitials генерирует 1-2 символа инициалов для аватара пользователя.
+func userInitials(name, username string) string {
+	s := strings.TrimSpace(name)
+	if s == "" {
+		s = strings.TrimSpace(username)
+	}
+	parts := strings.Fields(s)
+	if len(parts) >= 2 {
+		r1 := []rune(parts[0])
+		r2 := []rune(parts[1])
+		if len(r1) > 0 && len(r2) > 0 {
+			return strings.ToUpper(string(r1[0]) + string(r2[0]))
+		}
+	}
+	runes := []rune(s)
+	if len(runes) >= 2 {
+		return strings.ToUpper(string(runes[:2]))
+	}
+	if len(runes) == 1 {
+		return strings.ToUpper(string(runes[:1]))
+	}
+	return "?"
+}
+
+// userAvatarBg возвращает стильный цвет фона для аватара на основе хэша строки.
+func userAvatarBg(s string) string {
+	var hash uint32 = 2166136261
+	for _, b := range []byte(s) {
+		hash ^= uint32(b)
+		hash *= 16777619
+	}
+	colors := []string{
+		"#4f46e5", "#0284c7", "#0d9488", "#16a34a",
+		"#d97706", "#dc2626", "#7c3aed", "#db2777",
+		"#2563eb", "#059669", "#ea580c", "#9333ea",
+	}
+	return colors[hash%uint32(len(colors))]
+}
+
 // funcs — общие функции шаблонов.
 var funcs = template.FuncMap{
-	"csrf":       csrf,
-	"jsonPretty": jsonPretty,
-	"qrPNG":      qrPNG,
-	"hasChan":    hasChan,
-	"dt":         dt,
-	"dict":       templateDict,
-	"deref":      deref,
-	"vlanDesc":   vlanDesc,
-	"join":       strings.Join,
+	"csrf":         csrf,
+	"jsonPretty":   jsonPretty,
+	"qrPNG":        qrPNG,
+	"hasChan":      hasChan,
+	"dt":           dt,
+	"dict":         templateDict,
+	"deref":        deref,
+	"vlanDesc":     vlanDesc,
+	"groupCN":      groupCN,
+	"userInitials": userInitials,
+	"userAvatarBg": userAvatarBg,
+	"sub":          func(a, b int) int { return a - b },
+	"join":         strings.Join,
 	"hasUUID": func(list []uuid.UUID, id uuid.UUID) bool {
 		for _, x := range list {
 			if x == id {
