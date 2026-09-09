@@ -230,7 +230,12 @@ func userEntry(dn string, attrs map[string][]string) *ldap.Entry {
 // newFakeVerifier — LdapVerifier с подменённым dial (без БД: только
 // authenticate; syncUser требует store и покрыт интеграцией).
 func newFakeVerifier(conn *fakeLdapConn) *LdapVerifier {
+	m := settings.NewDefaultManager()
+	cur := *m.Get()
+	cur.LDAP = testLDAPCfg()
+	m.SetForTest(&cur)
 	return &LdapVerifier{
+		set:  m,
 		dial: func(context.Context, string, bool) (LdapConn, error) { return conn, nil },
 	}
 }
@@ -458,5 +463,103 @@ func TestLdapEscapeFilterSpecialChars(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("EscapeFilter(%q) = %q, нет %s", in, got, want)
 		}
+	}
+}
+
+func TestLdapTestConnection(t *testing.T) {
+	conn := &fakeLdapConn{
+		bindOK: map[string]string{"CN=svc-twofa,DC=example,DC=com": "svc-secret"},
+	}
+	v := newFakeVerifier(conn)
+
+	// Успешная проверка связи
+	res, err := v.TestConnection(context.Background())
+	if err != nil {
+		t.Fatalf("TestConnection failed: %v", err)
+	}
+	if !res.BindOK || !res.BaseDNOK {
+		t.Fatalf("TestConnection result: %+v", res)
+	}
+
+	// Ошибка Bind
+	connBadBind := &fakeLdapConn{
+		bindOK: map[string]string{},
+	}
+	vBad := newFakeVerifier(connBadBind)
+	_, err = vBad.TestConnection(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "сервисный bind") {
+		t.Fatalf("expected bind error, got: %v", err)
+	}
+
+	// Ошибка чтения Base DN
+	connBadBase := &fakeLdapConn{
+		bindOK: map[string]string{"CN=svc-twofa,DC=example,DC=com": "svc-secret"},
+		searchFn: func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+			return nil, errors.New("base dn not found")
+		},
+	}
+	vBadBase := newFakeVerifier(connBadBase)
+	_, err = vBadBase.TestConnection(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "недоступен") {
+		t.Fatalf("expected base dn error, got: %v", err)
+	}
+}
+
+func TestLdapTestUserLookup(t *testing.T) {
+	user := userEntry("CN=Ivanov,OU=Users,DC=example,DC=com", map[string][]string{
+		"mail":            {"ivanov@example.com"},
+		"telephoneNumber": {"+79990001122"},
+		"displayName":     {"Иван Иванов"},
+	})
+	group := &ldap.Entry{DN: "CN=VPN-Admins,OU=Groups,DC=example,DC=com"}
+
+	conn := &fakeLdapConn{
+		bindOK: map[string]string{"CN=svc-twofa,DC=example,DC=com": "svc-secret"},
+		searchFn: func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+			if strings.Contains(req.Filter, "(member=") {
+				return &ldap.SearchResult{Entries: []*ldap.Entry{group}}, nil
+			}
+			return &ldap.SearchResult{Entries: []*ldap.Entry{user}}, nil
+		},
+	}
+	v := newFakeVerifier(conn)
+
+	// Настройка role_map и allow_groups
+	m := v.set
+	cur := *m.Get()
+	cur.LDAP.AllowGroups = []string{"CN=VPN-Admins,OU=Groups,DC=example,DC=com"}
+	cur.LDAP.RoleMap = map[string]string{"CN=VPN-Admins,OU=Groups,DC=example,DC=com": "admin"}
+	m.SetForTest(&cur)
+
+	res, err := v.TestUserLookup(context.Background(), "ivanov")
+	if err != nil {
+		t.Fatalf("TestUserLookup failed: %v", err)
+	}
+	if !res.Allowed {
+		t.Errorf("expected user to be allowed, got false")
+	}
+	if res.Role != "admin" {
+		t.Errorf("expected role admin, got %q", res.Role)
+	}
+	if res.Email != "ivanov@example.com" {
+		t.Errorf("expected email ivanov@example.com, got %q", res.Email)
+	}
+	if len(res.Groups) != 1 || res.Groups[0] != group.DN {
+		t.Errorf("expected group %q, got %v", group.DN, res.Groups)
+	}
+
+	// Проверка запрета пользователя, если группа не разрешена
+	cur.LDAP.AllowGroups = []string{"CN=Other-Group,DC=example,DC=com"}
+	m.SetForTest(&cur)
+
+	resDisallowed, err := v.TestUserLookup(context.Background(), "ivanov")
+	if err != nil {
+		t.Fatalf("TestUserLookup failed: %v", err)
+	}
+	if resDisallowed.Allowed {
+		t.Errorf("expected user to be disallowed")
+	}
+	if !strings.Contains(resDisallowed.Message, "ЗАПРЕЩЕН") {
+		t.Errorf("expected message to mention forbidden access, got %q", resDisallowed.Message)
 	}
 }

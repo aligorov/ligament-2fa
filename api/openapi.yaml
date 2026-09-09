@@ -2997,6 +2997,110 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
 
+  /api/v1/admin/ldap/test:
+    post:
+      tags: [Admin]
+      summary: "Проверка подключения к LDAP/AD серверу"
+      description: "Проверяет сетевое TCP-соединение, TLS/STARTTLS, авторизацию сервисного Bind DN и чтение Base DN."
+      operationId: adminLdapTest
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Результат проверки подключения.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                  error:
+                    type: string
+                  result:
+                    type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/admin/ldap/test-user:
+    post:
+      tags: [Admin]
+      summary: "Проверка поиска пользователя в LDAP/AD"
+      description: "Ищет пользователя по фильтру user_filter, извлекает его атрибуты, группы, проверяет allow_groups и определяет роль."
+      operationId: adminLdapTestUser
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username:
+                  type: string
+                  description: Логин пользователя в каталоге
+      responses:
+        '200':
+          description: Результат поиска и сопоставления пользователя.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                  error:
+                    type: string
+                  result:
+                    type: object
+        '400':
+          description: Не указан логин или неверный JSON.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/admin/ldap/sync:
+    post:
+      tags: [Admin]
+      summary: "Принудительная синхронизация пользователей из LDAP/AD в локальную базу"
+      description: "Ищет пользователей в каталоге и синхронизирует их профили в базу 2FA со статусом source='ldap'."
+      operationId: adminLdapSync
+      security:
+        - adminBearer: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                max_count:
+                  type: integer
+                  default: 500
+      responses:
+        '200':
+          description: Результаты синхронизации.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                  error:
+                    type: string
+                  result:
+                    type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   # ---- OpenID Connect Provider (публичные, без авторизации) ----
 
   /.well-known/openid-configuration:

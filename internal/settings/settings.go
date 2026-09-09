@@ -828,6 +828,11 @@ func NewDefaultManager() *M {
 	return m
 }
 
+// SetForTest обновляет текущий снимок в памяти (для unit-тестов).
+func (m *M) SetForTest(t *T) {
+	m.cur.Store(t)
+}
+
 // Get возвращает текущий снимок. Возвращённый T иммутабелен — только
 // читать; обновление всегда даёт новый снимок через Reload/Put.
 func (m *M) Get() *T { return m.cur.Load() }

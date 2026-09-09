@@ -2375,6 +2375,51 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	p.admin.audit(ctx, "settings_update", map[string]any{"keys": changed, "via": "html"})
+	if r.PostFormValue("section") == "ldap" {
+		switch r.PostFormValue("ldap_action") {
+		case "test_connection":
+			res, err := p.ldapVerifier().TestConnection(ctx)
+			if err != nil {
+				p.admin.audit(ctx, "ldap_test_connection_fail", map[string]any{"error": err.Error(), "via": "html"})
+				redirectFlash(w, r, "/admin/settings", "Настройки сохранены. Ошибка подключения к LDAP: "+err.Error(), false)
+				return
+			}
+			p.admin.audit(ctx, "ldap_test_connection_ok", map[string]any{"url": res.URL, "via": "html"})
+			redirectFlash(w, r, "/admin/settings", "Настройки сохранены. "+res.Message, true)
+			return
+		case "test_user":
+			uname := strings.TrimSpace(r.PostFormValue("ldap_test_username"))
+			if uname == "" {
+				redirectFlash(w, r, "/admin/settings", "Настройки сохранены. Введите логин пользователя для проверки.", false)
+				return
+			}
+			res, err := p.ldapVerifier().TestUserLookup(ctx, uname)
+			if err != nil {
+				p.admin.audit(ctx, "ldap_test_user_fail", map[string]any{"username": uname, "error": err.Error(), "via": "html"})
+				redirectFlash(w, r, "/admin/settings", "Настройки сохранены. Ошибка поиска пользователя '"+uname+"': "+err.Error(), false)
+				return
+			}
+			p.admin.audit(ctx, "ldap_test_user_ok", map[string]any{"username": uname, "allowed": res.Allowed, "role": res.Role, "via": "html"})
+			if !res.Allowed {
+				redirectFlash(w, r, "/admin/settings", "Настройки сохранены. "+res.Message, false)
+				return
+			}
+			redirectFlash(w, r, "/admin/settings", "Настройки сохранены. "+res.Message, true)
+			return
+		case "sync_users":
+			res, err := p.ldapVerifier().SyncUsers(ctx, 500)
+			if err != nil {
+				p.admin.audit(ctx, "ldap_sync_users_fail", map[string]any{"error": err.Error(), "via": "html"})
+				redirectFlash(w, r, "/admin/settings", "Настройки сохранены. Ошибка синхронизации пользователей: "+err.Error(), false)
+				return
+			}
+			p.admin.audit(ctx, "ldap_sync_users_ok", map[string]any{
+				"total": res.TotalFound, "created": res.Created, "updated": res.Updated, "skipped": res.Skipped, "via": "html",
+			})
+			redirectFlash(w, r, "/admin/settings", "Настройки сохранены. "+res.Message, true)
+			return
+		}
+	}
 	if r.PostFormValue("acme_renew") != "" {
 		if p.admin == nil || p.admin.acme == nil {
 			redirectFlash(w, r, "/admin/settings", "ACME не инициализирован.", false)
@@ -2389,6 +2434,13 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	redirectFlash(w, r, "/admin/settings", "Настройки сохранены.", true)
+}
+
+func (p *PagesAPI) ldapVerifier() *auth.LdapVerifier {
+	if cv, ok := p.pv.(*auth.CompositeVerifier); ok && cv.LDAP() != nil {
+		return cv.LDAP()
+	}
+	return auth.NewLdapVerifier(p.st, p.m)
 }
 
 // ---- админ: лицензия ----

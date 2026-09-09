@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aligorov/twofa/internal/acme"
+	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/oidc"
@@ -127,6 +128,9 @@ func (a *AdminAPI) Register(r chi.Router) {
 		r.Delete("/oidc/clients/{id}", a.handleOIDCClientDelete)
 		r.Get("/radius/cert", a.handleRadiusCertGet)
 		r.Post("/radius/acme/renew", a.handleRadiusACMERenew)
+		r.Post("/ldap/test", a.handleLdapTest)
+		r.Post("/ldap/test-user", a.handleLdapTestUser)
+		r.Post("/ldap/sync", a.handleLdapSync)
 		a.registerLicenseRoutes(r)
 	})
 }
@@ -1527,4 +1531,84 @@ func (a *AdminAPI) handleRadiusACMERenew(w http.ResponseWriter, r *http.Request)
 	a.audit(r.Context(), "acme_cert_renewed", map[string]any{"domain": a.m.Get().ACME.Domain})
 	a.handleRadiusCertGet(w, r)
 }
+
+func (a *AdminAPI) ldapVerifier() *auth.LdapVerifier {
+	return auth.NewLdapVerifier(a.st, a.m)
+}
+
+// handleLdapTest — POST /api/v1/admin/ldap/test: проверка подключения к серверу LDAP.
+func (a *AdminAPI) handleLdapTest(w http.ResponseWriter, r *http.Request) {
+	res, err := a.ldapVerifier().TestConnection(r.Context())
+	if err != nil {
+		a.audit(r.Context(), "ldap_test_connection_fail", map[string]any{"error": err.Error(), "via": "api"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return
+	}
+	a.audit(r.Context(), "ldap_test_connection_ok", map[string]any{"url": res.URL, "via": "api"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"result": res,
+	})
+}
+
+// handleLdapTestUser — POST /api/v1/admin/ldap/test-user: проверка поиска пользователя и прав в LDAP.
+func (a *AdminAPI) handleLdapTestUser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		writeError(w, http.StatusBadRequest, "username_required")
+		return
+	}
+	res, err := a.ldapVerifier().TestUserLookup(r.Context(), req.Username)
+	if err != nil {
+		a.audit(r.Context(), "ldap_test_user_fail", map[string]any{"username": req.Username, "error": err.Error(), "via": "api"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return
+	}
+	a.audit(r.Context(), "ldap_test_user_ok", map[string]any{"username": req.Username, "allowed": res.Allowed, "role": res.Role, "via": "api"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"result": res,
+	})
+}
+
+// handleLdapSync — POST /api/v1/admin/ldap/sync: принудительная синхронизация пользователей из LDAP в БД.
+func (a *AdminAPI) handleLdapSync(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MaxCount int `json:"max_count"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.MaxCount <= 0 {
+		req.MaxCount = 500
+	}
+	res, err := a.ldapVerifier().SyncUsers(r.Context(), req.MaxCount)
+	if err != nil {
+		a.audit(r.Context(), "ldap_sync_users_fail", map[string]any{"error": err.Error(), "via": "api"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return
+	}
+	a.audit(r.Context(), "ldap_sync_users_ok", map[string]any{
+		"total": res.TotalFound, "created": res.Created, "updated": res.Updated, "skipped": res.Skipped, "via": "api",
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"result": res,
+	})
+}
+
 

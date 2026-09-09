@@ -711,6 +711,33 @@
       <label class="check"><input type="checkbox" name="ldap.enabled" value="1"{{if .S.LDAP.Enabled}} checked{{end}}> <span>Включить проверку пароля в LDAP/AD</span></label>
       <span class="help">Локальные пользователи продолжают входить по локальному паролю; включение применяется по SIGHUP/без — сразу (снимок читается при каждом входе).</span>
     </div>
+    <div class="field ldap-tools-panel" style="margin-top: 1.5rem; padding: 1.25rem; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm);">
+      <div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem;">
+        <span>⚡ Диагностика подключения и синхронизация</span>
+      </div>
+      <p class="help" style="margin-bottom: 1rem;">
+        Проверьте сетевой доступ, авторизацию сервисной учётной записи (Bind DN) или протестируйте сопоставление прав пользователя перед синхронизацией. При нажатии проверки или синхронизации текущие настройки из формы автоматически сохраняются.
+      </p>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 1rem;">
+        <button type="submit" name="ldap_action" value="test_connection" class="btn secondary">
+          🔌 Проверить подключение к LDAP
+        </button>
+        <button type="submit" name="ldap_action" value="sync_users" class="btn secondary" onclick="return confirm('Запустить синхронизацию пользователей из Active Directory в базу 2FA? Существующие LDAP-пользователи обновятся, новые будут созданы со статусом ldap.')">
+          🔄 Синхронизировать пользователей сейчас
+        </button>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; padding-top: 0.75rem; border-top: 1px dashed var(--line);">
+        <label class="field" style="flex: 1; min-width: 240px; margin-bottom: 0;">
+          <span class="field-label" style="font-size: 0.8rem;">Проверить пользователя в Active Directory:</span>
+          <input class="input mono sm" type="text" name="ldap_test_username" placeholder="логин (sAMAccountName, например ivanov или admin)">
+        </label>
+        <button type="submit" name="ldap_action" value="test_user" class="btn secondary sm" style="margin-bottom: 2px;">
+          🔍 Проверить пользователя
+        </button>
+      </div>
+    </div>
     <div class="form-actions">
       <button type="submit" class="btn primary">Сохранить секцию</button>
     </div>

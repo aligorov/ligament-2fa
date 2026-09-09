@@ -346,6 +346,318 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 	return u, nil
 }
 
+// LdapTestResult содержит результаты проверки связи с LDAP.
+type LdapTestResult struct {
+	URL      string        `json:"url"`
+	Latency  time.Duration `json:"latency"`
+	StartTLS bool          `json:"starttls"`
+	BindOK   bool          `json:"bind_ok"`
+	BaseDNOK bool          `json:"base_dn_ok"`
+	Message  string        `json:"message"`
+}
+
+// TestConnection проверяет сетевое соединение, TLS/STARTTLS, сервисный Bind и доступность Base DN.
+func (v *LdapVerifier) TestConnection(ctx context.Context) (*LdapTestResult, error) {
+	t := v.set.Get()
+	if t == nil {
+		return nil, errors.New("настройки не загружены")
+	}
+	cfg := t.LDAP
+	if cfg.URL == "" {
+		return nil, errors.New("URL LDAP-сервера не задан")
+	}
+
+	start := time.Now()
+	conn, err := v.dial(ctx, cfg.URL, cfg.StartTLS)
+	if err != nil {
+		return nil, fmt.Errorf("подключение к %s: %w", cfg.URL, err)
+	}
+	defer conn.Close()
+	latency := time.Since(start)
+
+	res := &LdapTestResult{
+		URL:      cfg.URL,
+		Latency:  latency,
+		StartTLS: cfg.StartTLS,
+	}
+
+	if cfg.BindDN != "" {
+		if err := conn.Bind(cfg.BindDN, cfg.BindPassword); err != nil {
+			return nil, fmt.Errorf("сервисный bind (%s): %w", cfg.BindDN, err)
+		}
+		res.BindOK = true
+	}
+
+	if cfg.BaseDN != "" {
+		searchReq := ldap.NewSearchRequest(
+			cfg.BaseDN, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 5, false,
+			"(objectClass=*)", []string{"dn"}, nil,
+		)
+		_, err := conn.Search(searchReq)
+		if err != nil {
+			subReq := ldap.NewSearchRequest(
+				cfg.BaseDN, ldap.ScopeSingleLevel, ldap.NeverDerefAliases, 1, 5, false,
+				"(objectClass=*)", []string{"dn"}, nil,
+			)
+			if _, subErr := conn.Search(subReq); subErr != nil {
+				return nil, fmt.Errorf("Base DN (%s) недоступен: %w", cfg.BaseDN, err)
+			}
+		}
+		res.BaseDNOK = true
+	}
+
+	tlsInfo := "без TLS"
+	if strings.HasPrefix(strings.ToLower(cfg.URL), "ldaps://") {
+		tlsInfo = "LDAPS"
+	} else if cfg.StartTLS {
+		tlsInfo = "STARTTLS"
+	}
+	res.Message = fmt.Sprintf("Подключение успешно (%s, задержка %v). Сервер доступен, авторизация Bind DN пройдена, Base DN корректен.",
+		tlsInfo, latency.Round(time.Millisecond))
+	return res, nil
+}
+
+// LdapUserLookupResult содержит результаты тестового поиска пользователя в AD.
+type LdapUserLookupResult struct {
+	Username    string            `json:"username"`
+	DN          string            `json:"dn"`
+	Email       string            `json:"email"`
+	Phone       string            `json:"phone"`
+	DisplayName string            `json:"display_name"`
+	Groups      []string          `json:"groups"`
+	Allowed     bool              `json:"allowed"`
+	Role        string            `json:"role"`
+	RadiusReply map[string]string `json:"radius_reply,omitempty"`
+	Message     string            `json:"message"`
+}
+
+// TestUserLookup ищет пользователя в AD, проверяет группы и атрибуты без проверки пароля.
+func (v *LdapVerifier) TestUserLookup(ctx context.Context, username string) (*LdapUserLookupResult, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, errors.New("логин пользователя не указан")
+	}
+	t := v.set.Get()
+	if t == nil {
+		return nil, errors.New("настройки не загружены")
+	}
+	cfg := t.LDAP
+	if cfg.URL == "" {
+		return nil, errors.New("URL LDAP-сервера не задан")
+	}
+	if cfg.BaseDN == "" {
+		return nil, errors.New("Base DN не задан")
+	}
+
+	conn, err := v.dial(ctx, cfg.URL, cfg.StartTLS)
+	if err != nil {
+		return nil, fmt.Errorf("подключение к LDAP: %w", err)
+	}
+	defer conn.Close()
+
+	if cfg.BindDN != "" {
+		if err := conn.Bind(cfg.BindDN, cfg.BindPassword); err != nil {
+			return nil, fmt.Errorf("сервисный bind: %w", err)
+		}
+	}
+
+	filter := cfg.UserFilter
+	if filter == "" {
+		filter = "(&(objectClass=user)(sAMAccountName={login}))"
+	}
+	userReq := ldap.NewSearchRequest(
+		cfg.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 5, 10, false,
+		substFilter(filter, "{login}", username),
+		ldapAttrs(cfg), nil,
+	)
+	userRes, err := conn.Search(userReq)
+	if err != nil {
+		return nil, fmt.Errorf("поиск пользователя: %w", err)
+	}
+	if len(userRes.Entries) == 0 {
+		return nil, fmt.Errorf("пользователь %q не найден по фильтру %s в Base DN %s", username, substFilter(filter, "{login}", username), cfg.BaseDN)
+	}
+	if len(userRes.Entries) > 1 {
+		return nil, fmt.Errorf("по фильтру найдено несколько записей (%d) — уточните User Filter", len(userRes.Entries))
+	}
+
+	entry := userRes.Entries[0]
+	res := &LdapUserLookupResult{
+		Username:    username,
+		DN:          entry.DN,
+		Email:       entry.GetAttributeValue(cfg.Attrs.Email),
+		Phone:       entry.GetAttributeValue(cfg.Attrs.Phone),
+		DisplayName: entry.GetAttributeValue(cfg.Attrs.DisplayName),
+	}
+
+	groups := []string{}
+	base := cfg.GroupBaseDN
+	if base == "" {
+		base = cfg.BaseDN
+	}
+	groupFilter := cfg.GroupFilter
+	if groupFilter == "" {
+		groupFilter = "(&(objectClass=group)(member={dn}))"
+	}
+	groupReq := ldap.NewSearchRequest(
+		base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 10, false,
+		substFilter(groupFilter, "{dn}", entry.DN), nil, nil,
+	)
+	if groupRes, err := conn.Search(groupReq); err == nil {
+		for _, g := range groupRes.Entries {
+			if g.DN != "" {
+				groups = append(groups, g.DN)
+			}
+		}
+	}
+	res.Groups = groups
+	res.Allowed = memberAllowed(groups, cfg.AllowGroups)
+	res.Role = resolveRole(groups, cfg.RoleMap)
+	res.RadiusReply = ResolveGroupRadiusAttrs(groups, cfg.GroupRadiusMap)
+
+	if !res.Allowed {
+		res.Message = fmt.Sprintf("Пользователь найден (%s), но доступ ЗАПРЕЩЕН: не входит ни в одну из разрешённых групп allow_groups.", entry.DN)
+	} else {
+		res.Message = fmt.Sprintf("Пользователь найден (%s), групп: %d, роль: %s.", entry.DN, len(groups), res.Role)
+	}
+	return res, nil
+}
+
+// LdapSyncResult содержит результаты принудительной синхронизации пользователей.
+type LdapSyncResult struct {
+	TotalFound int      `json:"total_found"`
+	Created    int      `json:"created"`
+	Updated    int      `json:"updated"`
+	Skipped    int      `json:"skipped"`
+	Errors     []string `json:"errors,omitempty"`
+	Message    string   `json:"message"`
+}
+
+// SyncUsers выполняет поиск пользователей в каталоге Active Directory/LDAP и синхронизирует их в базу данных.
+func (v *LdapVerifier) SyncUsers(ctx context.Context, maxCount int) (*LdapSyncResult, error) {
+	t := v.set.Get()
+	if t == nil {
+		return nil, errors.New("настройки не загружены")
+	}
+	cfg := t.LDAP
+	if cfg.URL == "" {
+		return nil, errors.New("URL LDAP-сервера не задан")
+	}
+	if cfg.BaseDN == "" {
+		return nil, errors.New("Base DN не задан")
+	}
+
+	conn, err := v.dial(ctx, cfg.URL, cfg.StartTLS)
+	if err != nil {
+		return nil, fmt.Errorf("подключение к LDAP: %w", err)
+	}
+	defer conn.Close()
+
+	if cfg.BindDN != "" {
+		if err := conn.Bind(cfg.BindDN, cfg.BindPassword); err != nil {
+			return nil, fmt.Errorf("сервисный bind: %w", err)
+		}
+	}
+
+	filter := cfg.UserFilter
+	if filter == "" {
+		filter = "(&(objectClass=user)(sAMAccountName={login}))"
+	}
+	syncFilter := strings.ReplaceAll(filter, "{login}", "*")
+	if strings.Contains(syncFilter, "objectClass=user") && !strings.Contains(syncFilter, "objectClass=computer") {
+		syncFilter = fmt.Sprintf("(&%s(!(objectClass=computer)))", syncFilter)
+	}
+
+	if maxCount <= 0 || maxCount > 1000 {
+		maxCount = 500
+	}
+
+	searchReq := ldap.NewSearchRequest(
+		cfg.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, maxCount, 30, false,
+		syncFilter, ldapAttrs(cfg), nil,
+	)
+	searchRes, err := conn.Search(searchReq)
+	if err != nil {
+		return nil, fmt.Errorf("поиск пользователей в LDAP: %w", err)
+	}
+
+	groupBase := cfg.GroupBaseDN
+	if groupBase == "" {
+		groupBase = cfg.BaseDN
+	}
+	groupFilter := cfg.GroupFilter
+	if groupFilter == "" {
+		groupFilter = "(&(objectClass=group)(member={dn}))"
+	}
+
+	res := &LdapSyncResult{
+		TotalFound: len(searchRes.Entries),
+	}
+
+	for _, entry := range searchRes.Entries {
+		uname := strings.TrimSpace(extractUsername(entry))
+		if uname == "" || strings.HasSuffix(uname, "$") {
+			res.Skipped++
+			continue
+		}
+
+		groups := []string{}
+		if len(cfg.AllowGroups) > 0 || len(cfg.RoleMap) > 0 || len(cfg.GroupRadiusMap) > 0 {
+			gReq := ldap.NewSearchRequest(
+				groupBase, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 5, false,
+				substFilter(groupFilter, "{dn}", entry.DN), nil, nil,
+			)
+			if gRes, err := conn.Search(gReq); err == nil {
+				for _, g := range gRes.Entries {
+					if g.DN != "" {
+						groups = append(groups, g.DN)
+					}
+				}
+			}
+		}
+
+		if !memberAllowed(groups, cfg.AllowGroups) {
+			res.Skipped++
+			continue
+		}
+
+		authRes := &ldapAuthResult{
+			dn:          entry.DN,
+			email:       entry.GetAttributeValue(cfg.Attrs.Email),
+			phone:       entry.GetAttributeValue(cfg.Attrs.Phone),
+			displayName: entry.GetAttributeValue(cfg.Attrs.DisplayName),
+			groups:      groups,
+			role:        resolveRole(groups, cfg.RoleMap),
+			radiusReply: ResolveGroupRadiusAttrs(groups, cfg.GroupRadiusMap),
+		}
+
+		existing, err := v.st.UserByUsername(ctx, uname)
+		if err == nil {
+			if existing.Source != store.SourceLDAP {
+				res.Skipped++
+				continue
+			}
+			if _, err := v.syncUser(ctx, uname, authRes, cfg); err != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", uname, err))
+			} else {
+				res.Updated++
+			}
+		} else if errors.Is(err, store.ErrNotFound) {
+			if _, err := v.syncUser(ctx, uname, authRes, cfg); err != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", uname, err))
+			} else {
+				res.Created++
+			}
+		} else {
+			res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", uname, err))
+		}
+	}
+
+	res.Message = fmt.Sprintf("Синхронизация завершена: найдено %d, создано новых %d, обновлено %d, пропущено %d.",
+		res.TotalFound, res.Created, res.Updated, res.Skipped)
+	return res, nil
+}
+
 // CompositeVerifier — выбор бэкенда первого фактора по источнику учётной
 // записи: LDAP-пользователи проверяются bind-ом в каталоге, локальные —
 // argon2id; неизвестные пользователи при включённом LDAP ищутся в каталоге
@@ -362,6 +674,11 @@ type CompositeVerifier struct {
 // (тогда поведение совпадает с LocalVerifier).
 func NewCompositeVerifier(st *store.Store, local *LocalVerifier, ld *LdapVerifier) *CompositeVerifier {
 	return &CompositeVerifier{st: st, local: local, ldap: ld}
+}
+
+// LDAP возвращает встроенный LDAP-верификатор (или nil).
+func (v *CompositeVerifier) LDAP() *LdapVerifier {
+	return v.ldap
 }
 
 var _ PasswordVerifier = (*CompositeVerifier)(nil)
@@ -397,13 +714,33 @@ func substFilter(filter, placeholder, value string) string {
 
 // ldapAttrs — список запрашиваемых атрибутов контактов (непустые имена).
 func ldapAttrs(cfg settings.LDAPSettings) []string {
-	attrs := make([]string, 0, 3)
+	attrs := []string{"sAMAccountName", "uid", "userPrincipalName", "cn"}
 	for _, a := range []string{cfg.Attrs.Email, cfg.Attrs.Phone, cfg.Attrs.DisplayName} {
 		if a != "" {
 			attrs = append(attrs, a)
 		}
 	}
 	return attrs
+}
+
+// extractUsername извлекает имя пользователя из атрибутов sAMAccountName, uid, userPrincipalName, cn или DN.
+func extractUsername(entry *ldap.Entry) string {
+	if v := entry.GetAttributeValue("sAMAccountName"); v != "" {
+		return v
+	}
+	if v := entry.GetAttributeValue("uid"); v != "" {
+		return v
+	}
+	if v := entry.GetAttributeValue("userPrincipalName"); v != "" {
+		if idx := strings.Index(v, "@"); idx > 0 {
+			return v[:idx]
+		}
+		return v
+	}
+	if v := entry.GetAttributeValue("cn"); v != "" {
+		return v
+	}
+	return groupCN(entry.DN)
 }
 
 // dnEqual сравнивает DN по правилам RFC 4517 distinguishedNameMatch:
