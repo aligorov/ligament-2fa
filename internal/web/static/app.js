@@ -145,6 +145,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Компактный список пользователей (поиск, фильтры, дропдаун действий, пагинация)
   initUsersTable();
+
+  // Выбор участников локальных групп по группам Active Directory / LDAP
+  initGroupsMemberSelector();
 });
 
 function initGroupRadiusBuilder() {
@@ -734,6 +737,158 @@ function initUsersTable() {
 
   // Первоначальный рендер
   render();
+}
+
+function initGroupsMemberSelector() {
+  const memberSections = document.querySelectorAll(".group-members-section");
+  if (!memberSections.length) return;
+
+  memberSections.forEach((section) => {
+    const form = section.closest("form");
+    if (!form) return;
+
+    const chips = Array.from(section.querySelectorAll(".member-chip"));
+    const adButtons = Array.from(form.querySelectorAll(".btn-ad-group-select"));
+    const searchInput = section.querySelector(".member-search-input");
+    const btnSelectAll = section.querySelector(".btn-select-all");
+    const btnClearAll = section.querySelector(".btn-clear-all");
+    const counterNum = section.querySelector(".member-count-num");
+    const nameInput = form.querySelector('input[name="name"]');
+
+    function updateCounter() {
+      let checkedCount = 0;
+      chips.forEach((chip) => {
+        const cb = chip.querySelector('input[name="members"]');
+        if (cb && cb.checked) checkedCount++;
+      });
+      if (counterNum) counterNum.textContent = checkedCount;
+    }
+
+    function getMatchingChips(btn) {
+      const needleCN = (btn.dataset.adGroupCn || "").toLowerCase().trim();
+      const needleDN = (btn.dataset.adGroup || "").toLowerCase().trim();
+      return chips.filter((chip) => {
+        const groups = (chip.dataset.adGroups || "").toLowerCase();
+        if (!groups) return false;
+        const tokens = groups.split("|").map((t) => t.trim()).filter(Boolean);
+        return tokens.some((t) => (needleCN && t === needleCN) || (needleDN && t === needleDN));
+      });
+    }
+
+    function syncAdButtons() {
+      adButtons.forEach((btn) => {
+        const matching = getMatchingChips(btn);
+
+        // Бейдж с количеством пользователей в группе AD
+        let countBadge = btn.querySelector(".ad-group-count");
+        if (!countBadge) {
+          countBadge = document.createElement("span");
+          countBadge.className = "ad-group-count";
+          btn.querySelector(".select-chip-label")?.appendChild(countBadge);
+        }
+        countBadge.textContent = matching.length;
+
+        const allChecked = matching.length > 0 && matching.every((chip) => {
+          const cb = chip.querySelector('input[name="members"]');
+          return cb && cb.checked;
+        });
+
+        if (allChecked) {
+          btn.classList.add("active");
+        } else {
+          btn.classList.remove("active");
+        }
+      });
+    }
+
+    // Клик по кнопке группы Active Directory
+    adButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const matching = getMatchingChips(btn);
+        if (!matching.length) return;
+
+        const allChecked = matching.every((chip) => {
+          const cb = chip.querySelector('input[name="members"]');
+          return cb && cb.checked;
+        });
+
+        matching.forEach((chip) => {
+          const cb = chip.querySelector('input[name="members"]');
+          if (cb) cb.checked = !allChecked;
+        });
+
+        // Если поле названия группы пустое и мы только что выбрали группу,
+        // авто-подставляем имя AD группы
+        if (nameInput && !nameInput.value.trim() && !allChecked) {
+          nameInput.value = btn.dataset.adGroupCn || "";
+        }
+
+        updateCounter();
+        syncAdButtons();
+      });
+    });
+
+    // Чекбоксы участников
+    chips.forEach((chip) => {
+      const cb = chip.querySelector('input[name="members"]');
+      if (cb) {
+        cb.addEventListener("change", () => {
+          updateCounter();
+          syncAdButtons();
+        });
+      }
+    });
+
+    // Живой поиск участников
+    if (searchInput) {
+      searchInput.addEventListener("input", () => {
+        const q = searchInput.value.toLowerCase().trim();
+        chips.forEach((chip) => {
+          if (!q) {
+            chip.style.display = "";
+            return;
+          }
+          const u = (chip.dataset.username || "").toLowerCase();
+          const d = (chip.dataset.displayname || "").toLowerCase();
+          const g = (chip.dataset.adGroups || "").toLowerCase();
+          const match = u.includes(q) || d.includes(q) || g.includes(q);
+          chip.style.display = match ? "" : "none";
+        });
+      });
+    }
+
+    // Кнопка «Выбрать всех»
+    if (btnSelectAll) {
+      btnSelectAll.addEventListener("click", () => {
+        chips.forEach((chip) => {
+          if (chip.style.display !== "none") {
+            const cb = chip.querySelector('input[name="members"]');
+            if (cb) cb.checked = true;
+          }
+        });
+        updateCounter();
+        syncAdButtons();
+      });
+    }
+
+    // Кнопка «Снять всех»
+    if (btnClearAll) {
+      btnClearAll.addEventListener("click", () => {
+        chips.forEach((chip) => {
+          if (chip.style.display !== "none") {
+            const cb = chip.querySelector('input[name="members"]');
+            if (cb) cb.checked = false;
+          }
+        });
+        updateCounter();
+        syncAdButtons();
+      });
+    }
+
+    // Первоначальная синхронизация
+    updateCounter();
+    syncAdButtons();
+  });
 }
 
 

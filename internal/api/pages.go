@@ -1745,6 +1745,7 @@ func (p *PagesAPI) handleAdminGroups(w http.ResponseWriter, r *http.Request) {
 		Groups:       groups,
 		AllUsers:     users,
 		VLANProfiles: p.m.Get().Radius.VLANProfiles,
+		LDAPGroups:   p.extractKnownLDAPGroups(r.Context()),
 	})
 }
 
@@ -1822,6 +1823,7 @@ func (p *PagesAPI) handleAdminGroupEdit(w http.ResponseWriter, r *http.Request) 
 		EditMemberIDs: memberIDs,
 		VLANProfiles:  p.m.Get().Radius.VLANProfiles,
 		EditReplyJSON: replyJSON,
+		LDAPGroups:    p.extractKnownLDAPGroups(r.Context()),
 	})
 }
 
@@ -2874,13 +2876,21 @@ func (p *PagesAPI) extractKnownLDAPGroups(ctx context.Context) []string {
 		if g == "" {
 			return
 		}
-		if _, ok := seen[g]; !ok {
-			seen[g] = struct{}{}
+		key := strings.ToLower(g)
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
 			out = append(out, g)
 		}
 	}
 	if p.m != nil {
-		for _, g := range p.m.Get().LDAP.AllowGroups {
+		s := p.m.Get()
+		for _, g := range s.LDAP.AllowGroups {
+			add(g)
+		}
+		for g := range s.LDAP.RoleMap {
+			add(g)
+		}
+		for g := range s.LDAP.GroupRadiusMap {
 			add(g)
 		}
 	}
@@ -2891,6 +2901,9 @@ func (p *PagesAPI) extractKnownLDAPGroups(ctx context.Context) []string {
 			}
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i]) < strings.ToLower(out[j])
+	})
 	return out
 }
 

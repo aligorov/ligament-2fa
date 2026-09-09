@@ -1101,6 +1101,40 @@ ul.codes li code {
   font-size: 0.75rem;
   color: var(--muted);
 }
+button.select-chip {
+  font-family: inherit;
+  font-size: 0.86rem;
+  color: var(--text);
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+button.select-chip:hover {
+  background: var(--surface-2);
+  border-color: var(--accent);
+}
+button.select-chip.active {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+.ad-group-count {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 1px 5px;
+  margin-left: 6px;
+  border-radius: 9999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  transition: background 0.15s, color 0.15s;
+}
+button.select-chip.active .ad-group-count {
+  background: var(--accent);
+  color: #fff;
+}
 
 /* ---- удобный список пользователей ---- */
 .users-card-head {

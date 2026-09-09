@@ -164,6 +164,7 @@ type AdminGroupsData struct {
 	EditMemberIDs []uuid.UUID
 	VLANProfiles  map[string]string
 	EditReplyJSON string
+	LDAPGroups    []string
 }
 
 // AdminAuditData — /admin/audit: последние записи журнала.

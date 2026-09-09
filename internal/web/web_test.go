@@ -373,10 +373,21 @@ func TestRenderPages(t *testing.T) {
 					MemberCount: 2,
 					CreatedAt:   lastUsed,
 				}},
+				AllUsers: []*store.User{
+					{
+						ID:          uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+						Username:    "ivanov",
+						DisplayName: "Иван Иванов",
+						LDAPGroups:  []string{"CN=VPN_WORK,OU=Groups,DC=example,DC=org"},
+					},
+				},
+				LDAPGroups: []string{"CN=VPN_WORK,OU=Groups,DC=example,DC=org", "CN=IT_STAFF,DC=example,DC=org"},
 			},
 			want: []string{
 				"Группы пользователей", "DevOps", "Инженеры инфраструктуры",
 				"2 польз.", `action="/admin/groups"`,
+				"btn-ad-group-select", "VPN_WORK", "IT_STAFF",
+				"member-chip", "ivanov", "Иван Иванов", "member-search-input",
 			},
 		},
 		{
