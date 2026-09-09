@@ -9,14 +9,17 @@ on:
 
 jobs:
   deploy:
-    name: Deploy via SSH & Docker Compose
+    name: "Deploy via SSH & Docker Compose"
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Check SSH Configuration
         id: check_ssh
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
         run: |
-          if [ -n "${{ secrets.SERVER_HOST }}" ] && [ -n "${{ secrets.SERVER_SSH_KEY }}" ]; then
+          if [ -n "$SERVER_HOST" ] && [ -n "$SERVER_SSH_KEY" ]; then
             echo "configured=true" >> $GITHUB_OUTPUT
           else
             echo "configured=false" >> $GITHUB_OUTPUT
@@ -37,12 +40,10 @@ jobs:
             mkdir -p "$DEPLOY_DIR"
             cd "$DEPLOY_DIR"
 
-            # Download or update docker-compose.client.yml if needed
             if [ ! -f docker-compose.yml ]; then
               curl -fsSL https://raw.githubusercontent.com/aligorov/ligament-2fa/main/docker-compose.client.yml -o docker-compose.yml
             fi
 
-            # Pull latest image from Docker Hub and restart
             docker compose pull
             docker compose up -d --remove-orphans
             docker system prune -f
