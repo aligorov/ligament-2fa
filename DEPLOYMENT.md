@@ -30,10 +30,10 @@
 - **iOS**: Сборка `.ipa` пакета (`Ligament-2FA.ipa`).
 
 ### Автоматический релиз на GitHub (GitHub Releases):
-При отправке тега версии (например, `v0.4.40`):
+При отправке тега версии (например, `v0.4.41`):
 ```bash
-git tag v0.4.40
-git push origin v0.4.40
+git tag v0.4.41
+git push origin v0.4.41
 ```
 GitHub Actions:
 1. Параллельно собирает дистрибутивы на виртуальных машинах `windows-latest`, `macos-latest`, `ubuntu-latest`.

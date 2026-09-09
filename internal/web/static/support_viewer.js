@@ -114,9 +114,17 @@ document.addEventListener("DOMContentLoaded", () => {
     peerConnection = new RTCPeerConnection(config);
 
     peerConnection.ontrack = (event) => {
-      console.log("Support WebRTC: Remote track received", event.streams);
-      if (remoteVideo && event.streams[0]) {
-        remoteVideo.srcObject = event.streams[0];
+      console.log("Support WebRTC: Remote track received", event);
+      if (remoteVideo) {
+        if (event.streams && event.streams[0]) {
+          remoteVideo.srcObject = event.streams[0];
+        } else if (event.track) {
+          if (!remoteVideo.srcObject) {
+            remoteVideo.srcObject = new MediaStream();
+          }
+          remoteVideo.srcObject.addTrack(event.track);
+        }
+        remoteVideo.play().catch((e) => console.warn("Video play notice:", e));
       }
       if (videoPlaceholder) {
         videoPlaceholder.classList.add("hidden");
@@ -147,6 +155,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  const pendingCandidates = [];
+
   async function handleRemoteSDP(sdp) {
     createPeerConnection();
     try {
@@ -156,6 +166,15 @@ document.addEventListener("DOMContentLoaded", () => {
         await peerConnection.setLocalDescription(answer);
         sendSignal({ sdp: answer });
       }
+      // Сбрасываем накопленные ICE кандидаты, пришедшие раньше SDP оффера
+      while (pendingCandidates.length > 0) {
+        const c = pendingCandidates.shift();
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(c));
+        } catch (e) {
+          console.warn("Support WebRTC: Queued candidate error:", e);
+        }
+      }
     } catch (e) {
       console.error("Support WebRTC: SDP error:", e);
     }
@@ -163,6 +182,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function handleRemoteCandidate(candidate) {
     if (!peerConnection) createPeerConnection();
+    if (!peerConnection.remoteDescription || !peerConnection.remoteDescription.type) {
+      pendingCandidates.push(candidate);
+      return;
+    }
     try {
       await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (e) {

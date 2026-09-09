@@ -168,6 +168,8 @@ class SupportService extends ChangeNotifier {
     }
   }
 
+  final List<RTCIceCandidate> _pendingCandidates = [];
+
   /// Обработка сигнальных WebRTC пакетов от браузера оператора (Answer, Candidates)
   Future<void> handleRemoteSignal(Map<String, dynamic> signal) async {
     if (_peerConnection == null) return;
@@ -184,6 +186,14 @@ class SupportService extends ChangeNotifier {
           sdpMap['type']?.toString(),
         );
         await _peerConnection!.setRemoteDescription(desc);
+        while (_pendingCandidates.isNotEmpty) {
+          final c = _pendingCandidates.removeAt(0);
+          try {
+            await _peerConnection!.addCandidate(c);
+          } catch (e) {
+            debugPrint('support_service: ошибка flush ICE: $e');
+          }
+        }
       } else if (payload.containsKey('candidate')) {
         final cMap = payload['candidate'] as Map<String, dynamic>;
         final candidate = RTCIceCandidate(
@@ -191,7 +201,12 @@ class SupportService extends ChangeNotifier {
           cMap['sdpMid']?.toString(),
           cMap['sdpMLineIndex'] as int?,
         );
-        await _peerConnection!.addCandidate(candidate);
+        final remoteDesc = await _peerConnection!.getRemoteDescription();
+        if (remoteDesc == null || remoteDesc.type == null || remoteDesc.type!.isEmpty) {
+          _pendingCandidates.add(candidate);
+        } else {
+          await _peerConnection!.addCandidate(candidate);
+        }
       }
     } catch (e) {
       debugPrint('support_service: ошибка обработки входящего сигнала: $e');
@@ -260,6 +275,7 @@ class SupportService extends ChangeNotifier {
 
   /// Остановка трансляции экрана и освобождение ресурсов
   void stopScreenSharing() {
+    _pendingCandidates.clear();
     try {
       _dataChannel?.close();
       _dataChannel = null;
