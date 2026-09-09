@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:device_info_plus/device_info_plus.dart';
 import 'package:local_auth/local_auth.dart';
 import 'gpo_service.dart';
 import '../api/client.dart';
@@ -10,7 +9,6 @@ import '../api/client.dart';
 class TelemetryService {
   final GPOService _gpo = GPOService();
   final LocalAuthentication _localAuth = LocalAuthentication();
-  final DeviceInfoPlugin _deviceInfo = DeviceInfoPlugin();
 
   Timer? _timer;
 

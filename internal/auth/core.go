@@ -356,6 +356,7 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 				"ua":           ua,
 				"purpose":      purpose,
 				"number_match": numMatch,
+				"username":     user.Username,
 			}
 			c2 := &store.Challenge{
 				UserID:       user.ID,
@@ -369,7 +370,8 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 			if err := c.st.ChallengeCreate(ctx, c2); err != nil {
 				return nil, err
 			}
-			if err := appPush.SendAppPush(ctx, user.ID, user.Username, ip, ua, purpose, numMatch, c2.ID); err != nil {
+			expiresSecs := int(time.Until(c2.ExpiresAt).Seconds())
+			if err := appPush.SendAppPush(ctx, user.ID, user.Username, ip, ua, purpose, numMatch, c2.ID, expiresSecs); err != nil {
 				if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
 					`DELETE FROM challenges WHERE id = $1`, c2.ID); derr != nil {
 					slog.Warn("auth: удаление app_push челленджа после ошибки доставки",
@@ -735,7 +737,8 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 			audit("push_send_fail", false)
 			return false, "push_send_fail"
 		}
-		if err := appPush.SendAppPush(ctx, user.ID, username, srcIP, clientDesc, svc, "", pushCh.ID); err != nil {
+		expiresSecs := int(time.Until(pushCh.ExpiresAt).Seconds())
+		if err := appPush.SendAppPush(ctx, user.ID, username, srcIP, clientDesc, svc, "", pushCh.ID, expiresSecs); err != nil {
 			if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
 				`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
 				slog.Warn("auth: удаление app_push челленджа после ошибки доставки",

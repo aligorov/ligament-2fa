@@ -55,8 +55,8 @@ class AlertService {
         }
 
         if (_gpo.flashTaskbar && Platform.isWindows) {
-          // Мигаем кнопкой на панели задач Windows до нажатия
-          // WindowManager.flashTaskbar(true)
+          // Выделяем окно на панели задач Windows (progress indicator)
+          await windowManager.setProgressBar(1.0);
         }
       } catch (e) {
         debugPrint('alert_service: ошибка управления окном: $e');
@@ -95,11 +95,14 @@ class AlertService {
     }
   }
 
-  /// Сброс AlwaysOnTop после завершения обработки запроса
+  /// Сброс AlwaysOnTop и индикатора на таскбаре после завершения обработки запроса
   Future<void> resetWindowPriority() async {
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS)) {
       try {
         await windowManager.setAlwaysOnTop(false);
+        if (Platform.isWindows) {
+          await windowManager.setProgressBar(-1);
+        }
       } catch (_) {}
     }
   }

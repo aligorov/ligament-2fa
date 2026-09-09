@@ -335,17 +335,16 @@ func pollStatus(ch *store.Challenge, now time.Time) string {
 	if !now.Before(ch.ExpiresAt) || ch.AttemptsLeft <= 0 {
 		return "expired"
 	}
-	if ch.UsedAt != nil {
-		if ch.Channel == channel.TelegramPush || ch.Channel == channel.AppPush {
-			return "approved"
-		}
-		return "expired"
-	}
+	// Для push-каналов (telegram_push, app_push) решение пользователя
+	// (approved/denied) имеет наивысший приоритет над флагом used_at.
 	if (ch.Channel == channel.TelegramPush || ch.Channel == channel.AppPush) && ch.PushState != nil {
 		switch *ch.PushState {
 		case "approved", "denied":
 			return *ch.PushState
 		}
+	}
+	if ch.UsedAt != nil {
+		return "expired"
 	}
 	return "pending"
 }

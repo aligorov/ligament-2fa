@@ -124,7 +124,7 @@ type PushNotifier interface {
 
 // AppPushNotifier — отправка push-подтверждения на мобильные и десктопные приложения пользователя.
 type AppPushNotifier interface {
-	SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID) error
+	SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) error
 }
 
 // BackupChannel — псевдоканал в возвращаемом значении VerifyAnyCode:

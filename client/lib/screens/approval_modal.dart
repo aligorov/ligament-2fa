@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
@@ -26,7 +27,6 @@ class _ApprovalModalState extends State<ApprovalModal> {
       if (_secondsLeft <= 1) {
         timer.cancel();
         if (mounted) {
-          context.read<AuthState>().dismissPrompt(widget.prompt['challenge_id']?.toString());
           Navigator.of(context, rootNavigator: true).maybePop();
         }
       } else {
@@ -39,6 +39,23 @@ class _ApprovalModalState extends State<ApprovalModal> {
   void dispose() {
     _timer?.cancel();
     super.dispose();
+  }
+
+  String _translateError(dynamic e) {
+    final msg = e.toString();
+    if (msg.contains('device_non_compliant')) {
+      return 'Вход заблокирован: устройство не соответствует требованиям безопасности (отключен BitLocker или обнаружен root)';
+    }
+    if (msg.contains('number_match_mismatch')) {
+      return 'Выбрано неверное число подтверждения';
+    }
+    if (msg.contains('challenge_expired')) {
+      return 'Время действия запроса истекло';
+    }
+    if (msg.contains('Windows Hello')) {
+      return 'Подтверждение Windows Hello отклонено';
+    }
+    return 'Ошибка: $e';
   }
 
   Future<void> _handleDecision(bool approve) async {
@@ -71,7 +88,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = 'Ошибка: $e';
+          _error = _translateError(e);
           _isProcessing = false;
         });
       }
@@ -86,13 +103,16 @@ class _ApprovalModalState extends State<ApprovalModal> {
     final ua = widget.prompt['ua']?.toString() ?? 'Браузер / Клиент';
     final service = widget.prompt['service']?.toString() ?? 'Корпоративный доступ';
 
-    // Для Number Matching генерируем 3 варианта: верный + 2 соседних
+    // Для Number Matching генерируем 3 уникальных варианта: верный + 2 правдоподобных ложных
     final options = <String>[];
     if (expectedMatch != null && expectedMatch.isNotEmpty) {
-      final baseVal = int.tryParse(expectedMatch) ?? 42;
-      options.add(expectedMatch);
-      options.add('${(baseVal + 7) % 90 + 10}');
-      options.add('${(baseVal + 13) % 90 + 10}');
+      final set = <String>{expectedMatch};
+      final rnd = Random(expectedMatch.hashCode);
+      while (set.length < 3) {
+        final cand = (rnd.nextInt(90) + 10).toString();
+        set.add(cand);
+      }
+      options.addAll(set);
       options.sort();
     }
 
@@ -116,22 +136,27 @@ class _ApprovalModalState extends State<ApprovalModal> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF38BDF8).withOpacity(0.15),
-                          shape: BoxShape.circle,
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF38BDF8).withValues(alpha: 0.15),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.security, color: Color(0xFF38BDF8), size: 24),
                         ),
-                        child: const Icon(Icons.security, color: Color(0xFF38BDF8), size: 24),
-                      ),
-                      const SizedBox(width: 12),
-                      const Text(
-                        'Запрос на вход',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-                      ),
-                    ],
+                        const SizedBox(width: 10),
+                        const Flexible(
+                          child: Text(
+                            'Запрос на вход',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   Row(
                     children: [
@@ -157,7 +182,6 @@ class _ApprovalModalState extends State<ApprovalModal> {
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(),
                         onPressed: () {
-                          context.read<AuthState>().dismissPrompt(widget.prompt['challenge_id']?.toString());
                           Navigator.of(context, rootNavigator: true).maybePop();
                         },
                       ),

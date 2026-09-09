@@ -109,6 +109,7 @@ func TestPollStatusMapping(t *testing.T) {
 		{"push pending", store.Challenge{Channel: "telegram_push", PushState: &pending, ExpiresAt: now.Add(time.Minute), AttemptsLeft: 1}, "pending"},
 		{"push approved", store.Challenge{Channel: "telegram_push", PushState: &approved, ExpiresAt: now.Add(time.Minute), AttemptsLeft: 1}, "approved"},
 		{"push denied", store.Challenge{Channel: "telegram_push", PushState: &denied, ExpiresAt: now.Add(time.Minute), AttemptsLeft: 1}, "denied"},
+		{"push denied consumed", store.Challenge{Channel: "app_push", PushState: &denied, UsedAt: &used, ExpiresAt: now.Add(time.Minute), AttemptsLeft: 1}, "denied"},
 		{"push consumed", store.Challenge{Channel: "telegram_push", PushState: &approved, UsedAt: &used, ExpiresAt: now.Add(time.Minute), AttemptsLeft: 1}, "approved"},
 		{"push expired by time", store.Challenge{Channel: "telegram_push", PushState: &pending, ExpiresAt: now.Add(-time.Second), AttemptsLeft: 1}, "expired"},
 		{"code pending", store.Challenge{Channel: "email", ExpiresAt: now.Add(time.Minute), AttemptsLeft: 5}, "pending"},

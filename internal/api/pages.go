@@ -1969,7 +1969,7 @@ func (p *PagesAPI) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 func (p *PagesAPI) handleAdminChallenges(w http.ResponseWriter, r *http.Request) {
 	rows, err := p.st.Pool().Query(r.Context(), `
 		SELECT id, user_id, channel,
-		       CASE WHEN channel = 'telegram_push' THEN COALESCE(push_state, '') ELSE '' END,
+		       CASE WHEN channel IN ('telegram_push', 'app_push') THEN COALESCE(push_state, '') ELSE '' END,
 		       expires_at, attempts_left, purpose, created_at
 		FROM challenges
 		WHERE expires_at > now() AND used_at IS NULL

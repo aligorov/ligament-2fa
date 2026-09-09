@@ -199,6 +199,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           'number_match': meta['number_match'],
                           'expires_in_seconds': ch['expires_in_seconds'],
                         };
+                        final currentAuth = context.read<AuthState>();
                         showDialog(
                           context: context,
                           barrierDismissible: true,
@@ -206,7 +207,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ).then((_) {
                           _modalShown = false;
                           if (mounted) {
-                            context.read<AuthState>().dismissPrompt(ch['id']?.toString());
+                            currentAuth.dismissPrompt(ch['id']?.toString());
                           }
                         });
                       },

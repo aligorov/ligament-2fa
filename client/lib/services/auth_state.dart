@@ -54,7 +54,6 @@ class AuthState extends ChangeNotifier {
     serverUrl = gpo.enforcedServerUrl ?? prefs.getString('server_url');
 
     final savedToken = prefs.getString('auth_token');
-    final savedUserJson = prefs.getString('user_info');
 
     if (serverUrl != null && savedToken != null) {
       api = ApiClient(baseUrl: serverUrl!, token: savedToken);

@@ -43,11 +43,28 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = 'Ошибка входа: $e';
+          _error = _translateLoginError(e);
           _isLoading = false;
         });
       }
     }
+  }
+
+  String _translateLoginError(dynamic e) {
+    final msg = e.toString();
+    if (msg.contains('invalid_credentials')) {
+      return 'Неверное имя пользователя или пароль';
+    }
+    if (msg.contains('user_disabled')) {
+      return 'Учетная запись отключена администратором';
+    }
+    if (msg.contains('empty_credentials')) {
+      return 'Заполните логин и пароль';
+    }
+    if (msg.contains('bad_json')) {
+      return 'Некорректный запрос к серверу';
+    }
+    return 'Ошибка входа: $e';
   }
 
   @override

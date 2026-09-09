@@ -146,7 +146,10 @@ func (h *AppHub) BroadcastPrompt(userID uuid.UUID, prompt *AppPushPrompt) int {
 }
 
 // SendAppPush отправляет запрос на авторизацию в приложение пользователя.
-func (h *AppHub) SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID) error {
+func (h *AppHub) SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) error {
+	if expiresInSeconds <= 0 {
+		expiresInSeconds = 60
+	}
 	prompt := &AppPushPrompt{
 		Type:             "challenge_prompt",
 		ChallengeID:      challengeID,
@@ -155,12 +158,12 @@ func (h *AppHub) SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua,
 		UA:               ua,
 		Service:          service,
 		NumberMatch:      numberMatch,
-		ExpiresInSeconds: 60,
+		ExpiresInSeconds: expiresInSeconds,
 		Timestamp:        time.Now(),
 	}
 
 	delivered := h.BroadcastPrompt(userID, prompt)
 	slog.Info("app_push: отправлен push-запрос",
-		"user_id", userID, "who", who, "challenge_id", challengeID, "online_clients", delivered)
+		"user_id", userID, "who", who, "challenge_id", challengeID, "online_clients", delivered, "expires_in", expiresInSeconds)
 	return nil
 }

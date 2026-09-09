@@ -485,9 +485,9 @@ func (a *AppAPI) handleChallengeDecision(w http.ResponseWriter, r *http.Request)
 				"device_name":  device.DeviceName,
 			}, ip, "ok")
 	} else {
-		// Отклонение запроса
+		// Отклонение запроса: фиксируем статус "denied" в push_state,
+		// не вызывая ChallengeMarkUsed, чтобы RADIUS и pollStatus зафиксировали отказ.
 		_ = a.st.ChallengeSetPush(r.Context(), ch.ID, "denied")
-		_ = a.st.ChallengeMarkUsed(r.Context(), ch.ID)
 
 		a.audit(r.Context(), user.Username, "app_push_decision",
 			map[string]any{
