@@ -18,6 +18,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /twofa /twofa
+ENV TRUSTED_PROXIES="127.0.0.0/8,::1/128,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
 # HTTP (ACME/Web), HTTP alt, RADIUS auth, RADIUS accounting.
 EXPOSE 80/tcp 8080/tcp 1812/udp 1813/udp
 ENTRYPOINT ["/twofa"]

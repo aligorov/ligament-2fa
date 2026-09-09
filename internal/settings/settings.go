@@ -596,6 +596,14 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Ads.Blocks.Sidebar = parseString(adsb["sidebar"], def.Ads.Blocks.Sidebar)
 	px := fields(raw["proxy"])
 	t.Proxy.TrustedNetworks = parseStringsFlex(px["trusted_networks"], def.Proxy.TrustedNetworks)
+	if envProxies := os.Getenv("TRUSTED_PROXIES"); envProxies != "" && len(t.Proxy.TrustedNetworks) == 0 {
+		out := strings.FieldsFunc(envProxies, func(r rune) bool {
+			return r == '\n' || r == '\r' || r == ',' || r == ' ' || r == '\t'
+		})
+		if len(out) > 0 {
+			t.Proxy.TrustedNetworks = out
+		}
+	}
 	f2b := fields(raw["fail2ban"])
 	t.Fail2ban.Enabled = parseBool(f2b["enabled"], def.Fail2ban.Enabled)
 	t.Fail2ban.MaxFail = parseInt(f2b["max_fail"], def.Fail2ban.MaxFail)

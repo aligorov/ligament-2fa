@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,7 +17,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/secrets"
+	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
 	"github.com/aligorov/twofa/internal/web"
 )
@@ -95,18 +96,22 @@ func writeOIDCError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
 }
 
-// clientIP — IP клиента для аудита (хост RemoteAddr без порта).
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+// clientIP — IP клиента для аудита и уведомлений: контекст файрвола
+// (реальный IP за доверенным прокси) приоритетнее сокета.
+func (mgr *Manager) clientIP(r *http.Request) string {
+	if ip := firewall.IPFrom(r.Context()); ip != "" {
+		return ip
 	}
-	return host
+	var snap *settings.T
+	if mgr != nil && mgr.m != nil {
+		snap = mgr.m.Get()
+	}
+	return firewall.RealIPFrom(r, snap)
 }
 
 // audit пишет событие аудита, не ломая основной поток.
 func (mgr *Manager) audit(r *http.Request, username, event, result string, detail map[string]any) {
-	if err := mgr.st.Audit(r.Context(), username, event, detail, clientIP(r), result); err != nil {
+	if err := mgr.st.Audit(r.Context(), username, event, detail, mgr.clientIP(r), result); err != nil {
 		slog.Warn("oidc: аудит не записан", "event", event, "error", err)
 	}
 }
@@ -511,7 +516,7 @@ func (mgr *Manager) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reques
 			context.WithoutCancel(r.Context()),
 			user.Username,
 			"OIDC ("+appName+")",
-			clientIP(r),
+			mgr.clientIP(r),
 			r.UserAgent(),
 		)
 	}

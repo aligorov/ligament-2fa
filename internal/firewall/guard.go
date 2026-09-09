@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -193,6 +194,28 @@ func hostOnly(s string) string {
 	return strings.Trim(s, "[]")
 }
 
+// DefaultTrustedNetworks — стандартные приватные подсети обратных прокси
+// и локальных сетей (RFC 1918, loopback, ULA/link-local IPv6).
+// С них безопасно принимать заголовки X-Forwarded-For, X-Real-IP и CF-Connecting-IP,
+// так как из публичного интернета пакет с таким сокетным адресом прийти не может.
+var DefaultTrustedNetworks = []string{
+	"127.0.0.0/8",
+	"::1/128",
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"fc00::/7",
+	"fe80::/10",
+}
+
+func isExplicitlyDisabled(nets []string) bool {
+	if len(nets) == 1 {
+		s := strings.ToLower(strings.TrimSpace(nets[0]))
+		return s == "none" || s == "off" || s == "disable" || s == "disabled"
+	}
+	return false
+}
+
 // RealIP вычисляет клиентский IP запроса с учётом доверенного прокси:
 // если RemoteAddr входит в доверенные сети (настройка proxy.
 // trusted_networks), берётся крайний справа X-Forwarded-For, НЕ
@@ -204,41 +227,93 @@ func (g *Guard) RealIP(r *http.Request) string {
 	if g != nil && g.m != nil {
 		snap = g.m.Get()
 	}
-	return realIPFrom(r, snap)
+	return RealIPFrom(r, snap)
 }
 
-// realIPFrom — RealIP без guard (для тестов с рукотворным снимком).
-func realIPFrom(r *http.Request, snap *settings.T) string {
+// RealIPFrom вычисляет клиентский IP запроса с учётом доверенного прокси:
+// если RemoteAddr входит в доверенные сети (настройка proxy.trusted_networks,
+// env TRUSTED_PROXIES или стандартные приватные сети DefaultTrustedNetworks),
+// извлекается клиентский IP из X-Forwarded-For, X-Real-IP или CF-Connecting-IP.
+// Иначе (прямой публичный запрос или недоверенный источник) заголовкам не верим
+// и возвращается RemoteAddr без порта.
+func RealIPFrom(r *http.Request, snap *settings.T) string {
 	remote := hostOnly(r.RemoteAddr)
 	a, err := netip.ParseAddr(remote)
-	if err != nil || snap == nil {
+	if err != nil {
 		return remote
 	}
-	trusted := parsePrefixes(snap.Proxy.TrustedNetworks)
+	var trustedNets []string
+	if snap != nil {
+		trustedNets = snap.Proxy.TrustedNetworks
+	}
+	if len(trustedNets) == 0 {
+		if env := os.Getenv("TRUSTED_PROXIES"); env != "" {
+			for _, s := range strings.Split(env, ",") {
+				if s = strings.TrimSpace(s); s != "" {
+					trustedNets = append(trustedNets, s)
+				}
+			}
+		} else {
+			trustedNets = DefaultTrustedNetworks
+		}
+	} else if isExplicitlyDisabled(trustedNets) {
+		return remote
+	}
+
+	trusted := parsePrefixes(trustedNets)
 	if !contains(trusted, a.Unmap()) {
 		return remote // не доверенный источник — заголовку не верим
 	}
+
 	xff := r.Header.Get("X-Forwarded-For")
-	if strings.TrimSpace(xff) == "" {
-		return remote
+	if strings.TrimSpace(xff) != "" {
+		parts := strings.Split(xff, ",")
+		// Крайний справа ВНЕ доверенных сетей — реальный внешний клиент
+		// (слева направо: клиент, посредники; правее — прокси, которым верим).
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := strings.TrimSpace(parts[i])
+			if ip == "" {
+				continue
+			}
+			p, err := netip.ParseAddr(hostOnly(ip))
+			if err != nil {
+				continue
+			}
+			if !contains(trusted, p.Unmap()) {
+				return p.Unmap().String()
+			}
+		}
+		// Вся цепочка — доверенные прокси / локальные сети (например, клиент на LAN
+		// подключается через reverse proxy в Docker).
+		// Возвращаем крайний левый валидный IP (исходный инициатор запроса).
+		for i := 0; i < len(parts); i++ {
+			ip := strings.TrimSpace(parts[i])
+			if ip == "" {
+				continue
+			}
+			if p, err := netip.ParseAddr(hostOnly(ip)); err == nil {
+				return p.Unmap().String()
+			}
+		}
 	}
-	parts := strings.Split(xff, ",")
-	// Крайний справа ВНЕ доверенных сетей — реальный клиент (слева
-	// направо: клиент, посредники; правее — прокси, которым верим).
-	for i := len(parts) - 1; i >= 0; i-- {
-		ip := strings.TrimSpace(parts[i])
-		if ip == "" {
-			continue
-		}
-		p, err := netip.ParseAddr(hostOnly(ip))
-		if err != nil {
-			continue
-		}
-		if !contains(trusted, p.Unmap()) {
+
+	if xReal := strings.TrimSpace(r.Header.Get("X-Real-IP")); xReal != "" {
+		if p, err := netip.ParseAddr(hostOnly(xReal)); err == nil {
 			return p.Unmap().String()
 		}
 	}
-	return remote // вся цепочка — доверенные прокси
+	if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
+		if p, err := netip.ParseAddr(hostOnly(cfIP)); err == nil {
+			return p.Unmap().String()
+		}
+	}
+
+	return remote
+}
+
+// realIPFrom оставлен для обратной совместимости.
+func realIPFrom(r *http.Request, snap *settings.T) string {
+	return RealIPFrom(r, snap)
 }
 
 // parsePrefixes — CIDR/IP строки → префиксы (битые пропускаются молча:

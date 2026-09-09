@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/store"
 )
 
@@ -432,6 +433,44 @@ func TestOIDCCORS(t *testing.T) {
 		if got := recTarget.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 			t.Errorf("%s %s: Access-Control-Allow-Origin = %q, want *", method, ep, got)
 		}
+	}
+}
+
+// TestOIDCClientIP: проверка извлечения реального IP клиента для OIDC:
+// приоритет у контекста файрвола, затем XFF/X-Real-IP за доверенным прокси,
+// и только потом сокет RemoteAddr.
+func TestOIDCClientIP(t *testing.T) {
+	mgr := testManager(t)
+
+	// 1. IP из контекста файрвола
+	req1 := httptest.NewRequest(http.MethodGet, "/oidc/auth", nil)
+	req1.RemoteAddr = "172.18.0.2:12345"
+	req1 = req1.WithContext(firewall.WithIP(req1.Context(), "203.0.113.50"))
+	if got := mgr.clientIP(req1); got != "203.0.113.50" {
+		t.Errorf("clientIP with firewall context = %q, want 203.0.113.50", got)
+	}
+
+	// 2. Без контекста файрвола — извлечение из X-Forwarded-For за Docker bridge (172.18.0.2)
+	req2 := httptest.NewRequest(http.MethodGet, "/oidc/auth", nil)
+	req2.RemoteAddr = "172.18.0.2:12345"
+	req2.Header.Set("X-Forwarded-For", "203.0.113.60")
+	if got := mgr.clientIP(req2); got != "203.0.113.60" {
+		t.Errorf("clientIP with X-Forwarded-For = %q, want 203.0.113.60", got)
+	}
+
+	// 3. Без контекста файрвола — извлечение из X-Real-IP за Docker bridge
+	req3 := httptest.NewRequest(http.MethodGet, "/oidc/auth", nil)
+	req3.RemoteAddr = "172.18.0.2:12345"
+	req3.Header.Set("X-Real-IP", "203.0.113.70")
+	if got := mgr.clientIP(req3); got != "203.0.113.70" {
+		t.Errorf("clientIP with X-Real-IP = %q, want 203.0.113.70", got)
+	}
+
+	// 4. Обычный запрос без заголовков
+	req4 := httptest.NewRequest(http.MethodGet, "/oidc/auth", nil)
+	req4.RemoteAddr = "192.168.1.100:54321"
+	if got := mgr.clientIP(req4); got != "192.168.1.100" {
+		t.Errorf("clientIP plain RemoteAddr = %q, want 192.168.1.100", got)
 	}
 }
 

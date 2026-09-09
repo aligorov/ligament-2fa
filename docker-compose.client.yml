@@ -18,12 +18,15 @@ services:
     restart: unless-stopped
 
   twofa:
-    image: aligorov/ligament_2fa:v0.4.25
+    image: aligorov/ligament_2fa:v0.4.26
     depends_on:
       db:
         condition: service_healthy
     environment:
       TWOFA_DB_DSN: postgres://twofa:${TWOFA_PG_PASSWORD:-changeme}@db:5432/twofa
+      # Доверенные подсети обратного прокси (NPM/nginx/Caddy/Traefik).
+      # По умолчанию доверены локальные/Docker сети (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
+      # TRUSTED_PROXIES: "127.0.0.0/8,::1/128,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
       # Автоматический заказ и продление SSL/TLS (Let's Encrypt)
       # Настройки можно также задать через Web-интерфейс (Настройки -> SSL/TLS и ACME):
       # ACME_DOMAIN: auth.example.com

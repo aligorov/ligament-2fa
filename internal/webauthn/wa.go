@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aligorov/twofa/internal/channel"
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -183,13 +185,14 @@ func (s *Svc) FinishRegister(ctx context.Context, user *store.User, handle, name
 	if cred.Authenticator.CloneWarning {
 		detail["clone_warning"] = true
 	}
-	if err := s.st.Audit(ctx, user.Username, "webauthn_enroll", detail, r.RemoteAddr, "ok"); err != nil {
+	ip := clientIP(r)
+	if err := s.st.Audit(ctx, user.Username, "webauthn_enroll", detail, ip, "ok"); err != nil {
 		return err
 	}
 	if cred.Authenticator.CloneWarning {
 		if err := s.st.Audit(ctx, user.Username, "webauthn_clone_warning",
 			map[string]any{"credential_id": base64.RawURLEncoding.EncodeToString(cred.ID)},
-			r.RemoteAddr, "ok"); err != nil {
+			ip, "ok"); err != nil {
 			return err
 		}
 	}
@@ -249,15 +252,29 @@ func (s *Svc) FinishLogin(ctx context.Context, user *store.User, handle string, 
 	if cred.Authenticator.CloneWarning {
 		detail["clone_warning"] = true
 	}
-	if err := s.st.Audit(ctx, user.Username, "webauthn_login", detail, r.RemoteAddr, "ok"); err != nil {
+	ip := clientIP(r)
+	if err := s.st.Audit(ctx, user.Username, "webauthn_login", detail, ip, "ok"); err != nil {
 		return err
 	}
 	if cred.Authenticator.CloneWarning {
-		if err := s.st.Audit(ctx, user.Username, "webauthn_clone_warning", detail, r.RemoteAddr, "ok"); err != nil {
+		if err := s.st.Audit(ctx, user.Username, "webauthn_clone_warning", detail, ip, "ok"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// clientIP возвращает IP клиента: firewall.IPFrom из контекста запроса
+// приоритетнее RemoteAddr сокета (за доверенным reverse proxy).
+func clientIP(r *http.Request) string {
+	if ip := firewall.IPFrom(r.Context()); ip != "" {
+		return ip
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // ---- сессии церемоний в challenges ----

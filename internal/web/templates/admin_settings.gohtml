@@ -189,15 +189,18 @@
 <section class="card">
   <div class="card-head">
     <h2><span class="card-icon">🔀</span>Обратный прокси <span class="badge ok">на лету</span></h2>
-    <p>Доверенные сети прокси (NPM/nginx): с них принимается
-    X-Forwarded-For — в аудите и fail2ban попадают реальные внешние IP.
-    Пусто = всегда адрес сокета (заголовок игнорируется).</p>
+    <p>Доверенные сети прокси (NPM/nginx/Docker): с них принимаются
+    заголовки X-Forwarded-For, X-Real-IP и CF-Connecting-IP — в аудит, уведомления
+    и fail2ban попадают реальные внешние IP клиентов.<br>
+    По умолчанию доверены локальные и Docker-сети (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
+    Для полного отключения укажите <code>none</code>.</p>
   </div>
   <form action="/admin/settings" method="post" class="form">
     {{csrf .CSRF}}<input type="hidden" name="section" value="proxy">
     <label class="field">
-      <span class="field-label">Доверенные сети (CIDR/IP, по одному в строке)</span>
-      <textarea class="textarea" name="proxy.trusted_networks" rows="3" placeholder="172.16.0.0/12">{{range .S.Proxy.TrustedNetworks}}{{.}}
+      <span class="field-label">Доверенные сети (CIDR/IP, по одному в строке; или none для отключения)</span>
+      <textarea class="textarea" name="proxy.trusted_networks" rows="3" placeholder="172.16.0.0/12
+192.168.0.0/16">{{range .S.Proxy.TrustedNetworks}}{{.}}
 {{end}}</textarea>
     </label>
     <div class="form-actions">
