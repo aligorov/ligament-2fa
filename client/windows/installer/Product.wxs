@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Ligament 2FA Authenticator"
+           Language="1049"
+           Version="0.4.37"
+           Manufacturer="Ligament Security"
+           UpgradeCode="4B5F3776-E1E7-44E8-BAA5-7FD81CE1B732">
+    <Package InstallerVersion="301" Compressed="yes" InstallScope="perMachine" Description="Ligament 2FA Client Installer" />
+    <MajorUpgrade DowngradeErrorMessage="Более новая версия Ligament 2FA уже установлена." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="ProductFeature" Title="Ligament 2FA" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="ApplicationShortcut" />
+      <ComponentRef Id="AutoStartupRegistry" />
+    </Feature>
+
+    <Icon Id="AppIcon.ico" SourceFile="windows/runner/resources/app_icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+  </Product>
+
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Ligament 2FA" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Ligament 2FA" />
+      </Directory>
+    </Directory>
+  </Fragment>
+
+  <Fragment>
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="ApplicationShortcut" Guid="7244B7E0-ACFA-4FE0-9ED9-F04E313D9C33">
+        <Shortcut Id="ApplicationStartMenuShortcut"
+                  Name="Ligament 2FA"
+                  Description="Корпоративный 2FA Аутентификатор"
+                  Target="[INSTALLFOLDER]ligament_authenticator.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon.ico" />
+        <RemoveFolder Id="CleanUpShortCut" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\Ligament\2FA" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="AutoStartupRegistry" Guid="83C6F77B-4B52-47C2-B812-9A4B39ECDA19">
+        <!-- Автозагрузка при старте Windows для фонового перехвата пуш-запросов -->
+        <RegistryValue Root="HKLM"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                       Name="Ligament2FA"
+                       Type="string"
+                       Value="&quot;[INSTALLFOLDER]ligament_authenticator.exe&quot; --minimized"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

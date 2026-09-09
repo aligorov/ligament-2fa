@@ -39,25 +39,67 @@
 
 ### Команды сборки
 
+#### 1. Сборка для macOS (DMG)
+Сборка выполняется на macOS (Intel или Apple Silicon):
 ```bash
 cd client
 flutter pub get
-
-# 1. Сборка для Windows Desktop (x64)
-flutter build windows --release
-
-# 2. Сборка для macOS и упаковка в DMG
 flutter build macos --release
 ./scripts/build_dmg.sh
 # Готовый DMG дистрибутив: client/dist/Ligament-2FA-macOS.dmg
-
-# 3. Сборка для Android APK / App Bundle
-flutter build apk --release
-flutter build appbundle --release
-
-# 4. Сборка для iOS (IPA)
-flutter build ipa --release
 ```
+
+#### 2. Сборка для Android (APK / AAB)
+
+**Вариант А: Локальная сборка (если установлены OpenJDK 17 и Android SDK)**
+1. Проверьте готовность окружения:
+   ```bash
+   flutter doctor
+   ```
+2. Скомпилируйте релизный APK или универсальный скрипт:
+   ```bash
+   cd client
+   ./scripts/build_apk.sh
+   # Либо напрямую командой Flutter:
+   flutter build apk --release
+   # Или раздельные легковесные APK под каждую архитектуру (ARM64, ARMv7, x86_64):
+   flutter build apk --split-per-abi --release
+   ```
+   Готовые файлы:
+   - `client/dist/Ligament-2FA.apk`
+   - `client/build/app/outputs/flutter-apk/app-release.apk`
+
+**Вариант Б: Автономная сборка в Docker (без установки Android Studio на компьютер)**
+Если на компьютере установлен Docker, запустите скрипт:
+```bash
+cd client
+./scripts/build_apk.sh
+```
+Скрипт автоматически скачает официальный образ с Flutter и Android SDK, скомпилирует приложение и сохранит `client/dist/Ligament-2FA.apk`.
+
+#### 3. Сборка для Windows (MSI Installer для GPO / Active Directory)
+Сборка выполняется на рабочей станции Windows:
+1. **Необходимые компоненты**:
+   - **Flutter SDK**: [flutter.dev](https://docs.flutter.dev/get-started/install/windows)
+   - **Visual Studio 2022** (компонент «Разработка классических приложений на C++»)
+   - **WiX Toolset** (утилита для создания MSI):
+     ```powershell
+     winget install WiX.Toolset
+     ```
+2. **Автоматическая сборка MSI**:
+   Запустите PowerShell-скрипт из каталога `client`:
+   ```powershell
+   cd client
+   .\scripts\build_msi.ps1
+   ```
+   Скрипт автоматически:
+   - Скомпилирует релизные бинарники: `flutter build windows --release`.
+   - Соберёт компоненты через WiX Heat.
+   - Слинкует MSI-установщик: `client\dist\Ligament-2FA-Windows-x64.msi`.
+3. **Тихая установка через Active Directory GPO / SCCM / Intune**:
+   ```cmd
+   msiexec /i Ligament-2FA-Windows-x64.msi /qn
+   ```
 
 ---
 
