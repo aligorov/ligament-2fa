@@ -1,13 +1,13 @@
 {{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
-<div class="viewer-layout" style="display: flex; flex-direction: column; gap: 16px;">
+<div id="support-viewer" class="viewer-layout" data-session-id="{{.Session.ID}}" data-ws-endpoint="{{.WSEndpoint}}" data-transfer-token="{{.TransferToken}}" data-operator-name="{{.BaseData.Username}}">
   <!-- Header Bar -->
-  <div class="card" style="padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
-    <div style="display: flex; align-items: center; gap: 12px;">
+  <div class="card viewer-head">
+    <div class="viewer-user">
       <a class="btn ghost sm" href="/admin/support">← В очередь</a>
       <div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <strong style="font-size: 1.15rem;">{{if .Session.DisplayName}}{{.Session.DisplayName}}{{else}}{{.Session.Username}}{{end}}</strong>
+        <div class="support-title-row">
+          <strong class="viewer-user-name">{{if .Session.DisplayName}}{{.Session.DisplayName}}{{else}}{{.Session.Username}}{{end}}</strong>
           {{if eq .Session.Category "1c"}}
             <span class="badge warn">📊 1С-поддержка</span>
           {{else}}
@@ -15,7 +15,7 @@
           {{end}}
           <span id="session-status-badge" class="badge ok">{{.Session.Status}}</span>
         </div>
-        <div class="muted" style="font-size: 0.8rem; margin-top: 2px;">
+        <div class="viewer-user-meta">
           <span>ПК: {{if .Session.DeviceName}}{{.Session.DeviceName}}{{else}}{{.Session.Platform}}{{end}}</span>
           <span class="dot-sep">•</span>
           <span>IP: {{.Session.LastIP}}</span>
@@ -26,68 +26,68 @@
     </div>
 
     <!-- Actions -->
-    <div style="display: flex; gap: 10px; align-items: center;">
-      <button id="btn-toggle-control" class="btn secondary sm" onclick="toggleInputControl()">
+    <div class="viewer-actions">
+      <button id="btn-toggle-control" class="btn secondary sm" data-action="toggle-control">
         🎮 Включить управление
       </button>
-      <button id="btn-transfer" class="btn info sm" onclick="openTransferModal()">
+      <button id="btn-transfer" class="btn info sm" data-action="open-transfer">
         🔄 Переадресовать сессию
       </button>
-      <button id="btn-end-session" class="btn err sm" onclick="endSession()">
+      <button id="btn-end-session" class="btn err sm" data-action="end-session">
         ⏹ Завершить сеанс
       </button>
     </div>
   </div>
 
   <!-- Problem summary banner -->
-  <div class="card" style="padding: 12px 18px; background: #f8fafc; border-left: 4px solid #3b82f6;">
-    <div style="font-size: 0.8rem; text-transform: uppercase; font-weight: 600; color: #64748b;">
+  <div class="card viewer-problem-banner">
+    <div class="viewer-problem-title">
       Суть проблемы:
     </div>
-    <div style="font-size: 1rem; color: #1e293b; margin-top: 3px;">
+    <div class="viewer-problem-text">
       "{{.Session.ProblemSummary}}"
     </div>
   </div>
 
   <!-- 2FA Number Match Notice -->
-  <div id="number-match-card" class="card" style="display: none; background: #eff6ff; border: 2px dashed #3b82f6; text-align: center; padding: 20px;">
-    <div style="font-size: 1rem; color: #1e40af; margin-bottom: 8px;">
+  <div id="number-match-card" class="card number-match-card{{if and (eq .Session.Status "connecting") .Session.NumberMatch}} visible{{else}} hidden{{end}}">
+    <div class="number-match-title">
       🔒 <strong>Безопасное Zero-Trust подключение</strong>
     </div>
-    <p style="margin: 0 0 12px 0; color: #334155;">
+    <p class="number-match-subtitle">
       Сообщите сотруднику контрольное число для подтверждения на его экране:
     </p>
-    <div id="number-match-digits" style="font-size: 2.5rem; font-weight: bold; letter-spacing: 4px; color: #1d4ed8; background: #dbeafe; display: inline-block; padding: 6px 24px; border-radius: 8px;">
-      --
+    <div id="number-match-digits" class="number-match-digits">
+      {{if .Session.NumberMatch}}{{.Session.NumberMatch}}{{else}}--{{end}}
     </div>
-    <div style="margin-top: 8px; font-size: 0.85rem; color: #64748b;">
+    <div class="number-match-hint">
       Ожидание выбора верного числа в приложении Ligament 2FA...
     </div>
   </div>
 
   <!-- Remote Screen Viewport -->
-  <div class="card" style="padding: 0; overflow: hidden; position: relative; background: #020617; border-radius: 8px; min-height: 500px; display: flex; align-items: center; justify-content: center;">
-    <video id="remote-video" autoplay playsinline style="width: 100%; height: auto; max-height: 80vh; display: block;"></video>
+  <div class="card viewer-screen-card">
+    <video id="remote-video" class="viewer-video" autoplay playsinline></video>
     
-    <div id="video-placeholder" style="position: absolute; text-align: center; color: #94a3b8;">
-      <div class="spinner" style="margin: 0 auto 16px auto; width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.1); border-top-color: #3b82f6; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-      <div id="connection-status-text" style="font-size: 1.1rem; color: #f1f5f9;">Инициализация соединения...</div>
-      <p style="font-size: 0.85rem; color: #64748b; margin-top: 4px;">Устанавливается защищенный P2P WebRTC канал</p>
+    <div id="video-placeholder" class="viewer-placeholder">
+      <div class="viewer-spinner"></div>
+      <div id="connection-status-text" class="viewer-status-text">Инициализация соединения...</div>
+      <p class="viewer-status-sub">Устанавливается защищенный P2P WebRTC канал</p>
     </div>
   </div>
 </div>
 
 <!-- Modal: Transfer Session -->
-<div id="transfer-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
-  <div class="card" style="width: 480px; max-width: 90vw; margin: auto; padding: 24px;">
+<div id="transfer-modal" class="viewer-modal-backdrop">
+  <div class="card viewer-modal-card">
     <h3>🔄 Переадресация удаленного доступа</h3>
-    <p class="muted" style="font-size: 0.9rem;">
+    <p class="muted viewer-modal-sub">
       Вы можете передать управление активной сессией любому коллеге (даже если он не является инженером техподдержки).
     </p>
 
-    <div class="field" style="margin-top: 16px;">
+    <div class="field viewer-modal-field">
       <span class="field-label">Выберите коллегу</span>
-      <select id="transfer-user-select" class="select" style="width: 100%;">
+      <select id="transfer-user-select" class="select">
         <option value="">-- Выбрать сотрудника из списка --</option>
         {{range .Colleagues}}
         <option value="{{.ID}}">{{if .DisplayName}}{{.DisplayName}} ({{.Username}}){{else}}{{.Username}}{{end}}</option>
@@ -95,243 +95,21 @@
       </select>
     </div>
 
-    <div style="margin: 16px 0; text-align: center; color: #64748b; font-size: 0.85rem;">ИЛИ</div>
+    <div class="viewer-modal-or">ИЛИ</div>
 
     <div class="field">
       <span class="field-label">Одноразовая защищенная ссылка</span>
-      <div style="display: flex; gap: 8px;">
+      <div class="viewer-modal-input-row">
         <input id="transfer-link-input" type="text" class="input mono" readonly placeholder="Ссылка будет создана...">
-        <button class="btn secondary sm" onclick="copyTransferLink()">Скопировать</button>
+        <button class="btn secondary sm" data-action="copy-transfer">Скопировать</button>
       </div>
       <span class="help">Ссылка предоставляет доступ к этому сеансу без прав глобального администратора.</span>
     </div>
 
-    <div class="actions" style="margin-top: 24px; display: flex; justify-content: flex-end; gap: 10px;">
-      <button class="btn ghost" onclick="closeTransferModal()">Отмена</button>
-      <button class="btn primary" onclick="submitTransfer()">Передать доступ</button>
+    <div class="actions viewer-modal-actions">
+      <button class="btn ghost" data-action="close-transfer">Отмена</button>
+      <button class="btn primary" data-action="submit-transfer">Передать доступ</button>
     </div>
   </div>
 </div>
-
-<style>
-@keyframes spin { to { transform: rotate(360deg); } }
-</style>
-
-<script>
-const sessionID = "{{.Session.ID}}";
-const wsEndpoint = "{{.WSEndpoint}}";
-const transferToken = "{{.TransferToken}}";
-
-let ws = null;
-let peerConnection = null;
-let inputChannel = null;
-let isControlEnabled = false;
-
-function initWS() {
-  const wsURL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + wsEndpoint;
-  ws = new WebSocket(wsURL);
-
-  ws.onopen = () => {
-    console.log("WebSocket connected to support bridge");
-    document.getElementById("connection-status-text").innerText = "Ожидание ответа от ПК клиента...";
-    startConnectFlow();
-  };
-
-  ws.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      handleWSMessage(msg);
-    } catch (e) {
-      console.error("WS parse error:", e);
-    }
-  };
-
-  ws.onclose = () => {
-    console.log("WebSocket closed");
-  };
-}
-
-function handleWSMessage(msg) {
-  if (msg.type === "webrtc_signal") {
-    const data = msg.data;
-    if (data.sdp) {
-      handleRemoteSDP(data.sdp);
-    } else if (data.candidate) {
-      handleRemoteCandidate(data.candidate);
-    }
-  } else if (msg.type === "support_prompt") {
-    showNumberMatch(msg.number_match);
-  } else if (msg.type === "session_approved") {
-    document.getElementById("number-match-card").style.display = "none";
-    document.getElementById("session-status-badge").innerText = "Подтверждено";
-  } else if (msg.type === "support_ended") {
-    alert("Сеанс удаленной поддержки завершен.");
-    location.href = "/admin/support";
-  }
-}
-
-async function startConnectFlow() {
-  // Отправляем запрос на генерацию Number Match
-  fetch("/api/v1/admin/support/sessions/" + sessionID + "/connect", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ admin_name: "Инженер поддержки" })
-  })
-  .then(r => r.json())
-  .then(data => {
-    if (data.number_match) {
-      showNumberMatch(data.number_match);
-    }
-  })
-  .catch(err => console.error("Connect err:", err));
-
-  createPeerConnection();
-}
-
-function showNumberMatch(num) {
-  document.getElementById("number-match-card").style.display = "block";
-  document.getElementById("number-match-digits").innerText = num;
-  document.getElementById("connection-status-text").innerText = "Ожидание 2FA подтверждения клиентом...";
-}
-
-function createPeerConnection() {
-  const config = {
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun1.l.google.com:19302" }
-    ]
-  };
-
-  peerConnection = new RTCPeerConnection(config);
-
-  peerConnection.ontrack = (event) => {
-    console.log("Received remote track:", event.streams);
-    const video = document.getElementById("remote-video");
-    video.srcObject = event.streams[0];
-    document.getElementById("video-placeholder").style.display = "none";
-    document.getElementById("number-match-card").style.display = "none";
-    document.getElementById("session-status-badge").innerText = "Активно (Трансляция)";
-  };
-
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ candidate: event.candidate }));
-    }
-  };
-
-  // DataChannel для команд ввода (мышь и клавиатура)
-  inputChannel = peerConnection.createDataChannel("input", { ordered: true });
-  inputChannel.onopen = () => console.log("Input DataChannel ready");
-}
-
-async function handleRemoteSDP(sdp) {
-  if (!peerConnection) createPeerConnection();
-  await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
-  if (sdp.type === "offer") {
-    const answer = await peerConnection.createAnswer();
-    await peerConnection.setLocalDescription(answer);
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ sdp: answer }));
-    }
-  }
-}
-
-async function handleRemoteCandidate(candidate) {
-  if (peerConnection) {
-    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-  }
-}
-
-function toggleInputControl() {
-  isControlEnabled = !isControlEnabled;
-  const btn = document.getElementById("btn-toggle-control");
-  const video = document.getElementById("remote-video");
-  if (isControlEnabled) {
-    btn.className = "btn ok sm";
-    btn.innerText = "✓ Управление активно";
-    setupInputCapture(video);
-  } else {
-    btn.className = "btn secondary sm";
-    btn.innerText = "🎮 Включить управление";
-    removeInputCapture(video);
-  }
-}
-
-function setupInputCapture(video) {
-  video.onmousemove = (e) => {
-    if (!isControlEnabled || !inputChannel || inputChannel.readyState !== "open") return;
-    const rect = video.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    inputChannel.send(JSON.stringify({ action: "mouse_move", x: x, y: y }));
-  };
-  video.onmousedown = (e) => {
-    if (!isControlEnabled || !inputChannel || inputChannel.readyState !== "open") return;
-    inputChannel.send(JSON.stringify({ action: "mouse_down", button: e.button }));
-  };
-  video.onmouseup = (e) => {
-    if (!isControlEnabled || !inputChannel || inputChannel.readyState !== "open") return;
-    inputChannel.send(JSON.stringify({ action: "mouse_up", button: e.button }));
-  };
-}
-
-function removeInputCapture(video) {
-  video.onmousemove = null;
-  video.onmousedown = null;
-  video.onmouseup = null;
-}
-
-function endSession() {
-  if (!confirm("Завершить текущий сеанс удаленного доступа?")) return;
-  fetch("/api/v1/admin/support/sessions/" + sessionID + "/end", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" }
-  }).then(() => {
-    location.href = "/admin/support";
-  });
-}
-
-function openTransferModal() {
-  document.getElementById("transfer-modal").style.display = "flex";
-  // Предварительно генерируем токен
-  fetch("/api/v1/admin/support/sessions/" + sessionID + "/transfer", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({})
-  })
-  .then(r => r.json())
-  .then(data => {
-    if (data.invite_url) {
-      document.getElementById("transfer-link-input").value = data.invite_url;
-    }
-  });
-}
-
-function closeTransferModal() {
-  document.getElementById("transfer-modal").style.display = "none";
-}
-
-function copyTransferLink() {
-  const inp = document.getElementById("transfer-link-input");
-  inp.select();
-  navigator.clipboard.writeText(inp.value);
-  alert("Ссылка скопирована в буфер обмена!");
-}
-
-function submitTransfer() {
-  const toUserID = document.getElementById("transfer-user-select").value;
-  fetch("/api/v1/admin/support/sessions/" + sessionID + "/transfer", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ to_user_id: toUserID })
-  })
-  .then(r => r.json())
-  .then(data => {
-    alert("Сессия успешно переадресована!");
-    closeTransferModal();
-  });
-}
-
-window.addEventListener("DOMContentLoaded", initWS);
-</script>
 {{end}}

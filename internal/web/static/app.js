@@ -16,6 +16,17 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // Автообновление страниц с атрибутом data-auto-refresh (секунды)
+  const refreshEl = document.querySelector("[data-auto-refresh]");
+  if (refreshEl) {
+    const sec = parseInt(refreshEl.dataset.autoRefresh, 10) || 6;
+    setTimeout(() => {
+      if (!document.hidden) {
+        location.reload();
+      }
+    }, sec * 1000);
+  }
+
   for (const btn of document.querySelectorAll("[data-copy]")) {
     btn.addEventListener("click", async () => {
       const row = btn.closest(".copy-row");

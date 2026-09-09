@@ -24,9 +24,9 @@ import (
 )
 
 // contentSecurityPolicy — CSP всех HTML-ответов: только собственные
-// скрипты/стили (инлайн-обработчики вынесены в app.js/webauthn.js),
-// QR-коды — data:-URI (img-src data:).
-const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
+// скрипты/стили (инлайн-обработчики вынесены в app.js/webauthn.js/support_viewer.js),
+// QR-коды — data:-URI (img-src data:), WebSocket (ws/wss) и WebRTC (media-src blob:).
+const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; media-src 'self' blob:"
 
 // contentSecurityPolicyAds — CSP при активной рекламе РСЯ: домены Яндекса
 // для загрузчика context.js, рендера блоков и их картинок/фреймов.

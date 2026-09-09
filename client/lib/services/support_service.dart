@@ -173,15 +173,19 @@ class SupportService extends ChangeNotifier {
     if (_peerConnection == null) return;
 
     try {
-      if (signal.containsKey('sdp')) {
-        final sdpMap = signal['sdp'] as Map<String, dynamic>;
+      final payload = (signal['data'] is Map<String, dynamic>)
+          ? signal['data'] as Map<String, dynamic>
+          : signal;
+
+      if (payload.containsKey('sdp')) {
+        final sdpMap = payload['sdp'] as Map<String, dynamic>;
         final desc = RTCSessionDescription(
           sdpMap['sdp']?.toString(),
           sdpMap['type']?.toString(),
         );
         await _peerConnection!.setRemoteDescription(desc);
-      } else if (signal.containsKey('candidate')) {
-        final cMap = signal['candidate'] as Map<String, dynamic>;
+      } else if (payload.containsKey('candidate')) {
+        final cMap = payload['candidate'] as Map<String, dynamic>;
         final candidate = RTCIceCandidate(
           cMap['candidate']?.toString(),
           cMap['sdpMid']?.toString(),
@@ -214,7 +218,7 @@ class SupportService extends ChangeNotifier {
       return;
     }
 
-    final type = input['type']?.toString();
+    final type = (input['type'] ?? input['action'])?.toString();
     if (type == null) return;
 
     // Ввод обрабатывается в зависимости от платформы (Windows / macOS / Linux / Android)

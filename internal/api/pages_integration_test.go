@@ -991,7 +991,7 @@ func TestSecurityHeaders(t *testing.T) {
 		if got := h.Get("Referrer-Policy"); got != "no-referrer" {
 			t.Errorf("%s: Referrer-Policy = %q, want no-referrer", path, got)
 		}
-		wantCSP := "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
+		wantCSP := "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; media-src 'self' blob:"
 		if got := h.Get("Content-Security-Policy"); got != wantCSP {
 			t.Errorf("%s: CSP = %q, want %q", path, got, wantCSP)
 		}

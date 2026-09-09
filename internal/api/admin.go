@@ -140,15 +140,20 @@ func (a *AdminAPI) Register(r chi.Router) {
 		r.Post("/ldap/test", a.handleLdapTest)
 		r.Post("/ldap/test-user", a.handleLdapTestUser)
 		r.Post("/ldap/sync", a.handleLdapSync)
-		r.Get("/support/sessions", a.handleAdminSupportSessionsList)
-		r.Get("/support/sessions/{id}", a.handleAdminSupportSessionGet)
-		r.Post("/support/sessions/{id}/connect", a.handleAdminSupportSessionConnect)
-		r.Post("/support/sessions/{id}/signal", a.handleAdminSupportSessionSignal)
-		r.Post("/support/sessions/{id}/transfer", a.handleAdminSupportSessionTransfer)
-		r.Post("/support/sessions/{id}/end", a.handleAdminSupportSessionEnd)
-		r.Get("/support/colleagues", a.handleAdminSupportColleagues)
-		r.Get("/support/sessions/{id}/ws", a.handleAdminSupportSessionWS)
 		a.registerLicenseRoutes(r)
+	})
+
+	// Маршруты операторов поддержки: авторизация через checkOperatorAuth и checkAdminOrSupport
+	// (поддерживают cookie twofa_session, Bearer admin_token и ?token=...).
+	r.Route("/api/v1/admin/support", func(r chi.Router) {
+		r.Get("/sessions", a.handleAdminSupportSessionsList)
+		r.Get("/sessions/{id}", a.handleAdminSupportSessionGet)
+		r.Post("/sessions/{id}/connect", a.handleAdminSupportSessionConnect)
+		r.Post("/sessions/{id}/signal", a.handleAdminSupportSessionSignal)
+		r.Post("/sessions/{id}/transfer", a.handleAdminSupportSessionTransfer)
+		r.Post("/sessions/{id}/end", a.handleAdminSupportSessionEnd)
+		r.Get("/colleagues", a.handleAdminSupportColleagues)
+		r.Get("/sessions/{id}/ws", a.handleAdminSupportSessionWS)
 	})
 	r.Get("/api/v1/support/ws/{id}", a.handleAdminSupportSessionWS)
 }
@@ -1670,8 +1675,12 @@ func (a *AdminAPI) handleLdapSync(w http.ResponseWriter, r *http.Request) {
 
 // ---- Удаленная техническая поддержка и помощь по 1С ----
 
-// handleAdminSupportSessionsList — GET /api/v1/admin/support/sessions.
+// handleAdminSupportSessionsList — GET /api/v1/support/sessions или /api/v1/admin/support/sessions.
 func (a *AdminAPI) handleAdminSupportSessionsList(w http.ResponseWriter, r *http.Request) {
+	if !a.checkAdminOrSupport(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	category := r.URL.Query().Get("category")
 	status := r.URL.Query().Get("status")
 	sessions, err := a.st.SupportSessionList(r.Context(), store.SupportFilter{
@@ -1686,12 +1695,16 @@ func (a *AdminAPI) handleAdminSupportSessionsList(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
 }
 
-// handleAdminSupportSessionGet — GET /api/v1/admin/support/sessions/{id}.
+// handleAdminSupportSessionGet — GET /api/v1/support/sessions/{id} или /api/v1/admin/support/sessions/{id}.
 func (a *AdminAPI) handleAdminSupportSessionGet(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if !a.checkOperatorAuth(r, id) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	session, err := a.st.SupportSessionGet(r.Context(), id)
@@ -1706,12 +1719,16 @@ func (a *AdminAPI) handleAdminSupportSessionGet(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, session)
 }
 
-// handleAdminSupportSessionConnect — POST /api/v1/admin/support/sessions/{id}/connect.
+// handleAdminSupportSessionConnect — POST /api/v1/support/sessions/{id}/connect или /api/v1/admin/support/sessions/{id}/connect.
 func (a *AdminAPI) handleAdminSupportSessionConnect(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if !a.checkOperatorAuth(r, id) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	session, err := a.st.SupportSessionGet(r.Context(), id)
@@ -1733,22 +1750,25 @@ func (a *AdminAPI) handleAdminSupportSessionConnect(w http.ResponseWriter, r *ht
 		adminName = "Инженер техподдержки"
 	}
 
-	// Генерируем 2-значное число (10..99) для Zero-Trust Number Matching
-	nBig, err := rand.Int(rand.Reader, big.NewInt(90))
-	num := 42
-	if err == nil {
-		num = int(nBig.Int64()) + 10
+	// Генерируем 2-значное число (10..99) для Zero-Trust Number Matching, если еще не задано
+	numberMatch := session.NumberMatch
+	if numberMatch == "" {
+		nBig, err := rand.Int(rand.Reader, big.NewInt(90))
+		num := 42
+		if err == nil {
+			num = int(nBig.Int64()) + 10
+		}
+		numberMatch = fmt.Sprintf("%02d", num)
+		session.NumberMatch = numberMatch
 	}
-	numberMatch := fmt.Sprintf("%02d", num)
 
-	session.NumberMatch = numberMatch
 	if err := a.st.SupportSessionUpdateStatus(r.Context(), session.ID, "connecting", nil, numberMatch); err != nil {
 		slog.Error("api: ошибка обновления статуса сессии", "error", err)
 	}
 
 	// Отправляем push-запрос на экран пользователя
 	if a.hub != nil {
-		a.hub.SendSupportPrompt(session.UserID, &delivery.SupportPushPrompt{
+		sent := a.hub.SendSupportPrompt(session.UserID, &delivery.SupportPushPrompt{
 			Type:           "support_prompt",
 			SessionID:      session.ID,
 			AdminName:      adminName,
@@ -1758,6 +1778,7 @@ func (a *AdminAPI) handleAdminSupportSessionConnect(w http.ResponseWriter, r *ht
 			ProblemSummary: session.ProblemSummary,
 			Timestamp:      time.Now(),
 		})
+		slog.Info("api: отправлен support_prompt клиенту", "session_id", session.ID, "user_id", session.UserID, "online_clients", sent)
 	}
 
 	a.audit(r.Context(), "support_session_connect", map[string]any{
@@ -1774,12 +1795,16 @@ func (a *AdminAPI) handleAdminSupportSessionConnect(w http.ResponseWriter, r *ht
 	})
 }
 
-// handleAdminSupportSessionSignal — POST /api/v1/admin/support/sessions/{id}/signal.
+// handleAdminSupportSessionSignal — POST /api/v1/support/sessions/{id}/signal или /api/v1/admin/support/sessions/{id}/signal.
 func (a *AdminAPI) handleAdminSupportSessionSignal(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if !a.checkOperatorAuth(r, id) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	session, err := a.st.SupportSessionGet(r.Context(), id)
@@ -1800,12 +1825,16 @@ func (a *AdminAPI) handleAdminSupportSessionSignal(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleAdminSupportSessionTransfer — POST /api/v1/admin/support/sessions/{id}/transfer.
+// handleAdminSupportSessionTransfer — POST /api/v1/support/sessions/{id}/transfer или /api/v1/admin/support/sessions/{id}/transfer.
 func (a *AdminAPI) handleAdminSupportSessionTransfer(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if !a.checkOperatorAuth(r, id) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	session, err := a.st.SupportSessionGet(r.Context(), id)
@@ -1875,12 +1904,16 @@ func (a *AdminAPI) handleAdminSupportSessionTransfer(w http.ResponseWriter, r *h
 	})
 }
 
-// handleAdminSupportSessionEnd — POST /api/v1/admin/support/sessions/{id}/end.
+// handleAdminSupportSessionEnd — POST /api/v1/support/sessions/{id}/end или /api/v1/admin/support/sessions/{id}/end.
 func (a *AdminAPI) handleAdminSupportSessionEnd(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if !a.checkOperatorAuth(r, id) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	session, err := a.st.SupportSessionGet(r.Context(), id)
@@ -1903,8 +1936,12 @@ func (a *AdminAPI) handleAdminSupportSessionEnd(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleAdminSupportColleagues — GET /api/v1/admin/support/colleagues.
+// handleAdminSupportColleagues — GET /api/v1/support/colleagues или /api/v1/admin/support/colleagues.
 func (a *AdminAPI) handleAdminSupportColleagues(w http.ResponseWriter, r *http.Request) {
+	if !a.checkAdminOrSupport(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	colleagues, err := a.st.AllUsersBrief(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal")
@@ -1913,8 +1950,9 @@ func (a *AdminAPI) handleAdminSupportColleagues(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"colleagues": colleagues})
 }
 
-// checkWSToken проверяет авторизацию для подключения к WebSocket сессии удаленной помощи.
-func (a *AdminAPI) checkWSToken(r *http.Request, sessionID uuid.UUID) bool {
+// checkAdminOrSupport проверяет права администратора или специалиста техподдержки
+// (Bearer admin_token либо web-сессия с ролью admin или support_*).
+func (a *AdminAPI) checkAdminOrSupport(r *http.Request) bool {
 	// 1. Bearer admin_token или query ?admin_token=...
 	want := sha256.Sum256([]byte(a.m.Get().AdminToken))
 	tok := bearerToken(r)
@@ -1928,8 +1966,44 @@ func (a *AdminAPI) checkWSToken(r *http.Request, sessionID uuid.UUID) bool {
 		}
 	}
 
-	// 2. Transfer token в query ?token=...
-	if transferToken := r.URL.Query().Get("token"); transferToken != "" {
+	// 2. Web-сессия в cookie twofa_session
+	if c, err := r.Cookie(cookieSession); err == nil && c.Value != "" {
+		tokenHash := secrets.SHA256(c.Value)
+		if userID, _, err := a.st.SessionGet(r.Context(), tokenHash); err == nil {
+			if u, err := a.st.UserByID(r.Context(), userID); err == nil && u.Enabled {
+				if u.Role == "admin" || u.IsSupportAny() {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// checkOperatorAuth проверяет авторизацию для работы с сессией удаленной помощи.
+// Разрешено: Bearer admin_token, transfer-токен сессии (?token=... или заголовок X-Transfer-Token),
+// либо web-сессия (роль admin, специалист поддержки, либо переданный коллега).
+func (a *AdminAPI) checkOperatorAuth(r *http.Request, sessionID uuid.UUID) bool {
+	// 1. Bearer admin_token или query ?admin_token=...
+	want := sha256.Sum256([]byte(a.m.Get().AdminToken))
+	tok := bearerToken(r)
+	if tok == "" {
+		tok = r.URL.Query().Get("admin_token")
+	}
+	if tok != "" {
+		got := sha256.Sum256([]byte(tok))
+		if subtle.ConstantTimeCompare(want[:], got[:]) == 1 {
+			return true
+		}
+	}
+
+	// 2. Transfer token в query ?token=... или в заголовке X-Transfer-Token
+	transferToken := r.URL.Query().Get("token")
+	if transferToken == "" {
+		transferToken = r.Header.Get("X-Transfer-Token")
+	}
+	if transferToken != "" {
 		hash := sha256.Sum256([]byte(transferToken))
 		if ss, err := a.st.SupportSessionGetByTransferToken(r.Context(), hash[:]); err == nil && ss.ID == sessionID {
 			return true
@@ -1954,7 +2028,7 @@ func (a *AdminAPI) checkWSToken(r *http.Request, sessionID uuid.UUID) bool {
 	return false
 }
 
-// handleAdminSupportSessionWS — WebSocket /api/v1/admin/support/sessions/{id}/ws или /api/v1/support/ws/{id}.
+// handleAdminSupportSessionWS — WebSocket /api/v1/support/sessions/{id}/ws или /api/v1/support/ws/{id}.
 func (a *AdminAPI) handleAdminSupportSessionWS(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
@@ -1963,7 +2037,7 @@ func (a *AdminAPI) handleAdminSupportSessionWS(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if !a.checkWSToken(r, id) {
+	if !a.checkOperatorAuth(r, id) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}

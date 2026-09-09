@@ -1432,3 +1432,287 @@ button.select-chip.partial .ad-group-count {
   color: var(--muted);
 }
 
+/* ---- Support queue & viewer styles ---- */
+.hidden { display: none !important; }
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.support-tabs {
+  margin-bottom: var(--sp-4);
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.support-empty {
+  text-align: center;
+  padding: var(--sp-8) var(--sp-4);
+}
+.support-empty-icon {
+  font-size: 3rem;
+  margin-bottom: var(--sp-3);
+}
+
+.support-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.support-item-1c {
+  border-left: 4px solid var(--warn, #f59e0b);
+}
+.support-item-it {
+  border-left: 4px solid var(--primary);
+}
+
+.support-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.support-user-info {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+}
+
+.support-title-row {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.support-user-title {
+  font-size: 1.1rem;
+}
+.support-user-sub {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.support-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-top: 3px;
+}
+
+.support-problem-box {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg);
+  border-radius: var(--radius);
+}
+.support-problem-title {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--muted);
+}
+.support-problem-text {
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-top: 2px;
+}
+
+.support-actions {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+/* Support viewer */
+.viewer-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.viewer-head {
+  padding: 14px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.viewer-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.viewer-user-name {
+  font-size: 1.15rem;
+}
+
+.viewer-user-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+
+.viewer-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.viewer-problem-banner {
+  padding: 12px 18px;
+  border-left: 4px solid var(--primary);
+}
+
+.viewer-problem-title {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.viewer-problem-text {
+  font-size: 1rem;
+  color: var(--text);
+  margin-top: 3px;
+}
+
+.number-match-card {
+  display: none;
+  background: var(--surface);
+  border: 2px dashed var(--primary);
+  text-align: center;
+  padding: 20px;
+}
+.number-match-card.visible {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.number-match-title {
+  font-size: 1rem;
+  color: var(--primary);
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.number-match-subtitle {
+  margin: 0 0 12px 0;
+  color: var(--text);
+}
+
+.number-match-digits {
+  font-size: 2.5rem;
+  font-weight: bold;
+  letter-spacing: 4px;
+  color: #1d4ed8;
+  background: #dbeafe;
+  display: inline-block;
+  padding: 6px 24px;
+  border-radius: 8px;
+}
+
+.number-match-hint {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.viewer-screen-card {
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+  background: #020617;
+  border-radius: var(--radius);
+  min-height: 500px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.viewer-video {
+  width: 100%;
+  height: auto;
+  max-height: 80vh;
+  display: block;
+}
+
+.viewer-placeholder {
+  position: absolute;
+  text-align: center;
+  color: #94a3b8;
+}
+
+.viewer-spinner {
+  margin: 0 auto 16px auto;
+  width: 40px;
+  height: 40px;
+  border: 4px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.viewer-status-text {
+  font-size: 1.1rem;
+  color: #f1f5f9;
+}
+
+.viewer-status-sub {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin-top: 4px;
+}
+
+.viewer-modal-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+}
+.viewer-modal-backdrop.visible {
+  display: flex;
+}
+
+.viewer-modal-card {
+  width: 480px;
+  max-width: 90vw;
+  margin: auto;
+  padding: 24px;
+}
+
+.viewer-modal-sub {
+  font-size: 0.9rem;
+}
+
+.viewer-modal-field {
+  margin-top: 16px;
+}
+
+.viewer-modal-or {
+  margin: 16px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.viewer-modal-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.viewer-modal-actions {
+  margin-top: 24px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+

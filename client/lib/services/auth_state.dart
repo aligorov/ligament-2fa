@@ -34,6 +34,7 @@ class AuthState extends ChangeNotifier {
 
   Map<String, dynamic>? activePrompt;
   Map<String, dynamic>? activeSupportPrompt;
+  Timer? _pollingTimer;
   final Set<String> _resolvedChallengeIds = {};
 
   bool get isLoggedIn => token != null && currentUser != null;
@@ -137,6 +138,15 @@ class AuthState extends ChangeNotifier {
 
     // 2. Телеметрия и контроль комплаенса
     telemetry.startReporting(api!);
+
+    // 3. Периодический опрос pending-запросов и сессий поддержки (fallback при временном обрыве WS)
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
+      if (isLoggedIn) {
+        await loadPendingChallenges();
+        await checkSupportSession();
+      }
+    });
   }
 
   Future<void> setServerUrl(String url) async {
@@ -152,31 +162,40 @@ class AuthState extends ChangeNotifier {
       throw Exception('Не указан адрес сервера');
     }
 
-    api ??= ApiClient(baseUrl: serverUrl!);
-
-    // Собираем базовую информацию об устройстве
     final deviceInfo = DeviceInfoPlugin();
     String deviceName = 'Device';
     String osVersion = '';
     String platform = 'unknown';
 
     if (!kIsWeb) {
-      if (Platform.isWindows) {
-        platform = 'windows';
-        final wInfo = await deviceInfo.windowsInfo;
-        deviceName = wInfo.computerName;
-        osVersion = wInfo.displayVersion;
-      } else if (Platform.isAndroid) {
-        platform = 'android';
-        final aInfo = await deviceInfo.androidInfo;
-        deviceName = '${aInfo.brand} ${aInfo.model}';
-        osVersion = 'Android ${aInfo.version.release}';
-      } else if (Platform.isIOS) {
-        platform = 'ios';
-        final iInfo = await deviceInfo.iosInfo;
-        deviceName = iInfo.name;
-        osVersion = '${iInfo.systemName} ${iInfo.systemVersion}';
-      }
+      try {
+        if (Platform.isWindows) {
+          platform = 'windows';
+          final wInfo = await deviceInfo.windowsInfo;
+          deviceName = wInfo.computerName;
+          osVersion = wInfo.displayVersion;
+        } else if (Platform.isAndroid) {
+          platform = 'android';
+          final aInfo = await deviceInfo.androidInfo;
+          deviceName = '${aInfo.brand} ${aInfo.model}';
+          osVersion = 'Android ${aInfo.version.release}';
+        } else if (Platform.isIOS) {
+          platform = 'ios';
+          final iInfo = await deviceInfo.iosInfo;
+          deviceName = iInfo.name;
+          osVersion = '${iInfo.systemName} ${iInfo.systemVersion}';
+        } else if (Platform.isMacOS) {
+          platform = 'macos';
+          final mInfo = await deviceInfo.macOsInfo;
+          deviceName = mInfo.computerName;
+          osVersion = 'macOS ${mInfo.majorVersion}.${mInfo.minorVersion}';
+        } else if (Platform.isLinux) {
+          platform = 'linux';
+          final lInfo = await deviceInfo.linuxInfo;
+          deviceName = lInfo.name;
+          osVersion = 'Linux';
+        }
+      } catch (_) {}
     }
 
     final initialPosture = await telemetry.collectPosture();
@@ -206,6 +225,8 @@ class AuthState extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    _pollingTimer?.cancel();
+    _pollingTimer = null;
     try {
       await api?.logout();
     } catch (_) {}
@@ -434,27 +455,78 @@ class AuthState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Проверка наличия активной сессии поддержки на сервере
+  /// Проверка наличия активной сессии поддержки на сервере (периодический поллинг)
   Future<void> checkSupportSession() async {
     if (api == null) return;
     try {
       final sess = await api!.getCurrentSupportSession();
-      if (sess != null &&
-          (sess['status'] == 'requested' ||
-              sess['status'] == 'connecting' ||
-              sess['status'] == 'active')) {
-        support.setRequested(
-          sessionId: sess['id']?.toString() ?? '',
-          category: sess['category']?.toString() ?? 'it',
-          problemSummary: sess['problem_summary']?.toString() ?? '',
-          accessMode: sess['access_mode']?.toString() ?? 'full_control',
-        );
-      } else if (support.state != SupportSessionState.active) {
-        if (support.state == SupportSessionState.requested) {
+      if (sess != null) {
+        final status = sess['status']?.toString();
+        final sessionId = sess['id']?.toString() ?? '';
+        final category = sess['category']?.toString() ?? 'it';
+        final summary = sess['problem_summary']?.toString() ?? '';
+        final accessMode = sess['access_mode']?.toString() ?? 'full_control';
+
+        if (status == 'connecting') {
+          final numberMatch = sess['number_match']?.toString() ?? '';
+          if (numberMatch.isNotEmpty && activeSupportPrompt == null && support.state != SupportSessionState.active) {
+            activeSupportPrompt = {
+              'session_id': sessionId,
+              'category': category,
+              'problem_summary': summary,
+              'number_match': numberMatch,
+              'access_mode': accessMode,
+              'admin_name': sess['admin_name'] ?? 'Инженер техподдержки',
+            };
+            support.setAuthorizing(
+              sessionId: sessionId,
+              category: category,
+              problemSummary: summary,
+            );
+            final cat = category == '1c' ? '1С-поддержка' : 'IT-служба';
+            alert.triggerAlert(
+              title: 'Удаленная помощь: $cat',
+              body: 'Инженер готов подключиться к экрану. Подтвердите контрольное число.',
+              challengeId: sessionId,
+            );
+            notifyListeners();
+          }
+        } else if (status == 'requested') {
+          if (support.state != SupportSessionState.requested) {
+            support.setRequested(
+              sessionId: sessionId,
+              category: category,
+              problemSummary: summary,
+              accessMode: accessMode,
+            );
+            notifyListeners();
+          }
+        } else if (status == 'ended' || status == 'rejected') {
+          if (support.state != SupportSessionState.idle) {
+            support.stopScreenSharing();
+          }
+          if (activeSupportPrompt != null) {
+            activeSupportPrompt = null;
+            notifyListeners();
+          }
+        }
+      } else {
+        if (support.state == SupportSessionState.requested ||
+            support.state == SupportSessionState.authorizing) {
           support.stopScreenSharing();
+          activeSupportPrompt = null;
+          notifyListeners();
         }
       }
-      notifyListeners();
     } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _pollingTimer?.cancel();
+    ws.disconnect();
+    telemetry.stopReporting();
+    support.stopScreenSharing();
+    super.dispose();
   }
 }

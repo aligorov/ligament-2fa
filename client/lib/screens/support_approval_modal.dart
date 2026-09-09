@@ -96,7 +96,9 @@ class _SupportApprovalModalState extends State<SupportApprovalModal> {
   Widget build(BuildContext context) {
     final category = widget.prompt['category']?.toString() ?? 'it';
     final summary = widget.prompt['problem_summary']?.toString() ?? 'Удаленная помощь';
-    final operatorName = widget.prompt['operator']?.toString() ?? 'Инженер техподдержки';
+    final operatorName = widget.prompt['admin_name']?.toString() ??
+        widget.prompt['operator']?.toString() ??
+        'Инженер техподдержки';
     final accessMode = widget.prompt['access_mode']?.toString() ?? 'full_control';
 
     return Dialog(
