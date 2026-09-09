@@ -130,7 +130,8 @@ type MePasskeysData struct {
 // MeDevicesData — /me/devices: доверенные устройства, отзыв по одному.
 type MeDevicesData struct {
 	BaseData
-	Devices []store.Device
+	Devices    []store.Device
+	AppDevices []*store.AppDevice
 }
 
 // AdminUsersData — /admin/users: таблица всех пользователей; Edit != nil —
@@ -153,6 +154,7 @@ type AdminUsersData struct {
 	InheritedPushGroup map[uuid.UUID]string // user_id -> имя группы, включившей Push
 	EditInheritedVLAN  string
 	EditInheritedGroup string
+	EditAppDevices     []*store.AppDevice
 }
 
 // AdminGroupsData — /admin/groups: список локальных групп и форма создания/редактирования.

@@ -6,3 +6,5 @@ cmd/licgen
 README.md
 docs
 twofa
+client
+deploy

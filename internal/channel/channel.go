@@ -10,5 +10,6 @@ const (
 	SMS          Channel = "sms"
 	Telegram     Channel = "telegram"
 	TelegramPush Channel = "telegram_push"
+	AppPush      Channel = "app_push"
 	WebAuthn     Channel = "webauthn"
 )

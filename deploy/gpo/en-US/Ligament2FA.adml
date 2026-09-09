@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ligament 2FA English Language Definition (ADML) -->
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  revision="1.0" schemaVersion="1.0"
+  xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>Ligament 2FA Corporate Policies</displayName>
+  <description>Administrative templates for managing Ligament Authenticator via Windows Group Policy (GPO)</description>
+  <resources>
+    <stringTable>
+      <string id="LigamentCategory">Ligament 2FA Authenticator</string>
+      <string id="GeneralSettings">General Settings</string>
+      <string id="SecurityPolicies">Security Policies &amp; Compliance</string>
+      <string id="AlertSettings">Alerts &amp; Pop-up Windows</string>
+      <string id="TelemetrySettings">Device Telemetry</string>
+
+      <string id="ServerURL_Policy">Corporate Ligament 2FA Server URL</string>
+      <string id="ServerURL_Policy_Help">Specifies the corporate Ligament 2FA server URL (e.g., https://2fa.corp.example.com). When enabled, users cannot modify the server URL in the app settings.</string>
+
+      <string id="AutoStart_Policy">Start automatically on Windows logon</string>
+      <string id="AutoStart_Policy_Help">When enabled, Ligament Authenticator automatically starts in the background system tray when a user logs on to Windows.</string>
+
+      <string id="PreventExit_Policy">Prevent closing the application</string>
+      <string id="PreventExit_Policy_Help">When enabled, the Exit option in the system tray context menu is disabled, preventing employees from closing the authentication client.</string>
+
+      <string id="RequireWindowsHello_Policy">Require Windows Hello for push approval</string>
+      <string id="RequireWindowsHello_Policy_Help">When enabled, approving a push notification requires biometrics (fingerprint/facial recognition) or Windows PIN.</string>
+
+      <string id="RequireBitLocker_Policy">Require BitLocker drive encryption</string>
+      <string id="RequireBitLocker_Policy_Help">When enabled, access approval is blocked if the operating system drive is not protected with BitLocker.</string>
+
+      <string id="RequireAntivirus_Policy">Require active antivirus (Windows Defender)</string>
+      <string id="RequireAntivirus_Policy_Help">When enabled, access approval is blocked if real-time antivirus protection is disabled.</string>
+
+      <string id="RequireFirewall_Policy">Require Windows Firewall enabled</string>
+      <string id="RequireFirewall_Policy_Help">When enabled, access approval is blocked if the Windows Firewall is turned off.</string>
+
+      <string id="AlwaysOnTop_Policy">Pop-up on top of all windows on push</string>
+      <string id="AlwaysOnTop_Policy_Help">When a new push notification arrives, the application window automatically jumps to the front on top of all windows and takes focus.</string>
+
+      <string id="FlashTaskbar_Policy">Flash taskbar icon on incoming push</string>
+      <string id="FlashTaskbar_Policy_Help">When a new push notification arrives, the taskbar icon flashes until the user interacts with the application.</string>
+
+      <string id="AlertSound_Policy">Play alert sound on incoming push</string>
+      <string id="AlertSound_Policy_Help">Plays an alert sound when an incoming authentication request arrives.</string>
+
+      <string id="CollectTelemetry_Policy">Collect and report security telemetry</string>
+      <string id="CollectTelemetry_Policy_Help">Periodically reports BitLocker, Defender, Firewall status, and push SLA latency to the server for user and administrator audit.</string>
+
+      <string id="TelemetryInterval_Policy">Telemetry reporting interval (seconds)</string>
+      <string id="TelemetryInterval_Policy_Help">Sets how often the client sends device security telemetry to the server (default: 300 seconds).</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="ServerURL_Presentation">
+        <textBox refId="ServerURL_Value">
+          <label>Server URL (HTTPS):</label>
+        </textBox>
+      </presentation>
+      <presentation id="TelemetryInterval_Presentation">
+        <decimalTextBox refId="TelemetryInterval_Value" defaultValue="300">Interval (seconds):</decimalTextBox>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

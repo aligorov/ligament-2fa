@@ -40,6 +40,8 @@ tags:
     description: "Админ API /api/v1/admin/* — пользователи, сбросы факторов, аудит, челленджи, настройки. Authorization: Bearer admin_token."
   - name: OIDC
     description: "OpenID Connect Provider — вход внешних приложений через Ligament: discovery, JWKS, authorization code flow с PKCE, userinfo. Без авторизации (защита — web-сессия пользователя и учётные данные клиента)."
+  - name: App Client
+    description: "API для клиентских приложений (Windows, Android, iOS): авторизация устройств, push-подтверждения, телеметрия безопасности, SSO Launchpad и история."
   - name: Service
     description: Служебные эндпоинты (health-проверка).
 security: {}
@@ -3299,6 +3301,224 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
               example: {error: invalid_token}
+
+  # ---- App Client ----
+
+  /api/v1/app/config:
+    get:
+      tags: [App Client]
+      summary: "Публичная конфигурация сервера для приложений"
+      description: "Возвращает название сервера, версию и поддерживаемые методы авторизации."
+      operationId: appConfigGet
+      responses:
+        '200':
+          description: Параметры конфигурации сервера.
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/app/login:
+    post:
+      tags: [App Client]
+      summary: "Авторизация устройства в приложении"
+      description: "Проверяет пароль пользователя и регистрирует клиентское приложение с выдачей Bearer-токена."
+      operationId: appLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Успешная авторизация устройства.
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Неверные учетные данные.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+  /api/v1/app/logout:
+    post:
+      tags: [App Client]
+      summary: "Выход устройства из приложения"
+      description: "Деактивирует сессию текущего устройства."
+      operationId: appLogout
+      responses:
+        '200':
+          description: Устройство деактивировано.
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/app/device/push-token:
+    post:
+      tags: [App Client]
+      summary: "Обновление APNs/FCM токена устройства"
+      description: "Регистрирует push-токен для доставки оповещений на мобильные устройства."
+      operationId: appDevicePushTokenUpdate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Токен обновлен.
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/app/telemetry:
+    post:
+      tags: [App Client]
+      summary: "Отправка снимка телеметрии устройства"
+      description: "Передает состояние безопасности ОС (BitLocker, Defender, root/jailbreak) и проверяет соответствие корпоративным политикам."
+      operationId: appTelemetryPost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Телеметрия сохранена, возвращен статус соответствия.
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/app/challenges/pending:
+    get:
+      tags: [App Client]
+      summary: "Список ожидающих push-челленджей"
+      description: "Возвращает активные непросроченные запросы на подтверждение входа для приложения."
+      operationId: appChallengesPendingGet
+      responses:
+        '200':
+          description: Список активных челленджей.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/v1/app/challenges/{id}/decision:
+    post:
+      tags: [App Client]
+      summary: "Принятие решения по запросу авторизации"
+      description: "Подтверждает (approve) или отклоняет (deny) push-челлендж с проверкой Number Match и комплаенса."
+      operationId: appChallengeDecisionPost
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Решение зафиксировано.
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Неверный код Number Match.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '403':
+          description: Устройство не соответствует корпоративной политике безопасности.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+  /api/v1/app/me/profile:
+    get:
+      tags: [App Client]
+      summary: "Профиль текущего пользователя в приложении"
+      description: "Возвращает данные профиля, роли и группы пользователя."
+      operationId: appMeProfileGet
+      responses:
+        '200':
+          description: Профиль пользователя.
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/app/me/apps:
+    get:
+      tags: [App Client]
+      summary: "Каталог разрешенных корпоративных OIDC-приложений"
+      description: "Возвращает SSO Launchpad список приложений, к которым у пользователя есть доступ."
+      operationId: appMeAppsGet
+      responses:
+        '200':
+          description: Список доступных SSO-приложений.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/v1/app/me/history:
+    get:
+      tags: [App Client]
+      summary: "История событий входа пользователя"
+      description: "Возвращает недавние записи аудита для пользователя с IP и статусом."
+      operationId: appMeHistoryGet
+      responses:
+        '200':
+          description: История входов.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/v1/app/ws:
+    get:
+      tags: [App Client]
+      summary: "Постоянное WebSocket соединение для мгновенных push-оповещений"
+      description: "Двунаправленный канал реального времени для доставки входящих push-запросов на подтверждение входа."
+      operationId: appWSGet
+      responses:
+        '101':
+          description: Переключение на протокол WebSocket.
+
+  /api/v1/app/sse:
+    get:
+      tags: [App Client]
+      summary: "Server-Sent Events поток для push-оповещений"
+      description: "Легковесный однонаправленный HTTP поток для доставки входящих push-запросов."
+      operationId: appSSEGet
+      responses:
+        '200':
+          description: Поток событий Server-Sent Events.
+          content:
+            text/event-stream:
+              schema:
+                type: string
 
 components:
   securitySchemes:

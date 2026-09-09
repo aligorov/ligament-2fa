@@ -122,6 +122,11 @@ type PushNotifier interface {
 	SendNotification(ctx context.Context, chatID int64, text string) error
 }
 
+// AppPushNotifier — отправка push-подтверждения на мобильные и десктопные приложения пользователя.
+type AppPushNotifier interface {
+	SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID) error
+}
+
 // BackupChannel — псевдоканал в возвращаемом значении VerifyAnyCode:
 // код опознан как резервный (backup-коды не входят в channel.Channel).
 const BackupChannel channel.Channel = "backup"

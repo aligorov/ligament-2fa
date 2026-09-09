@@ -438,6 +438,11 @@ func uniqueStrings(in []string) []string {
 	return out
 }
 
+// IsUserAllowed проверяет доступ пользователя к OIDC-клиенту (экспортируемый метод).
+func (mgr *Manager) IsUserAllowed(ctx context.Context, u *store.User, client *store.OIDCClient) bool {
+	return mgr.isUserAllowed(ctx, u, client)
+}
+
 // isUserAllowed проверяет доступ пользователя к OIDC-клиенту.
 // Если allowed_users и allowed_groups пусты — доступ разрешён всем.
 // Пользователи с системной ролью "admin" имеют доступ всегда.

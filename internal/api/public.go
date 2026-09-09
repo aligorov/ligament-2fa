@@ -336,12 +336,12 @@ func pollStatus(ch *store.Challenge, now time.Time) string {
 		return "expired"
 	}
 	if ch.UsedAt != nil {
-		if ch.Channel == channel.TelegramPush {
+		if ch.Channel == channel.TelegramPush || ch.Channel == channel.AppPush {
 			return "approved"
 		}
 		return "expired"
 	}
-	if ch.Channel == channel.TelegramPush && ch.PushState != nil {
+	if (ch.Channel == channel.TelegramPush || ch.Channel == channel.AppPush) && ch.PushState != nil {
 		switch *ch.PushState {
 		case "approved", "denied":
 			return *ch.PushState

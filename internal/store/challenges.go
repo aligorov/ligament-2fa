@@ -3,6 +3,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -19,26 +20,34 @@ type Challenge struct {
 	UserID       uuid.UUID
 	Channel      channel.Channel
 	CodeHash     []byte  // nil для channel=totp
-	PushState    *string // pending|approved|denied — только telegram_push
+	PushState    *string // pending|approved|denied — telegram_push и app_push
 	ExpiresAt    time.Time
 	AttemptsLeft int
 	UsedAt       *time.Time
 	Purpose      string // api|radius_prefetch|ui_confirm|webauthn_session|tg_link
+	Metadata     map[string]any
 	CreatedAt    time.Time
 }
 
 // challengeCols — список колонок challenges для SELECT/сканирования.
 const challengeCols = `id, user_id, channel, code_hash, push_state, expires_at,
-	attempts_left, used_at, purpose, created_at`
+	attempts_left, used_at, purpose, COALESCE(metadata, '{}'::jsonb), created_at`
 
 // scanChallenge сканирует строку challenges (колонки в порядке challengeCols).
 func scanChallenge(row scanner) (*Challenge, error) {
 	var c Challenge
+	var metaBytes []byte
 	if err := row.Scan(
 		&c.ID, &c.UserID, &c.Channel, &c.CodeHash, &c.PushState,
-		&c.ExpiresAt, &c.AttemptsLeft, &c.UsedAt, &c.Purpose, &c.CreatedAt,
+		&c.ExpiresAt, &c.AttemptsLeft, &c.UsedAt, &c.Purpose, &metaBytes, &c.CreatedAt,
 	); err != nil {
 		return nil, err
+	}
+	if len(metaBytes) > 0 {
+		_ = json.Unmarshal(metaBytes, &c.Metadata)
+	}
+	if c.Metadata == nil {
+		c.Metadata = make(map[string]any)
 	}
 	return &c, nil
 }
@@ -50,16 +59,20 @@ func (s *Store) ChallengeCreate(ctx context.Context, c *Challenge) error {
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()
 	}
+	if c.Metadata == nil {
+		c.Metadata = make(map[string]any)
+	}
+	metaJSON, _ := json.Marshal(c.Metadata)
 	if _, err := s.Pool().Exec(ctx,
 		`DELETE FROM challenges WHERE expires_at < now()`); err != nil {
 		return fmt.Errorf("store: janitor challenges: %w", err)
 	}
 	err := s.Pool().QueryRow(ctx, `INSERT INTO challenges
-		(id, user_id, channel, code_hash, push_state, expires_at, attempts_left, used_at, purpose)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		(id, user_id, channel, code_hash, push_state, expires_at, attempts_left, used_at, purpose, metadata)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		RETURNING created_at`,
 		c.ID, c.UserID, c.Channel, c.CodeHash, c.PushState, c.ExpiresAt,
-		c.AttemptsLeft, c.UsedAt, c.Purpose).Scan(&c.CreatedAt)
+		c.AttemptsLeft, c.UsedAt, c.Purpose, metaJSON).Scan(&c.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("store: создать челлендж: %w", err)
 	}
@@ -161,7 +174,7 @@ func (s *Store) ActiveCodeChallenges(ctx context.Context, userID uuid.UUID, purp
 func (s *Store) LastPushAt(ctx context.Context, userID uuid.UUID) (time.Time, error) {
 	var ts *time.Time
 	err := s.Pool().QueryRow(ctx, `SELECT MAX(created_at) FROM challenges
-		WHERE user_id = $1 AND channel = $2`, userID, channel.TelegramPush).Scan(&ts)
+		WHERE user_id = $1 AND channel IN ($2, $3)`, userID, channel.TelegramPush, channel.AppPush).Scan(&ts)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("store: последний push %s: %w", userID, err)
 	}
@@ -176,10 +189,31 @@ func (s *Store) LastPushAt(ctx context.Context, userID uuid.UUID) (time.Time, er
 func (s *Store) PushCountSince(ctx context.Context, userID uuid.UUID, since time.Time) (int, error) {
 	var n int
 	err := s.Pool().QueryRow(ctx, `SELECT count(*) FROM challenges
-		WHERE user_id = $1 AND channel = $2 AND created_at > $3`,
-		userID, channel.TelegramPush, since).Scan(&n)
+		WHERE user_id = $1 AND channel IN ($2, $3) AND created_at > $4`,
+		userID, channel.TelegramPush, channel.AppPush, since).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("store: счёт пушей %s: %w", userID, err)
 	}
 	return n, nil
+}
+
+// ActiveAppPushChallenges возвращает активные непросроченные push-челленджи приложения для пользователя.
+func (s *Store) ActiveAppPushChallenges(ctx context.Context, userID uuid.UUID) ([]*Challenge, error) {
+	rows, err := s.Pool().Query(ctx, `SELECT `+challengeCols+` FROM challenges
+		WHERE user_id = $1 AND channel = $2 AND push_state = 'pending'
+		  AND expires_at > now() AND used_at IS NULL
+		ORDER BY created_at DESC`, userID, channel.AppPush)
+	if err != nil {
+		return nil, fmt.Errorf("store: активные app_push челленджи %s: %w", userID, err)
+	}
+	defer rows.Close()
+	var out []*Challenge
+	for rows.Next() {
+		c, err := scanChallenge(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: сканирование app_push челленджа: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

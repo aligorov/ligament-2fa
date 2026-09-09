@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadType</key>
+            <string>com.ligament.twofa</string>
+            <key>PayloadIdentifier</key>
+            <string>com.ligament.twofa.settings</string>
+            <key>PayloadUUID</key>
+            <string>B4E1A3C2-8D7F-4B9A-9E2A-5F1C6B7A8D9E</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>PayloadEnabled</key>
+            <true/>
+            <!-- Корпоративный адрес сервера Ligament 2FA (блокирует смену пользователем) -->
+            <key>ServerURL</key>
+            <string>https://2fa.corp.example.com</string>
+
+            <!-- Запрет закрытия приложения сотрудником (0 / false) -->
+            <key>AllowExit</key>
+            <false/>
+
+            <!-- Требовать Touch ID / пароль учетной записи Mac перед подтверждением входа -->
+            <key>RequireTouchID</key>
+            <true/>
+
+            <!-- Требовать обязательное шифрование диска FileVault -->
+            <key>RequireFileVault</key>
+            <true/>
+
+            <!-- Требовать включенный сетевой экран macOS Firewall -->
+            <key>RequireFirewall</key>
+            <true/>
+
+            <!-- Всплывать поверх всех окон при входящем push -->
+            <key>AlwaysOnTop</key>
+            <true/>
+
+            <!-- Автозапуск при входе в macOS -->
+            <key>AutoStart</key>
+            <true/>
+
+            <!-- Сбор и отправка телеметрии безопасности -->
+            <key>CollectTelemetry</key>
+            <true/>
+            <key>TelemetryIntervalSeconds</key>
+            <integer>300</integer>
+        </dict>
+    </array>
+    <key>PayloadDisplayName</key>
+    <string>Ligament 2FA Корпоративные Политики macOS</string>
+    <key>PayloadIdentifier</key>
+    <string>com.ligament.twofa.configuration</string>
+    <key>PayloadOrganization</key>
+    <string>Корпоративная безопасность</string>
+    <key>PayloadRemovalDisallowed</key>
+    <true/>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>A1B2C3D4-E5F6-7890-ABCD-EF1234567890</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+</dict>
+</plist>

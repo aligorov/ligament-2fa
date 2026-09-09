@@ -221,6 +221,8 @@ func main() {
 	pvLocal := auth.NewLocalVerifier(st)
 	pv := auth.NewCompositeVerifier(st, pvLocal, auth.NewLdapVerifier(st, m))
 	core := auth.NewCore(st, m, box, senders, pv, push)
+	appHub := delivery.NewAppHub()
+	core.SetAppPush(appHub)
 	guard := firewall.New(st, m)
 	core.SetFirewall(guard)
 
@@ -296,7 +298,7 @@ func main() {
 
 	rt := api.BuildRouter(api.Deps{
 		Core: core, WA: wa, St: st, Box: box, PV: pv, M: m, Rend: rend, Lic: lic,
-		FW: guard, Oidc: oidcMgr, ACME: acmeMgr, Radius: radius,
+		FW: guard, Oidc: oidcMgr, ACME: acmeMgr, Radius: radius, AppHub: appHub,
 	})
 	defer rt.Stop()
 

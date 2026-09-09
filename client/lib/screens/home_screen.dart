@@ -1,0 +1,206 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../services/auth_state.dart';
+import 'approval_modal.dart';
+import 'apps_screen.dart';
+import 'history_screen.dart';
+import 'settings_screen.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  int _currentIndex = 0;
+  bool _modalShown = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final auth = context.watch<AuthState>();
+    if (auth.activePrompt != null && !_modalShown) {
+      _modalShown = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => ApprovalModal(prompt: auth.activePrompt!),
+        ).then((_) {
+          _modalShown = false;
+        });
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = context.watch<AuthState>();
+
+    final pages = [
+      _buildRequestsTab(auth),
+      const AppsScreen(),
+      const HistoryScreen(),
+      const SettingsScreen(),
+    ];
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F172A),
+      body: pages[_currentIndex],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: (idx) => setState(() => _currentIndex = idx),
+        backgroundColor: const Color(0xFF1E293B),
+        selectedItemColor: const Color(0xFF38BDF8),
+        unselectedItemColor: const Color(0xFF64748B),
+        type: BottomNavigationBarType.fixed,
+        items: [
+          BottomNavigationBarItem(
+            icon: Badge(
+              isLabelVisible: auth.pendingChallenges.isNotEmpty,
+              label: Text('${auth.pendingChallenges.length}'),
+              child: const Icon(Icons.shield_outlined),
+            ),
+            label: 'Запросы',
+          ),
+          const BottomNavigationBarItem(
+            icon: Icon(Icons.apps_outlined),
+            label: 'SSO Сервисы',
+          ),
+          const BottomNavigationBarItem(
+            icon: Icon(Icons.history_outlined),
+            label: 'Журнал',
+          ),
+          const BottomNavigationBarItem(
+            icon: Icon(Icons.tune_outlined),
+            label: 'Настройки',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRequestsTab(AuthState auth) {
+    final challenges = auth.pendingChallenges;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F172A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF1E293B),
+        title: Row(
+          children: [
+            const Text('Ligament 2FA', style: TextStyle(color: Colors.white, fontSize: 18)),
+            const Spacer(),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: auth.isOnline
+                    ? const Color(0xFF10B981).withOpacity(0.15)
+                    : const Color(0xFFEF4444).withOpacity(0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: auth.isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    auth.isOnline ? 'Online' : 'Offline',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: auth.isOnline ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      body: challenges.isEmpty
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E293B),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.check_circle_outline, size: 64, color: Color(0xFF10B981)),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'Нет активных запросов',
+                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'При входе в корпоративную сеть окно появится автоматически',
+                    style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: challenges.length,
+              itemBuilder: (context, index) {
+                final ch = challenges[index];
+                final meta = ch['metadata'] as Map<String, dynamic>? ?? {};
+
+                return Card(
+                  color: const Color(0xFF1E293B),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  margin: const EdgeInsets.only(bottom: 12),
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.all(16),
+                    leading: const CircleAvatar(
+                      backgroundColor: Color(0xFF0284C7),
+                      child: Icon(Icons.security, color: Colors.white),
+                    ),
+                    title: Text(
+                      ch['purpose']?.toString() ?? 'Запрос входа',
+                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                    subtitle: Text(
+                      'IP: ${meta['ip'] ?? '—'} • ${ch['expires_in_seconds']} сек',
+                      style: const TextStyle(color: Color(0xFF94A3B8)),
+                    ),
+                    trailing: ElevatedButton(
+                      onPressed: () {
+                        showDialog(
+                          context: context,
+                          barrierDismissible: false,
+                          builder: (_) => ApprovalModal(prompt: {
+                            'challenge_id': ch['id'],
+                            'who': meta['username'] ?? auth.currentUser?['username'],
+                            'ip': meta['ip'] ?? '—',
+                            'ua': meta['ua'] ?? '—',
+                            'service': ch['purpose'] ?? '2FA Login',
+                            'number_match': meta['number_match'],
+                            'expires_in_seconds': ch['expires_in_seconds'],
+                          }),
+                        );
+                      },
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
+                      child: const Text('Открыть'),
+                    ),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}

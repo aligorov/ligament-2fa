@@ -11,6 +11,7 @@ import (
 
 	"github.com/aligorov/twofa/internal/acme"
 	"github.com/aligorov/twofa/internal/auth"
+	"github.com/aligorov/twofa/internal/delivery"
 	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/oidc"
@@ -150,6 +151,7 @@ type Deps struct {
 	Oidc   *oidc.Manager        // nil — OIDC не смонтирован (роуты отвечают 503); main всегда инициализирует
 	ACME   *acme.Manager        // nil — ACME выключен
 	Radius *radiusserver.Server // nil — RADIUS не смонтирован
+	AppHub *delivery.AppHub     // nil — push в мобильные/десктопные приложения отключен
 }
 
 // firewallMiddleware фильтрует запросы по IP ДО маршрутов и обработчиков:
@@ -242,6 +244,9 @@ func BuildRouter(d Deps) *Router {
 	admin.Register(r)
 	pages.Register(r)
 	d.Oidc.Register(r) // nil-безопасно: маршруты остаются, отвечают 503
+
+	appAPI := NewAppAPI(d.Core, d.St, d.PV, d.M, d.AppHub, d.Oidc)
+	appAPI.Register(r)
 
 	registerOpenAPI(r)
 

@@ -8,7 +8,7 @@ ARG BUILD_DATE=""
 ARG ADS_CONFIG=""
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN for i in 1 2 3 4 5; do go mod download && break || sleep 3; done
 COPY cmd ./cmd
 COPY internal ./internal
 COPY api ./api

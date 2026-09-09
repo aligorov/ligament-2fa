@@ -39,7 +39,8 @@ type Core struct {
 	mu      sync.RWMutex
 	senders map[channel.Channel]delivery.Sender
 	pv      PasswordVerifier
-	push    PushNotifier // nil → канал telegram_push недоступен
+	push    PushNotifier    // nil → канал telegram_push недоступен
+	appPush AppPushNotifier // nil → канал app_push недоступен
 
 	notifyMu   sync.Mutex
 	lastNotify map[string]time.Time
@@ -99,6 +100,20 @@ func (c *Core) pushNotifier() PushNotifier {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.push
+}
+
+// SetAppPush регистрирует диспетчер мобильных и десктопных push-уведомлений.
+func (c *Core) SetAppPush(ap AppPushNotifier) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.appPush = ap
+}
+
+// appPushNotifier возвращает диспетчер мобильных и десктопных push-уведомлений (nil — недоступен).
+func (c *Core) appPushNotifier() AppPushNotifier {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.appPush
 }
 
 // audit записывает событие аудита, не ломая основной поток: ошибка записи
@@ -194,6 +209,21 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 			prefer = grpPrefer
 		} else {
 			prefer = pol.DefaultPrefer
+		}
+	}
+
+	// Динамическая маршрутизация: если у пользователя есть активные клиентские приложения,
+	// приоритетно направляем push-запрос в приложение.
+	if hasApp, err := c.st.AppDeviceHasActive(ctx, user.ID); err == nil && hasApp && c.appPushNotifier() != nil {
+		hasCh := false
+		for _, ch := range prefer {
+			if ch == channel.AppPush {
+				hasCh = true
+				break
+			}
+		}
+		if !hasCh {
+			prefer = append([]channel.Channel{channel.AppPush}, prefer...)
 		}
 	}
 	now := time.Now()
@@ -298,6 +328,59 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 					map[string]any{"purpose": purpose, "error": redactErrText(err)}, ip, "fail")
 				continue
 			}
+			return c2, nil
+
+		case channel.AppPush:
+			appPush := c.appPushNotifier()
+			if appPush == nil {
+				continue
+			}
+			hasApp, err := c.st.AppDeviceHasActive(ctx, user.ID)
+			if err != nil || !hasApp {
+				continue
+			}
+			if last, err := c.st.LastPushAt(ctx, user.ID); err != nil {
+				return nil, fmt.Errorf("auth: app_push cooldown проверка %s: %w", user.Username, err)
+			} else if !last.IsZero() && time.Since(last) < pol.PushCooldown {
+				return nil, ErrCooldown
+			}
+			if n, err := c.st.PushCountSince(ctx, user.ID, now.Add(-time.Hour)); err != nil {
+				return nil, fmt.Errorf("auth: app_push лимит проверка %s: %w", user.Username, err)
+			} else if n >= pol.PushPerHour {
+				return nil, ErrCooldown
+			}
+
+			numMatch := secrets.GenDigits(2)
+			meta := map[string]any{
+				"ip":           ip,
+				"ua":           ua,
+				"purpose":      purpose,
+				"number_match": numMatch,
+			}
+			c2 := &store.Challenge{
+				UserID:       user.ID,
+				Channel:      channel.AppPush,
+				PushState:    ptrString("pending"),
+				ExpiresAt:    now.Add(pol.CodeTTL),
+				AttemptsLeft: 1,
+				Purpose:      purpose,
+				Metadata:     meta,
+			}
+			if err := c.st.ChallengeCreate(ctx, c2); err != nil {
+				return nil, err
+			}
+			if err := appPush.SendAppPush(ctx, user.ID, user.Username, ip, ua, purpose, numMatch, c2.ID); err != nil {
+				if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
+					`DELETE FROM challenges WHERE id = $1`, c2.ID); derr != nil {
+					slog.Warn("auth: удаление app_push челленджа после ошибки доставки",
+						"id", c2.ID, "error", derr)
+				}
+				c.audit(ctx, user.Username, "app_push_sent",
+					map[string]any{"purpose": purpose, "error": redactErrText(err)}, ip, "fail")
+				continue
+			}
+			c.audit(ctx, user.Username, "app_push_sent",
+				map[string]any{"purpose": purpose, "challenge_id": c2.ID.String(), "number_match": numMatch}, ip, "ok")
 			return c2, nil
 		}
 	}
@@ -586,11 +669,17 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 
 	pol := c.set.Get().Policy
 	push := c.pushNotifier()
+	appPush := c.appPushNotifier()
 	radiusPush := c.st.UserEffectiveRadiusPush(ctx, user)
-	if !radiusPush || user.TelegramChatID == nil || push == nil {
+	hasApp, _ := c.st.AppDeviceHasActive(ctx, user.ID)
+
+	useAppPush := radiusPush && hasApp && appPush != nil
+	useTgPush := radiusPush && user.TelegramChatID != nil && push != nil
+
+	if !useAppPush && !useTgPush {
 		// Пароль верен, но кода нет и push недоступен — Reject.
-		if radiusPush && user.TelegramChatID == nil {
-			slog.Warn("radius: для пользователя включен RADIUS Push, но Telegram не привязан — отказ", "user", username)
+		if radiusPush {
+			slog.Warn("radius: для пользователя включен RADIUS Push, но приложение и Telegram не привязаны — отказ", "user", username)
 		}
 		audit("bad_credentials", false)
 		return false, "bad_credentials"
@@ -612,29 +701,61 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		return false, "push_limit"
 	}
 
-	// Push-челлендж (pending) и сообщение боту.
-	pushCh := &store.Challenge{
-		UserID:       user.ID,
-		Channel:      channel.TelegramPush,
-		PushState:    ptrString("pending"),
-		ExpiresAt:    time.Now().Add(pol.CodeTTL),
-		AttemptsLeft: 1,
-		Purpose:      "radius",
-	}
-	if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
-		audit("push_send_fail", false)
-		return false, "push_send_fail"
-	}
-	if err := push.SendPush(ctx, *user.TelegramChatID, username, srcIP, "", pushCh.ID); err != nil {
-		// Осиротевший челлендж держал бы cooldown следующего push —
-		// удаляем (WithoutCancel: доставка могла упасть из-за отмены ctx).
-		if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
-			`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
-			slog.Warn("auth: удаление push-челленджа после ошибки доставки",
-				"id", pushCh.ID, "error", derr)
+	// Push-челлендж (pending) и отправка в приложение или Telegram.
+	var pushCh *store.Challenge
+	if useAppPush {
+		numMatch := secrets.GenDigits(2)
+		meta := map[string]any{
+			"ip":           srcIP,
+			"purpose":      "radius",
+			"number_match": numMatch,
 		}
-		audit("push_send_fail", false)
-		return false, "push_send_fail"
+		pushCh = &store.Challenge{
+			UserID:       user.ID,
+			Channel:      channel.AppPush,
+			PushState:    ptrString("pending"),
+			ExpiresAt:    time.Now().Add(pol.CodeTTL),
+			AttemptsLeft: 1,
+			Purpose:      "radius",
+			Metadata:     meta,
+		}
+		if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
+			audit("push_send_fail", false)
+			return false, "push_send_fail"
+		}
+		if err := appPush.SendAppPush(ctx, user.ID, username, srcIP, "", "RADIUS VPN", numMatch, pushCh.ID); err != nil {
+			if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
+				`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
+				slog.Warn("auth: удаление app_push челленджа после ошибки доставки",
+					"id", pushCh.ID, "error", derr)
+			}
+			audit("push_send_fail", false)
+			return false, "push_send_fail"
+		}
+	} else {
+		pushCh = &store.Challenge{
+			UserID:       user.ID,
+			Channel:      channel.TelegramPush,
+			PushState:    ptrString("pending"),
+			ExpiresAt:    time.Now().Add(pol.CodeTTL),
+			AttemptsLeft: 1,
+			Purpose:      "radius",
+		}
+		if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
+			audit("push_send_fail", false)
+			return false, "push_send_fail"
+		}
+		if err := push.SendPush(ctx, *user.TelegramChatID, username, srcIP, "", pushCh.ID); err != nil {
+			// Осиротевший челлендж держал бы cooldown следующего push —
+			// удаляем (WithoutCancel: доставка могла упасть из-за отмены ctx).
+			if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
+				`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
+				slog.Warn("auth: удаление push-челленджа после ошибки доставки",
+					"id", pushCh.ID, "error", derr)
+			}
+			audit("push_send_fail", false)
+			return false, "push_send_fail"
+		}
 	}
 
 	// Удержание Access-Request: опрос состояния 1 раз в секунду до

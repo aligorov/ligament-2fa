@@ -113,6 +113,7 @@ func (p *PagesAPI) Register(r chi.Router) {
 	authed.Post("/me/webauthn/credentials/{id}/delete", p.handleWACredDelete)
 	authed.Get("/me/devices", p.handleDevicesPage)
 	authed.Post("/me/devices/{id}/delete", p.handleDeviceDelete)
+	authed.Post("/me/app-devices/{id}/delete", p.handleAppDeviceDelete)
 
 	admin := r.With(p.requirePage, p.requireAdmin)
 	admin.Get("/admin", p.handleAdminRoot)
@@ -120,6 +121,7 @@ func (p *PagesAPI) Register(r chi.Router) {
 	admin.Post("/admin/users", p.handleAdminUserCreate)
 	admin.Get("/admin/users/{id}", p.handleAdminUserEdit)
 	admin.Post("/admin/users/{id}", p.handleAdminUserAction)
+	admin.Post("/admin/users/{userId}/app-devices/{id}/delete", p.handleAdminAppDeviceDelete)
 	admin.Get("/admin/groups", p.handleAdminGroups)
 	admin.Post("/admin/groups", p.handleAdminGroupCreate)
 	admin.Get("/admin/groups/{id}", p.handleAdminGroupEdit)
@@ -1296,13 +1298,15 @@ func (p *PagesAPI) handleDevicesPage(w http.ResponseWriter, r *http.Request) {
 	for i, d := range list {
 		devices[i] = *d
 	}
+	appDevices, _ := p.st.AppDeviceListByUser(r.Context(), user.ID)
 	p.render(w, http.StatusOK, "me_devices", web.MeDevicesData{
-		BaseData: p.baseData(r, "Устройства", "devices"),
-		Devices:  devices,
+		BaseData:   p.baseData(r, "Устройства", "devices"),
+		Devices:    devices,
+		AppDevices: appDevices,
 	})
 }
 
-// handleDeviceDelete — POST /me/devices/{id}/delete: отзыв устройства.
+// handleDeviceDelete — POST /me/devices/{id}/delete: отзыв браузерного доверенного устройства.
 func (p *PagesAPI) handleDeviceDelete(w http.ResponseWriter, r *http.Request) {
 	user, _ := userFrom(r.Context())
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -1321,6 +1325,55 @@ func (p *PagesAPI) handleDeviceDelete(w http.ResponseWriter, r *http.Request) {
 	p.auditPage(r.Context(), user.Username, "device_revoke", clientIP(r), "ok",
 		map[string]any{"device_id": id})
 	redirectFlash(w, r, "/me/devices", "Устройство отозвано.", true)
+}
+
+// handleAppDeviceDelete — POST /me/app-devices/{id}/delete: отзыв клиентского приложения.
+func (p *PagesAPI) handleAppDeviceDelete(w http.ResponseWriter, r *http.Request) {
+	user, _ := userFrom(r.Context())
+	idStr := chi.URLParam(r, "id")
+	devID, err := uuid.Parse(idStr)
+	if err != nil {
+		redirectFlash(w, r, "/me/devices", "Некорректный идентификатор устройства.", false)
+		return
+	}
+	if err := p.st.AppDeviceDelete(r.Context(), devID, user.ID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			redirectFlash(w, r, "/me/devices", "Устройство не найдено.", false)
+			return
+		}
+		flash500(w, r, "/me/devices", err)
+		return
+	}
+	p.auditPage(r.Context(), user.Username, "app_device_revoke", clientIP(r), "ok",
+		map[string]any{"device_id": devID.String()})
+	redirectFlash(w, r, "/me/devices", "Приложение отозвано.", true)
+}
+
+// handleAdminAppDeviceDelete — POST /admin/users/{userId}/app-devices/{id}/delete: отзыв устройства администратором.
+func (p *PagesAPI) handleAdminAppDeviceDelete(w http.ResponseWriter, r *http.Request) {
+	userIDStr := chi.URLParam(r, "userId")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		redirectFlash(w, r, "/admin/users", "Некорректный ID пользователя.", false)
+		return
+	}
+	devIDStr := chi.URLParam(r, "id")
+	devID, err := uuid.Parse(devIDStr)
+	if err != nil {
+		redirectFlash(w, r, "/admin/users/"+userIDStr, "Некорректный ID устройства.", false)
+		return
+	}
+	if err := p.st.AppDeviceDelete(r.Context(), devID, userID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			redirectFlash(w, r, "/admin/users/"+userIDStr, "Устройство не найдено.", false)
+			return
+		}
+		flash500(w, r, "/admin/users/"+userIDStr, err)
+		return
+	}
+	p.auditPage(r.Context(), "", "admin_app_device_revoke", clientIP(r), "ok",
+		map[string]any{"user_id": userID.String(), "device_id": devID.String()})
+	redirectFlash(w, r, "/admin/users/"+userIDStr, "Устройство приложения успешно отозвано.", true)
 }
 
 // ---- админ ----
@@ -1520,6 +1573,7 @@ func (p *PagesAPI) handleAdminUserEdit(w http.ResponseWriter, r *http.Request) {
 	inheritedVLAN, inheritedVLANGroup, _ := p.st.AllUserInheritedVLANMap(r.Context())
 	inheritedPushGroup, _ := p.st.AllUserInheritedPushMap(r.Context())
 	editVLAN, editGroup := p.st.UserInheritedVLANInfo(r.Context(), u)
+	appDevices, _ := p.st.AppDeviceListByUser(r.Context(), u.ID)
 	p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
 		BaseData:           p.baseData(r, "Пользователи", "admin-users"),
 		Users:              derefUsers(users),
@@ -1534,6 +1588,7 @@ func (p *PagesAPI) handleAdminUserEdit(w http.ResponseWriter, r *http.Request) {
 		InheritedPushGroup: inheritedPushGroup,
 		EditInheritedVLAN:  editVLAN,
 		EditInheritedGroup: editGroup,
+		EditAppDevices:     appDevices,
 	})
 }
 

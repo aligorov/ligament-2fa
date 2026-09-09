@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ligament 2FA Russian Language Definition (ADML) -->
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  revision="1.0" schemaVersion="1.0"
+  xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>Ligament 2FA Корпоративные Политики</displayName>
+  <description>Шаблоны управления клиентом Ligament Authenticator через групповые политики Windows (GPO)</description>
+  <resources>
+    <stringTable>
+      <string id="LigamentCategory">Ligament 2FA Authenticator</string>
+      <string id="GeneralSettings">Основные параметры</string>
+      <string id="SecurityPolicies">Политики безопасности и комплаенс</string>
+      <string id="AlertSettings">Оповещения и всплывающие окна</string>
+      <string id="TelemetrySettings">Сбор телеметрии устройства</string>
+
+      <string id="ServerURL_Policy">Корпоративный адрес сервера Ligament 2FA</string>
+      <string id="ServerURL_Policy_Help">Задает URL-адрес сервера двухфакторной аутентификации Ligament (например, https://2fa.corp.example.com). Если параметр включен, пользователь не может изменить адрес сервера в интерфейсе приложения.</string>
+
+      <string id="AutoStart_Policy">Автозапуск при входе в Windows</string>
+      <string id="AutoStart_Policy_Help">Если параметр включен, приложение Ligament Authenticator автоматически запускается в фоновом режиме в системном трее при входе пользователя в систему.</string>
+
+      <string id="PreventExit_Policy">Запретить выход из приложения</string>
+      <string id="PreventExit_Policy_Help">Если параметр включен, пункт «Выход» в контекстном меню трея отключается, предотвращая случайное или намеренное закрытие агента аутентификации сотрудником.</string>
+
+      <string id="RequireWindowsHello_Policy">Требовать Windows Hello для подтверждения push</string>
+      <string id="RequireWindowsHello_Policy_Help">Если параметр включен, перед подтверждением входа (кнопка «Принять») приложение принудительно запрашивает подтверждение биометрией Windows Hello или PIN-кодом устройства.</string>
+
+      <string id="RequireBitLocker_Policy">Требовать шифрование диска BitLocker</string>
+      <string id="RequireBitLocker_Policy_Help">Если параметр включен, сервер и приложение блокируют подтверждение доступа, если системный диск не зашифрован с помощью BitLocker.</string>
+
+      <string id="RequireAntivirus_Policy">Требовать активный антивирус (Windows Defender)</string>
+      <string id="RequireAntivirus_Policy_Help">Если параметр включен, подтверждение входа блокируется при отключенном антивирусном мониторе в реальном времени.</string>
+
+      <string id="RequireFirewall_Policy">Требовать включенный брандмауэр Windows</string>
+      <string id="RequireFirewall_Policy_Help">Если параметр включен, подтверждение входа блокируется при отключенном сетевом экране (Windows Firewall).</string>
+
+      <string id="AlwaysOnTop_Policy">Всплывать поверх всех окон при входящем push</string>
+      <string id="AlwaysOnTop_Policy_Help">При поступлении запроса на авторизацию окно приложения автоматически выводится на передний план поверх всех открытых окон и получает фокус ввода.</string>
+
+      <string id="FlashTaskbar_Policy">Мигать кнопкой на панели задач</string>
+      <string id="FlashTaskbar_Policy_Help">При поступлении запроса на авторизацию иконка приложения на панели задач Windows мигает до тех пор, пока пользователь не обратит на нее внимание.</string>
+
+      <string id="AlertSound_Policy">Звуковой сигнал тревоги при входящем push</string>
+      <string id="AlertSound_Policy_Help">При поступлении запроса на авторизацию воспроизводится системный звуковой сигнал оповещения.</string>
+
+      <string id="CollectTelemetry_Policy">Сбор и отправка телеметрии безопасности</string>
+      <string id="CollectTelemetry_Policy_Help">Если параметр включен, агент периодически передает на сервер статус BitLocker, Defender, Firewall, задержку push-канала и версию ОС для отображения в профиле пользователя и панели администратора.</string>
+
+      <string id="TelemetryInterval_Policy">Интервал отправки телеметрии (в секундах)</string>
+      <string id="TelemetryInterval_Policy_Help">Задает периодичность передачи снимка телеметрии на сервер Ligament (по умолчанию 300 секунд).</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="ServerURL_Presentation">
+        <textBox refId="ServerURL_Value">
+          <label>URL сервера (HTTPS):</label>
+        </textBox>
+      </presentation>
+      <presentation id="TelemetryInterval_Presentation">
+        <decimalTextBox refId="TelemetryInterval_Value" defaultValue="300">Интервал (сек):</decimalTextBox>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

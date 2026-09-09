@@ -1,0 +1,206 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:http/http.dart' as http;
+
+class ApiException implements Exception {
+  final int statusCode;
+  final String code;
+  final String message;
+
+  ApiException(this.statusCode, this.code, [this.message = '']);
+
+  @override
+  String toString() => 'ApiException($statusCode, $code, $message)';
+}
+
+class ApiClient {
+  String baseUrl;
+  String? token;
+
+  ApiClient({required this.baseUrl, this.token});
+
+  String _cleanUrl(String path) {
+    var base = baseUrl.trim();
+    if (base.endsWith('/')) {
+      base = base.substring(0, base.length - 1);
+    }
+    if (!path.startsWith('/')) {
+      path = '/$path';
+    }
+    return '$base$path';
+  }
+
+  Map<String, String> _headers() {
+    final h = <String, String>{
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+    if (token != null && token!.isNotEmpty) {
+      h['Authorization'] = 'Bearer $token';
+    }
+    return h;
+  }
+
+  /// Получение базовой конфигурации сервера
+  Future<Map<String, dynamic>> getConfig() async {
+    final res = await http.get(Uri.parse(_cleanUrl('/api/v1/app/config')));
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'config_error');
+  }
+
+  /// Авторизация устройства в приложении
+  Future<Map<String, dynamic>> login({
+    required String username,
+    required String password,
+    required String deviceName,
+    required String platform,
+    String osVersion = '',
+    String appVersion = '1.0.0',
+    String pushToken = '',
+    Map<String, dynamic>? securityPosture,
+  }) async {
+    final payload = {
+      'username': username,
+      'password': password,
+      'device_name': deviceName,
+      'platform': platform,
+      'os_version': osVersion,
+      'app_version': appVersion,
+      'push_token': pushToken,
+      'security_posture': securityPosture ?? {},
+    };
+
+    final res = await http.post(
+      Uri.parse(_cleanUrl('/api/v1/app/login')),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+
+    final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    if (res.statusCode == 200) {
+      token = data['token'] as String?;
+      return data;
+    }
+    throw ApiException(res.statusCode, data['error']?.toString() ?? 'login_failed');
+  }
+
+  /// Выход устройства (деактивация сессии)
+  Future<void> logout() async {
+    try {
+      await http.post(
+        Uri.parse(_cleanUrl('/api/v1/app/logout')),
+        headers: _headers(),
+      );
+    } finally {
+      token = null;
+    }
+  }
+
+  /// Обновление APNs/FCM push-токена
+  Future<void> updatePushToken(String pushToken) async {
+    final res = await http.post(
+      Uri.parse(_cleanUrl('/api/v1/app/device/push-token')),
+      headers: _headers(),
+      body: jsonEncode({'push_token': pushToken}),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'push_token_update_failed');
+    }
+  }
+
+  /// Передача снимка безопасности (телеметрии) устройства
+  Future<bool> sendTelemetry(Map<String, dynamic> posture) async {
+    final res = await http.post(
+      Uri.parse(_cleanUrl('/api/v1/app/telemetry')),
+      headers: _headers(),
+      body: jsonEncode({'security_posture': posture}),
+    );
+    if (res.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      return data['is_compliant'] == true;
+    }
+    throw ApiException(res.statusCode, 'telemetry_failed');
+  }
+
+  /// Получение активных запросов на подтверждение входа
+  Future<List<Map<String, dynamic>>> getPendingChallenges() async {
+    final res = await http.get(
+      Uri.parse(_cleanUrl('/api/v1/app/challenges/pending')),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'challenges_fetch_failed');
+  }
+
+  /// Принятие решения по запросу авторизации: approve или deny
+  Future<void> challengeDecision({
+    required String challengeId,
+    required String decision,
+    String? numberMatch,
+  }) async {
+    final payload = <String, dynamic>{
+      'decision': decision,
+    };
+    if (numberMatch != null && numberMatch.isNotEmpty) {
+      payload['number_match'] = numberMatch;
+    }
+
+    final res = await http.post(
+      Uri.parse(_cleanUrl('/api/v1/app/challenges/$challengeId/decision')),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+
+    if (res.statusCode != 200) {
+      String code = 'decision_failed';
+      try {
+        final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+        code = errObj['error']?.toString() ?? code;
+      } catch (_) {}
+      throw ApiException(res.statusCode, code);
+    }
+  }
+
+  /// Профиль текущего пользователя
+  Future<Map<String, dynamic>> getProfile() async {
+    final res = await http.get(
+      Uri.parse(_cleanUrl('/api/v1/app/me/profile')),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'profile_fetch_failed');
+  }
+
+  /// Список доступных корпоративных приложений (SSO Launchpad)
+  Future<List<Map<String, dynamic>>> getAllowedApps() async {
+    final res = await http.get(
+      Uri.parse(_cleanUrl('/api/v1/app/me/apps')),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'apps_fetch_failed');
+  }
+
+  /// История недавних входов пользователя (аудит-лог)
+  Future<List<Map<String, dynamic>>> getHistory() async {
+    final res = await http.get(
+      Uri.parse(_cleanUrl('/api/v1/app/me/history')),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final list = jsonDecode(utf8.decode(res.bodyBytes)) as List<dynamic>;
+      return list.cast<Map<String, dynamic>>();
+    }
+    throw ApiException(res.statusCode, 'history_fetch_failed');
+  }
+}

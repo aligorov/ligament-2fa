@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ligament 2FA Group Policy Administrative Template (ADMX) -->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  revision="1.0" schemaVersion="1.0"
+  xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="Ligament2FA" namespace="Ligament.Policies.TwoFA" />
+    <using prefix="windows" namespace="Microsoft.Policies.Windows" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <categories>
+    <category name="LigamentCategory" displayName="$(string.LigamentCategory)" />
+    <category name="GeneralSettings" displayName="$(string.GeneralSettings)" parentCategory="LigamentCategory" />
+    <category name="SecurityPolicies" displayName="$(string.SecurityPolicies)" parentCategory="LigamentCategory" />
+    <category name="AlertSettings" displayName="$(string.AlertSettings)" parentCategory="LigamentCategory" />
+    <category name="TelemetrySettings" displayName="$(string.TelemetrySettings)" parentCategory="LigamentCategory" />
+  </categories>
+  <policies>
+    <!-- Server URL -->
+    <policy name="ServerURL_Policy" class="Both" displayName="$(string.ServerURL_Policy)"
+      explainText="$(string.ServerURL_Policy_Help)" presentation="$(presentation.ServerURL_Presentation)"
+      key="Software\Policies\Ligament\2FA">
+      <parentCategory ref="GeneralSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <text id="ServerURL_Value" valueName="ServerURL" required="true" maxLength="2048" />
+      </elements>
+    </policy>
+
+    <!-- AutoStart at Logon -->
+    <policy name="AutoStart_Policy" class="Both" displayName="$(string.AutoStart_Policy)"
+      explainText="$(string.AutoStart_Policy_Help)" key="Software\Policies\Ligament\2FA"
+      valueName="AutoStart">
+      <parentCategory ref="GeneralSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+
+    <!-- Prevent App Exit -->
+    <policy name="PreventExit_Policy" class="Both" displayName="$(string.PreventExit_Policy)"
+      explainText="$(string.PreventExit_Policy_Help)" key="Software\Policies\Ligament\2FA"
+      valueName="AllowExit">
+      <parentCategory ref="GeneralSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <!-- If enabled: AllowExit = 0 (Exit forbidden) -->
+      <enabledValue>
+        <decimal value="0" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="1" />
+      </disabledValue>
+    </policy>
+
+    <!-- Require Windows Hello for Push Approval -->
+    <policy name="RequireWindowsHello_Policy" class="Both" displayName="$(string.RequireWindowsHello_Policy)"
+      explainText="$(string.RequireWindowsHello_Policy_Help)" key="Software\Policies\Ligament\2FA\Policies"
+      valueName="RequireWindowsHello">
+      <parentCategory ref="SecurityPolicies" />
+      <supportedOn ref="windows:SUPPORTED_Windows10" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+
+    <!-- Require BitLocker Drive Encryption -->
+    <policy name="RequireBitLocker_Policy" class="Machine" displayName="$(string.RequireBitLocker_Policy)"
+      explainText="$(string.RequireBitLocker_Policy_Help)" key="Software\Policies\Ligament\2FA\Policies"
+      valueName="RequireBitLocker">
+      <parentCategory ref="SecurityPolicies" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+
+    <!-- Require Antivirus / Windows Defender Active -->
+    <policy name="RequireAntivirus_Policy" class="Machine" displayName="$(string.RequireAntivirus_Policy)"
+      explainText="$(string.RequireAntivirus_Policy_Help)" key="Software\Policies\Ligament\2FA\Policies"
+      valueName="RequireAntivirus">
+      <parentCategory ref="SecurityPolicies" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+
+    <!-- Require Windows Firewall Active -->
+    <policy name="RequireFirewall_Policy" class="Machine" displayName="$(string.RequireFirewall_Policy)"
+      explainText="$(string.RequireFirewall_Policy_Help)" key="Software\Policies\Ligament\2FA\Policies"
+      valueName="RequireFirewall">
+      <parentCategory ref="SecurityPolicies" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+
+    <!-- Pop-up Always On Top -->
+    <policy name="AlwaysOnTop_Policy" class="Both" displayName="$(string.AlwaysOnTop_Policy)"
+      explainText="$(string.AlwaysOnTop_Policy_Help)" key="Software\Policies\Ligament\2FA\Alerts"
+      valueName="AlwaysOnTop">
+      <parentCategory ref="AlertSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+
+    <!-- Flash Taskbar on Incoming Push -->
+    <policy name="FlashTaskbar_Policy" class="Both" displayName="$(string.FlashTaskbar_Policy)"
+      explainText="$(string.FlashTaskbar_Policy_Help)" key="Software\Policies\Ligament\2FA\Alerts"
+      valueName="FlashTaskbar">
+      <parentCategory ref="AlertSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+
+    <!-- Sound Alarm on Incoming Push -->
+    <policy name="AlertSound_Policy" class="Both" displayName="$(string.AlertSound_Policy)"
+      explainText="$(string.AlertSound_Policy_Help)" key="Software\Policies\Ligament\2FA\Alerts"
+      valueName="PlaySound">
+      <parentCategory ref="AlertSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+
+    <!-- Collect and Report Telemetry -->
+    <policy name="CollectTelemetry_Policy" class="Machine" displayName="$(string.CollectTelemetry_Policy)"
+      explainText="$(string.CollectTelemetry_Policy_Help)" key="Software\Policies\Ligament\2FA\Telemetry"
+      valueName="Enabled">
+      <parentCategory ref="TelemetrySettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+
+    <!-- Telemetry Interval -->
+    <policy name="TelemetryInterval_Policy" class="Machine" displayName="$(string.TelemetryInterval_Policy)"
+      explainText="$(string.TelemetryInterval_Policy_Help)" presentation="$(presentation.TelemetryInterval_Presentation)"
+      key="Software\Policies\Ligament\2FA\Telemetry">
+      <parentCategory ref="TelemetrySettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <decimal id="TelemetryInterval_Value" valueName="IntervalSeconds" required="true" minValue="30" maxValue="86400" />
+      </elements>
+    </policy>
+  </policies>
+</policyDefinitions>

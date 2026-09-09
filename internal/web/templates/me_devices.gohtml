@@ -31,9 +31,116 @@
 {{else}}
 <section class="card">
   <div class="empty">
-    <p>Доверенных устройств нет.</p>
+    <p>Доверенных браузеров нет.</p>
     <p class="help">Отметьте «Запомнить это устройство» при следующем входе,
     чтобы не вводить код 30 дней.</p>
+  </div>
+</section>
+{{end}}
+
+<header class="page-head" style="margin-top: 2rem;">
+  <h2>Клиентские приложения (Ligament Authenticator)</h2>
+  <p class="page-sub">Авторизованные приложения на Windows, Android и iOS с push-подтверждением и аудитом безопасности.</p>
+</header>
+
+{{if .AppDevices}}
+<section class="card">
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Устройство</th>
+          <th>Платформа</th>
+          <th>Безопасность (GPO / EDR)</th>
+          <th>IP и активность</th>
+          <th>Статус</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .AppDevices}}
+        <tr>
+          <td>
+            <strong>{{.DeviceName}}</strong>
+            {{if .AppVersion}}<div class="help">v{{.AppVersion}}</div>{{end}}
+          </td>
+          <td>
+            <span class="badge">{{.Platform}}</span>
+            {{if .OSVersion}}<div class="help">{{.OSVersion}}</div>{{end}}
+          </td>
+          <td>
+            {{$posture := .SecurityPosture}}
+            <div style="display: flex; gap: 0.3rem; flex-wrap: wrap;">
+              {{if eq .Platform "windows"}}
+                {{if eq (index $posture "bitlocker") "encrypted"}}
+                  <span class="badge success" title="BitLocker активен">BitLocker: OK</span>
+                {{else if index $posture "bitlocker"}}
+                  <span class="badge danger" title="BitLocker отключен">BitLocker: {{index $posture "bitlocker"}}</span>
+                {{end}}
+                {{if eq (index $posture "defender") "active"}}
+                  <span class="badge success" title="Windows Defender активен">Defender: OK</span>
+                {{end}}
+                {{if eq (index $posture "firewall") "active"}}
+                  <span class="badge success" title="Брандмауэр включен">Firewall: OK</span>
+                {{end}}
+              {{end}}
+              {{if eq .Platform "macos"}}
+                {{if eq (index $posture "filevault") "encrypted"}}
+                  <span class="badge success" title="FileVault шифрование активно">FileVault: OK</span>
+                {{else if index $posture "filevault"}}
+                  <span class="badge danger" title="FileVault выключен">FileVault: {{index $posture "filevault"}}</span>
+                {{end}}
+                {{if eq (index $posture "gatekeeper") "active"}}
+                  <span class="badge success" title="Gatekeeper защита активна">Gatekeeper: OK</span>
+                {{end}}
+                {{if eq (index $posture "firewall") "active"}}
+                  <span class="badge success" title="Сетевой экран macOS включен">Firewall: OK</span>
+                {{end}}
+                {{if index $posture "touch_id"}}
+                  <span class="badge info" title="Touch ID поддерживается">Touch ID</span>
+                {{end}}
+              {{end}}
+              {{if or (index $posture "rooted") (index $posture "jailbroken")}}
+                <span class="badge danger" title="Обнаружен Root или Jailbreak">Root/Jailbreak</span>
+              {{else if or (eq .Platform "android") (eq .Platform "ios")}}
+                <span class="badge success" title="Целостность ОС не нарушена">Целостность: OK</span>
+              {{end}}
+            </div>
+          </td>
+          <td>
+            <div>{{.LastIP}}</div>
+            <div class="help">{{dt .LastSeenAt}}</div>
+          </td>
+          <td>
+            {{if .Active}}
+              {{if index .SecurityPosture "is_compliant"}}
+                <span class="badge success">Соответствует</span>
+              {{else}}
+                <span class="badge danger">Нарушение политик</span>
+              {{end}}
+            {{else}}
+              <span class="badge">Отозвано</span>
+            {{end}}
+          </td>
+          <td>
+            {{if .Active}}
+            <form action="/me/app-devices/{{.ID}}/delete" method="post" class="form-inline">
+              {{csrf $.CSRF}}
+              <button type="submit" class="btn danger sm">Отозвать</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{else}}
+<section class="card">
+  <div class="empty">
+    <p>Авторизованных приложений нет.</p>
+    <p class="help">Установите Ligament Authenticator на ваш компьютер или телефон и выполните вход.</p>
   </div>
 </section>
 {{end}}

@@ -1,0 +1,3 @@
+PRODUCT_NAME = Ligament 2FA
+PRODUCT_BUNDLE_IDENTIFIER = com.ligament.twofa.authenticator
+PRODUCT_COPYRIGHT = Copyright © 2026 Ligament 2FA. All rights reserved.
