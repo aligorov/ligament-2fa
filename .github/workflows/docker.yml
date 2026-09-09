@@ -44,13 +44,20 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Determine Docker images
+        id: config
+        run: |
+          if [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "images=aligorov/ligament_2fa,ghcr.io/${{ github.repository }}" >> $GITHUB_OUTPUT
+          else
+            echo "images=ghcr.io/${{ github.repository }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/${{ github.repository }}
-            ${{ secrets.DOCKERHUB_USERNAME != '' && 'aligorov/ligament_2fa' || '' }}
+          images: ${{ steps.config.outputs.images }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=tag
