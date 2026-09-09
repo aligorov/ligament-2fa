@@ -10,12 +10,15 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -26,12 +29,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aligorov/twofa/internal/acme"
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
+	"github.com/aligorov/twofa/internal/delivery"
 	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/oidc"
 	"github.com/aligorov/twofa/internal/radiusserver"
@@ -62,10 +67,14 @@ type AdminAPI struct {
 	countAuditRows func(ctx context.Context) (int64, error)
 	radius         *radiusserver.Server
 	acme           *acme.Manager
+	hub            *delivery.AppHub
+	notifier       *delivery.SupportNotifier
 }
 
-func (a *AdminAPI) SetRadius(srv *radiusserver.Server) { a.radius = srv }
-func (a *AdminAPI) SetACME(mgr *acme.Manager)          { a.acme = mgr }
+func (a *AdminAPI) SetRadius(srv *radiusserver.Server)             { a.radius = srv }
+func (a *AdminAPI) SetACME(mgr *acme.Manager)                     { a.acme = mgr }
+func (a *AdminAPI) SetAppHub(hub *delivery.AppHub)                { a.hub = hub }
+func (a *AdminAPI) SetSupportNotifier(n *delivery.SupportNotifier) { a.notifier = n }
 
 // NewAdminAPI собирает админ API.
 func NewAdminAPI(st *store.Store, m *settings.M, lic *license.Manager) *AdminAPI {
@@ -131,8 +140,17 @@ func (a *AdminAPI) Register(r chi.Router) {
 		r.Post("/ldap/test", a.handleLdapTest)
 		r.Post("/ldap/test-user", a.handleLdapTestUser)
 		r.Post("/ldap/sync", a.handleLdapSync)
+		r.Get("/support/sessions", a.handleAdminSupportSessionsList)
+		r.Get("/support/sessions/{id}", a.handleAdminSupportSessionGet)
+		r.Post("/support/sessions/{id}/connect", a.handleAdminSupportSessionConnect)
+		r.Post("/support/sessions/{id}/signal", a.handleAdminSupportSessionSignal)
+		r.Post("/support/sessions/{id}/transfer", a.handleAdminSupportSessionTransfer)
+		r.Post("/support/sessions/{id}/end", a.handleAdminSupportSessionEnd)
+		r.Get("/support/colleagues", a.handleAdminSupportColleagues)
+		r.Get("/support/sessions/{id}/ws", a.handleAdminSupportSessionWS)
 		a.registerLicenseRoutes(r)
 	})
+	r.Get("/api/v1/support/ws/{id}", a.handleAdminSupportSessionWS)
 }
 
 // RequireAdminToken пропускает запросы с Authorization: Bearer <admin_token>.
@@ -219,6 +237,9 @@ type adminUser struct {
 	RadiusPush     bool              `json:"radius_push"`
 	RadiusReply    map[string]string `json:"radius_reply"`
 	LDAPGroups     []string          `json:"ldap_groups"`
+	SupportRoles   []string          `json:"support_roles"`
+	IsSupportIT    bool              `json:"is_support_it"`
+	IsSupport1C    bool              `json:"is_support_1c"`
 }
 
 // toAdminUser переводит store.User в безопасное представление ответа;
@@ -232,6 +253,10 @@ func toAdminUser(u *store.User) adminUser {
 	if ldapGrps == nil {
 		ldapGrps = []string{}
 	}
+	supRoles := u.SupportRoles
+	if supRoles == nil {
+		supRoles = []string{}
+	}
 	return adminUser{
 		ID:             u.ID.String(),
 		Username:       u.Username,
@@ -244,6 +269,9 @@ func toAdminUser(u *store.User) adminUser {
 		RadiusPush:     u.RadiusPush,
 		RadiusReply:    u.RadiusReply,
 		LDAPGroups:     ldapGrps,
+		SupportRoles:   supRoles,
+		IsSupportIT:    u.IsSupportIT(),
+		IsSupport1C:    u.IsSupport1C(),
 	}
 }
 
@@ -269,6 +297,7 @@ type adminUserCreateReq struct {
 	Phone          string   `json:"phone"`
 	Role           string   `json:"role"`
 	PreferChannels []string `json:"prefer_channels"`
+	SupportRoles   []string `json:"support_roles"`
 }
 
 // handleUserCreate — POST /api/v1/admin/users {username,password,...}.
@@ -295,6 +324,7 @@ func (a *AdminAPI) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 		Email:        req.Email,
 		Phone:        req.Phone,
 		PasswordHash: secrets.HashPassword(req.Password),
+		SupportRoles: req.SupportRoles,
 	}
 	if b := a.box(); b != nil {
 		u.PasswordEnc = b.EncryptAAD(u.Username, []byte(req.Password))
@@ -309,6 +339,9 @@ func (a *AdminAPI) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u.PreferChannels = chs
+	}
+	if req.SupportRoles != nil {
+		u.SupportRoles = req.SupportRoles
 	}
 	if err := a.st.UserCreate(r.Context(), u); err != nil {
 		var pgErr *pgconn.PgError
@@ -345,6 +378,7 @@ type adminUserPatchReq struct {
 	PreferChannels *[]string         `json:"prefer_channels"`
 	RadiusPush     *bool             `json:"radius_push"`
 	RadiusReply    map[string]string `json:"radius_reply"`
+	SupportRoles   *[]string         `json:"support_roles"`
 }
 
 // handleUserPatch — PATCH /api/v1/admin/users/{id}: точечная смена полей
@@ -419,6 +453,9 @@ func (a *AdminAPI) handleUserPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.RadiusReply != nil {
 		u.RadiusReply = req.RadiusReply
+	}
+	if req.SupportRoles != nil {
+		u.SupportRoles = *req.SupportRoles
 	}
 	if err := a.st.UserUpdate(r.Context(), u); err != nil {
 		var pgErr *pgconn.PgError
@@ -1630,5 +1667,341 @@ func (a *AdminAPI) handleLdapSync(w http.ResponseWriter, r *http.Request) {
 		"result": res,
 	})
 }
+
+// ---- Удаленная техническая поддержка и помощь по 1С ----
+
+// handleAdminSupportSessionsList — GET /api/v1/admin/support/sessions.
+func (a *AdminAPI) handleAdminSupportSessionsList(w http.ResponseWriter, r *http.Request) {
+	category := r.URL.Query().Get("category")
+	status := r.URL.Query().Get("status")
+	sessions, err := a.st.SupportSessionList(r.Context(), store.SupportFilter{
+		Category: category,
+		Status:   status,
+	})
+	if err != nil {
+		slog.Error("api: admin ошибка чтения сессий поддержки", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+}
+
+// handleAdminSupportSessionGet — GET /api/v1/admin/support/sessions/{id}.
+func (a *AdminAPI) handleAdminSupportSessionGet(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	session, err := a.st.SupportSessionGet(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+// handleAdminSupportSessionConnect — POST /api/v1/admin/support/sessions/{id}/connect.
+func (a *AdminAPI) handleAdminSupportSessionConnect(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	session, err := a.st.SupportSessionGet(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+
+	var req struct {
+		AdminName string `json:"admin_name"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	adminName := req.AdminName
+	if adminName == "" {
+		adminName = "Инженер техподдержки"
+	}
+
+	// Генерируем 2-значное число (10..99) для Zero-Trust Number Matching
+	nBig, err := rand.Int(rand.Reader, big.NewInt(90))
+	num := 42
+	if err == nil {
+		num = int(nBig.Int64()) + 10
+	}
+	numberMatch := fmt.Sprintf("%02d", num)
+
+	session.NumberMatch = numberMatch
+	if err := a.st.SupportSessionUpdateStatus(r.Context(), session.ID, "connecting", nil, numberMatch); err != nil {
+		slog.Error("api: ошибка обновления статуса сессии", "error", err)
+	}
+
+	// Отправляем push-запрос на экран пользователя
+	if a.hub != nil {
+		a.hub.SendSupportPrompt(session.UserID, &delivery.SupportPushPrompt{
+			Type:           "support_prompt",
+			SessionID:      session.ID,
+			AdminName:      adminName,
+			Category:       session.Category,
+			NumberMatch:    numberMatch,
+			AccessMode:     session.AccessMode,
+			ProblemSummary: session.ProblemSummary,
+			Timestamp:      time.Now(),
+		})
+	}
+
+	a.audit(r.Context(), "support_session_connect", map[string]any{
+		"session_id":   session.ID.String(),
+		"user_id":      session.UserID.String(),
+		"admin_name":   adminName,
+		"number_match": numberMatch,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":       "prompt_sent",
+		"session_id":   session.ID,
+		"number_match": numberMatch,
+	})
+}
+
+// handleAdminSupportSessionSignal — POST /api/v1/admin/support/sessions/{id}/signal.
+func (a *AdminAPI) handleAdminSupportSessionSignal(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	session, err := a.st.SupportSessionGet(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+
+	var req map[string]any
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	if a.hub != nil {
+		a.hub.SendSupportSignal(session.UserID, session.ID, req)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleAdminSupportSessionTransfer — POST /api/v1/admin/support/sessions/{id}/transfer.
+func (a *AdminAPI) handleAdminSupportSessionTransfer(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	session, err := a.st.SupportSessionGet(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+
+	var req struct {
+		ToUserID string `json:"to_user_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	var toUserID *uuid.UUID
+	var toUser *store.User
+	if req.ToUserID != "" {
+		if tuid, err := uuid.Parse(req.ToUserID); err == nil {
+			toUserID = &tuid
+			toUser, _ = a.st.UserByID(r.Context(), tuid)
+		}
+	}
+
+	fromID := uuid.Nil
+	if session.AssignedAdminID != nil {
+		fromID = *session.AssignedAdminID
+	}
+
+	// Генерируем секретный токен передачи (32 байта)
+	tokBytes := make([]byte, 24)
+	_, _ = rand.Read(tokBytes)
+	token := hex.EncodeToString(tokBytes)
+	tokenHashBytes := sha256.Sum256([]byte(token))
+
+	if err := a.st.SupportSessionTransfer(r.Context(), session.ID, fromID, toUserID, tokenHashBytes[:]); err != nil {
+		slog.Error("api: ошибка передачи сессии", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+
+	// Уведомляем клиента о передаче сессии
+	newAdminName := "Коллега"
+	if toUser != nil {
+		newAdminName = toUser.DisplayName
+		if newAdminName == "" {
+			newAdminName = toUser.Username
+		}
+	}
+	if a.hub != nil {
+		a.hub.SendSupportTransferred(session.UserID, session.ID, newAdminName, session.Category)
+	}
+
+	domain := a.m.Get().Server.Domain
+	if domain == "" {
+		domain = "http://localhost:8080"
+	}
+	inviteURL := fmt.Sprintf("%s/admin/support/%s/viewer?token=%s", domain, session.ID, token)
+
+	a.audit(r.Context(), "support_session_transfer", map[string]any{
+		"session_id": session.ID.String(),
+		"to_user_id": req.ToUserID,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":         "transferred",
+		"transfer_token": token,
+		"invite_url":     inviteURL,
+	})
+}
+
+// handleAdminSupportSessionEnd — POST /api/v1/admin/support/sessions/{id}/end.
+func (a *AdminAPI) handleAdminSupportSessionEnd(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	session, err := a.st.SupportSessionGet(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+
+	_ = a.st.SupportSessionEnd(r.Context(), session.ID, "ended_by_admin")
+
+	if a.hub != nil {
+		a.hub.SendSupportEnd(session.UserID, session.ID)
+		a.hub.SendEventToAdmin(session.ID, "support_ended", map[string]any{"reason": "ended_by_admin"})
+	}
+
+	a.audit(r.Context(), "support_session_end", map[string]any{
+		"session_id": session.ID.String(),
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleAdminSupportColleagues — GET /api/v1/admin/support/colleagues.
+func (a *AdminAPI) handleAdminSupportColleagues(w http.ResponseWriter, r *http.Request) {
+	colleagues, err := a.st.AllUsersBrief(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"colleagues": colleagues})
+}
+
+// checkWSToken проверяет авторизацию для подключения к WebSocket сессии удаленной помощи.
+func (a *AdminAPI) checkWSToken(r *http.Request, sessionID uuid.UUID) bool {
+	// 1. Bearer admin_token или query ?admin_token=...
+	want := sha256.Sum256([]byte(a.m.Get().AdminToken))
+	tok := bearerToken(r)
+	if tok == "" {
+		tok = r.URL.Query().Get("admin_token")
+	}
+	if tok != "" {
+		got := sha256.Sum256([]byte(tok))
+		if subtle.ConstantTimeCompare(want[:], got[:]) == 1 {
+			return true
+		}
+	}
+
+	// 2. Transfer token в query ?token=...
+	if transferToken := r.URL.Query().Get("token"); transferToken != "" {
+		hash := sha256.Sum256([]byte(transferToken))
+		if ss, err := a.st.SupportSessionGetByTransferToken(r.Context(), hash[:]); err == nil && ss.ID == sessionID {
+			return true
+		}
+	}
+
+	// 3. Web-сессия в cookie twofa_session (для админа, специалиста поддержки или переадресованного коллеги)
+	if c, err := r.Cookie(cookieSession); err == nil && c.Value != "" {
+		tokenHash := secrets.SHA256(c.Value)
+		if userID, _, err := a.st.SessionGet(r.Context(), tokenHash); err == nil {
+			if u, err := a.st.UserByID(r.Context(), userID); err == nil && u.Enabled {
+				if u.Role == "admin" || u.IsSupportAny() {
+					return true
+				}
+				if ss, err := a.st.SupportSessionGet(r.Context(), sessionID); err == nil && ss.TransferredToID != nil && *ss.TransferredToID == u.ID {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// handleAdminSupportSessionWS — WebSocket /api/v1/admin/support/sessions/{id}/ws или /api/v1/support/ws/{id}.
+func (a *AdminAPI) handleAdminSupportSessionWS(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+
+	if !a.checkWSToken(r, id) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	session, err := a.st.SupportSessionGet(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+
+	if a.hub == nil {
+		writeError(w, http.StatusServiceUnavailable, "hub_disabled")
+		return
+	}
+
+	conn, err := a.hub.Upgrader().Upgrade(w, r, nil)
+	if err != nil {
+		slog.Error("api: ошибка websocket upgrade оператора", "error", err)
+		return
+	}
+
+	a.hub.RegisterAdminWS(session.ID, conn)
+	defer a.hub.UnregisterAdminWS(session.ID, conn)
+
+	for {
+		messageType, data, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		if messageType == websocket.TextMessage {
+			var msg map[string]any
+			if err := json.Unmarshal(data, &msg); err == nil {
+				// Пересылаем сигнальное сообщение или команду ввода на устройство пользователя
+				a.hub.SendSupportSignal(session.UserID, session.ID, msg)
+			}
+		}
+	}
+}
+
 
 

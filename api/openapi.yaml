@@ -42,6 +42,8 @@ tags:
     description: "OpenID Connect Provider — вход внешних приложений через Ligament: discovery, JWKS, authorization code flow с PKCE, userinfo. Без авторизации (защита — web-сессия пользователя и учётные данные клиента)."
   - name: App Client
     description: "API для клиентских приложений (Windows, Android, iOS): авторизация устройств, push-подтверждения, телеметрия безопасности, SSO Launchpad и история."
+  - name: Support
+    description: "Удаленная поддержка (SOS): запросы помощи, 2FA подтверждение подключения, WebRTC сигналинг и передача сессий коллегам."
   - name: Service
     description: Служебные эндпоинты (health-проверка).
 security: {}
@@ -3519,6 +3521,248 @@ paths:
             text/event-stream:
               schema:
                 type: string
+
+  # ---- Support Assistance & SOS ----
+
+  /api/v1/app/support/request:
+    post:
+      tags: [Support]
+      summary: "Создать SOS-запрос на удаленную помощь"
+      description: "Создает новый запрос на удаленное подключение IT-поддержки или специалистов по 1С с описанием проблемы."
+      operationId: appSupportRequestPost
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: Запрос на удаленную помощь успешно создан.
+        '400':
+          description: Некорректный запрос (например, не заполнена суть проблемы).
+
+  /api/v1/app/support/current:
+    get:
+      tags: [Support]
+      summary: "Получить активную сессию удаленной помощи"
+      description: "Возвращает текущую активную или ожидающую сессию поддержки для авторизованного пользователя."
+      operationId: appSupportCurrentGet
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Данные активной сессии или null.
+
+  /api/v1/app/support/{id}/decision:
+    post:
+      tags: [Support]
+      summary: "2FA решение пользователя на подключение оператора"
+      description: "Пользователь подтверждает (Number Matching) или отклоняет запрос на удаленный доступ."
+      operationId: appSupportDecisionPost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Решение принято.
+        '400':
+          description: Неверное контрольное число.
+
+  /api/v1/app/support/{id}/signal:
+    post:
+      tags: [Support]
+      summary: "WebRTC сигналинг от клиента пользователя"
+      description: "Передает SDP offer/answer или ICE-кандидаты в браузерную консоль оператора."
+      operationId: appSupportSignalPost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Сигнал доставлен.
+
+  /api/v1/app/support/{id}/end:
+    post:
+      tags: [Support]
+      summary: "Завершить сессию удаленного доступа со стороны клиента"
+      description: "Пользователь прерывает активный сеанс удаленной помощи."
+      operationId: appSupportEndPost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Сессия завершена.
+
+  /api/v1/admin/support/sessions:
+    get:
+      tags: [Support]
+      summary: "Список сессий удаленной помощи"
+      description: "Возвращает список всех сессий поддержки с фильтрацией по категории (it/1c) и статусу."
+      operationId: adminSupportSessionsGet
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Список сессий.
+
+  /api/v1/admin/support/sessions/{id}:
+    get:
+      tags: [Support]
+      summary: "Детали сессии удаленной помощи"
+      description: "Возвращает подробную информацию о сессии поддержки по ее ID."
+      operationId: adminSupportSessionGet
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Данные сессии.
+
+  /api/v1/admin/support/sessions/{id}/connect:
+    post:
+      tags: [Support]
+      summary: "Инициировать подключение оператора к пользователю"
+      description: "Генерирует контрольное число (Number Match) и отправляет 2FA push-запрос пользователю."
+      operationId: adminSupportSessionConnectPost
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Запрос отправлен пользователю.
+
+  /api/v1/admin/support/sessions/{id}/signal:
+    post:
+      tags: [Support]
+      summary: "WebRTC сигналинг от оператора"
+      description: "Пересылает WebRTC SDP/ICE оператора в приложение пользователя."
+      operationId: adminSupportSessionSignalPost
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Сигнал доставлен.
+
+  /api/v1/admin/support/sessions/{id}/transfer:
+    post:
+      tags: [Support]
+      summary: "Переадресовать сессию удаленной помощи коллеге"
+      description: "Генерирует секретную ссылку/токен передачи сессии любому сотруднику компании."
+      operationId: adminSupportSessionTransferPost
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Токен и ссылка передачи сгенерированы.
+
+  /api/v1/admin/support/sessions/{id}/end:
+    post:
+      tags: [Support]
+      summary: "Завершить сессию оператором"
+      description: "Оператор завершает сеанс удаленного доступа."
+      operationId: adminSupportSessionEndPost
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Сессия завершена.
+
+  /api/v1/admin/support/colleagues:
+    get:
+      tags: [Support]
+      summary: "Список сотрудников для переадресации сессии"
+      description: "Возвращает краткий список сотрудников компании для выбора получателя сессии."
+      operationId: adminSupportColleaguesGet
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Список сотрудников.
+
+  /api/v1/admin/support/sessions/{id}/ws:
+    get:
+      tags: [Support]
+      summary: "WebSocket стриминг и управление сессией для оператора"
+      description: "WebSocket канал передачи WebRTC сигналинга и команд ввода мыши/клавиатуры."
+      operationId: adminSupportSessionWSGet
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '101':
+          description: Переключение на протокол WebSocket.
+
+  /api/v1/support/ws/{id}:
+    get:
+      tags: [Support]
+      summary: "WebSocket стриминг сессии по токену передачи"
+      description: "WebSocket канал для переадресованных коллег (по токену в query) или операторов."
+      operationId: supportGuestWSGet
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '101':
+          description: Переключение на протокол WebSocket.
 
 components:
   securitySchemes:

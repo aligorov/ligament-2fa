@@ -44,6 +44,9 @@ type BaseData struct {
 	Title    string
 	Username string // текущий пользователь (пусто до входа)
 	IsAdmin  bool
+	IsSupport   bool
+	IsSupportIT bool
+	IsSupport1C bool
 	// Nav — идентификатор активного пункта бокового меню: "me", "totp",
 	// "backup", "telegram", "passkeys", "devices", "admin-users",
 	// "admin-audit", "admin-challenges", "admin-settings",
@@ -190,6 +193,24 @@ type AdminChallengesData struct {
 	BaseData
 	Challenges []store.Challenge
 	Usernames  map[uuid.UUID]string
+}
+
+// AdminSupportData — /admin/support: панель заявок на удаленную помощь (SOS).
+type AdminSupportData struct {
+	BaseData
+	CategoryFilter string
+	StatusFilter   string
+	Sessions       []store.SupportSession
+}
+
+// AdminSupportViewerData — /admin/support/{id}/viewer: веб-консоль удаленного доступа к ПК.
+type AdminSupportViewerData struct {
+	BaseData
+	Session       *store.SupportSession
+	TransferToken string
+	IsGuest       bool
+	Colleagues    []store.BriefUser
+	WSEndpoint    string
 }
 
 // SMSPresetChoice — пункт выбора пресета SMS-шлюза на странице настроек

@@ -1,0 +1,49 @@
+name: Deploy to Server
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Build and Push Docker Image"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy via SSH & Docker Compose
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Check SSH Configuration
+        id: check_ssh
+        run: |
+          if [ -n "${{ secrets.SERVER_HOST }}" ] && [ -n "${{ secrets.SERVER_SSH_KEY }}" ]; then
+            echo "configured=true" >> $GITHUB_OUTPUT
+          else
+            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "::notice ::SERVER_HOST or SERVER_SSH_KEY secret is not set. Skipping automated SSH deploy."
+          fi
+
+      - name: Deploy to Remote Host
+        if: steps.check_ssh.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER || 'root' }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            set -e
+            DEPLOY_DIR="${{ secrets.SERVER_DEPLOY_DIR || '/opt/twofa' }}"
+            mkdir -p "$DEPLOY_DIR"
+            cd "$DEPLOY_DIR"
+
+            # Download or update docker-compose.client.yml if needed
+            if [ ! -f docker-compose.yml ]; then
+              curl -fsSL https://raw.githubusercontent.com/aligorov/ligament-2fa/main/docker-compose.client.yml -o docker-compose.yml
+            fi
+
+            # Pull latest image from Docker Hub and restart
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker system prune -f
+            docker compose ps

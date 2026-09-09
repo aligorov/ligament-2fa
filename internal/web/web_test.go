@@ -23,6 +23,7 @@ var wantPages = []string{
 	"me_passkeys", "me_devices", "admin_users", "admin_groups", "admin_audit", "admin_firewall",
 	"admin_challenges", "admin_settings", "admin_license", "error",
 	"oidc_consent", "admin_oidc", "admin_oidc_edit",
+	"admin_support", "admin_support_viewer",
 }
 
 const (
@@ -430,6 +431,57 @@ func TestRenderPages(t *testing.T) {
 				"не ограничено", `action="/admin/license"`,
 				`name="blob"`, `name="crl"`, `name="csrf_token"`,
 				"BEGIN LIGAMENT LICENSE", "BEGIN LIGAMENT REVOCATION",
+			},
+		},
+		{
+			name: "admin_support",
+			tmpl: "admin_support",
+			data: AdminSupportData{
+				BaseData: base("Удаленная помощь"),
+				CategoryFilter: "it",
+				Sessions: []store.SupportSession{
+					{
+						ID:             uuid.MustParse("44444444-4444-4444-4444-444444444444"),
+						Username:       "petrov",
+						DisplayName:    "Петр Петров",
+						Category:       "it",
+						Status:         "requested",
+						ProblemSummary: "Не открывается сетевая папка",
+						DeviceName:     "PC-PETROV",
+						Platform:       "windows",
+						LastIP:         "192.168.1.55",
+						CreatedAt:      lastUsed,
+					},
+				},
+			},
+			want: []string{
+				"Удаленная помощь", "Петр Петров", "Не открывается сетевая папка",
+				"PC-PETROV", "192.168.1.55", "Ожидает инженера",
+			},
+		},
+		{
+			name: "admin_support_viewer",
+			tmpl: "admin_support_viewer",
+			data: AdminSupportViewerData{
+				BaseData: base("Управление ПК"),
+				Session: &store.SupportSession{
+					ID:             uuid.MustParse("44444444-4444-4444-4444-444444444444"),
+					Username:       "petrov",
+					DisplayName:    "Петр Петров",
+					Category:       "1c",
+					Status:         "active",
+					ProblemSummary: "Ошибка 1С при формировании отчета",
+					DeviceName:     "PC-PETROV",
+					Platform:       "windows",
+					LastIP:         "192.168.1.55",
+					AccessMode:     "full_control",
+					CreatedAt:      lastUsed,
+				},
+				WSEndpoint: "/api/v1/support/ws/44444444-4444-4444-4444-444444444444",
+			},
+			want: []string{
+				"Петр Петров", "1С-поддержка", "Ошибка 1С при формировании отчета",
+				"Включить управление", "Переадресовать сессию", "Завершить сеанс",
 			},
 		},
 	}

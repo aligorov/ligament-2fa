@@ -1,0 +1,50 @@
+name: CI Tests & Checks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  backend-test:
+    name: Backend Go Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Go Vet
+        run: go vet ./...
+
+      - name: Run Unit Tests
+        run: go test -v ./...
+
+  client-test:
+    name: Flutter Client Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Get dependencies
+        run: |
+          cd client
+          flutter pub get
+
+      - name: Run Flutter Tests
+        run: |
+          cd client
+          flutter test

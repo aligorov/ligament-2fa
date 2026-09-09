@@ -12,7 +12,7 @@ import (
 
 // TelegramSender — интерфейс для отправки сообщений в Telegram бот.
 type TelegramSender interface {
-	SendMessage(ctx context.Context, chatID int64, text string) error
+	SendNotification(ctx context.Context, chatID int64, text string) error
 }
 
 // SupportNotifier рассылает многоканальные уведомления о новых SOS-обращениях.
@@ -138,7 +138,7 @@ func (n *SupportNotifier) NotifyNewSession(ctx context.Context, ss *store.Suppor
 		)
 
 		go func(chatID int64, text string) {
-			if err := n.tgSender.SendMessage(context.Background(), chatID, text); err != nil {
+			if err := n.tgSender.SendNotification(context.Background(), chatID, text); err != nil {
 				slog.Warn("support_notifier: ошибка отправки telegram", "chat_id", chatID, "error", err)
 			} else {
 				slog.Info("support_notifier: telegram успешно отправлен", "chat_id", chatID, "session_id", ss.ID)

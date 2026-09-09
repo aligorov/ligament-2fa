@@ -296,9 +296,20 @@ func main() {
 	})
 	go acmeMgr.Run(ctx)
 
+	var emailAlertSender delivery.AlertSender
+	if em, ok := senders[channel.Email].(delivery.AlertSender); ok {
+		emailAlertSender = em
+	}
+	var tgAlertSender delivery.TelegramSender
+	if bot != nil {
+		tgAlertSender = bot
+	}
+	supportNotifier := delivery.NewSupportNotifier(emailAlertSender, tgAlertSender, m, appHub)
+
 	rt := api.BuildRouter(api.Deps{
 		Core: core, WA: wa, St: st, Box: box, PV: pv, M: m, Rend: rend, Lic: lic,
 		FW: guard, Oidc: oidcMgr, ACME: acmeMgr, Radius: radius, AppHub: appHub,
+		SupportNotifier: supportNotifier,
 	})
 	defer rt.Stop()
 

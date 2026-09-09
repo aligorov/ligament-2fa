@@ -8,6 +8,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import '../api/client.dart';
 import 'alert_service.dart';
 import 'gpo_service.dart';
+import 'support_service.dart';
 import 'telemetry_service.dart';
 import 'ws_service.dart';
 
@@ -17,6 +18,7 @@ class AuthState extends ChangeNotifier {
   final TelemetryService telemetry = TelemetryService();
   final WebSocketService ws = WebSocketService();
   final LocalAuthentication localAuth = LocalAuthentication();
+  final SupportService support = SupportService();
 
   ApiClient? api;
   String? serverUrl;
@@ -31,6 +33,7 @@ class AuthState extends ChangeNotifier {
   bool isOnline = false;
 
   Map<String, dynamic>? activePrompt;
+  Map<String, dynamic>? activeSupportPrompt;
   final Set<String> _resolvedChallengeIds = {};
 
   bool get isLoggedIn => token != null && currentUser != null;
@@ -91,6 +94,32 @@ class AuthState extends ChangeNotifier {
         challengeId: cid,
       );
       loadPendingChallenges();
+      notifyListeners();
+    };
+
+    ws.onSupportPrompt = (prompt) {
+      activeSupportPrompt = prompt;
+      support.setAuthorizing(
+        sessionId: prompt['session_id']?.toString() ?? '',
+        category: prompt['category']?.toString(),
+        problemSummary: prompt['problem_summary']?.toString(),
+      );
+      final cat = prompt['category'] == '1c' ? '1С-поддержка' : 'IT-служба';
+      alert.triggerAlert(
+        title: 'Удаленная помощь: $cat',
+        body: 'Инженер готов подключиться к экрану. Подтвердите контрольное число.',
+        challengeId: prompt['session_id']?.toString(),
+      );
+      notifyListeners();
+    };
+
+    ws.onSupportSignal = (signal) {
+      support.handleRemoteSignal(signal);
+    };
+
+    ws.onSupportEnded = (msg) {
+      support.stopScreenSharing();
+      activeSupportPrompt = null;
       notifyListeners();
     };
 
@@ -183,11 +212,13 @@ class AuthState extends ChangeNotifier {
 
     ws.disconnect();
     telemetry.stopReporting();
+    support.stopScreenSharing();
 
     token = null;
     currentUser = null;
     api = null;
     activePrompt = null;
+    activeSupportPrompt = null;
     pendingChallenges.clear();
     allowedApps.clear();
     history.clear();
@@ -204,6 +235,7 @@ class AuthState extends ChangeNotifier {
       loadAllowedApps(),
       loadHistory(),
       checkPosture(),
+      checkSupportSession(),
     ]);
   }
 
@@ -309,5 +341,120 @@ class AuthState extends ChangeNotifier {
     await loadPendingChallenges();
     await loadHistory();
     notifyListeners();
+  }
+
+  /// Отправка SOS-заявки на удаленный доступ
+  Future<void> requestSupport({
+    required String category,
+    required String problemSummary,
+    String accessMode = 'full_control',
+  }) async {
+    if (api == null) throw Exception('API не инициализирован');
+    final resp = await api!.requestSupport(
+      category: category,
+      problemSummary: problemSummary,
+      accessMode: accessMode,
+    );
+    final sessId = resp['id']?.toString() ?? '';
+    support.setRequested(
+      sessionId: sessId,
+      category: category,
+      problemSummary: problemSummary,
+      accessMode: accessMode,
+    );
+    notifyListeners();
+  }
+
+  /// Подтверждение удаленного доступа инженеру (approve) с проверкой контрольного числа
+  Future<void> confirmSupport({
+    required String sessionId,
+    String? numberMatch,
+  }) async {
+    if (api == null) throw Exception('API не инициализирован');
+    activeSupportPrompt = null;
+    await alert.resetWindowPriority();
+
+    // 1. Биометрия / Windows Hello при политике GPO
+    if (gpo.requireWindowsHello) {
+      final didAuth = await localAuth.authenticate(
+        localizedReason: 'Подтвердите разрешение удаленного доступа к экрану',
+        options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
+      );
+      if (!didAuth) {
+        throw Exception('Биометрическая авторизация отклонена');
+      }
+    }
+
+    // 2. Отправка одобрения на сервер
+    await api!.supportDecision(
+      sessionId: sessionId,
+      decision: 'approve',
+      numberMatch: numberMatch,
+    );
+
+    // 3. Запуск трансляции экрана WebRTC
+    await support.startScreenSharing(
+      sessionId: sessionId,
+      api: api!,
+      accessMode: support.accessMode,
+    );
+    notifyListeners();
+  }
+
+  /// Отклонение входящего запроса на подключение (deny)
+  Future<void> rejectSupport({
+    required String sessionId,
+  }) async {
+    if (api == null) return;
+    activeSupportPrompt = null;
+    await alert.resetWindowPriority();
+
+    try {
+      await api!.supportDecision(
+        sessionId: sessionId,
+        decision: 'deny',
+      );
+    } catch (_) {}
+    support.stopScreenSharing();
+    notifyListeners();
+  }
+
+  /// Завершение сеанса удаленного доступа со стороны пользователя
+  Future<void> endSupport() async {
+    final sessId = support.activeSessionId;
+    if (sessId != null && api != null) {
+      try {
+        await api!.endSupportSession(sessionId: sessId);
+      } catch (e) {
+        debugPrint('auth_state: ошибка завершения сессии поддержки: $e');
+      }
+    }
+    support.stopScreenSharing();
+    activeSupportPrompt = null;
+    notifyListeners();
+  }
+
+  /// Проверка наличия активной сессии поддержки на сервере
+  Future<void> checkSupportSession() async {
+    if (api == null) return;
+    try {
+      final sess = await api!.getCurrentSupportSession();
+      if (sess != null &&
+          (sess['status'] == 'requested' ||
+              sess['status'] == 'connecting' ||
+              sess['status'] == 'active')) {
+        support.setRequested(
+          sessionId: sess['id']?.toString() ?? '',
+          category: sess['category']?.toString() ?? 'it',
+          problemSummary: sess['problem_summary']?.toString() ?? '',
+          accessMode: sess['access_mode']?.toString() ?? 'full_control',
+        );
+      } else if (support.state != SupportSessionState.active) {
+        if (support.state == SupportSessionState.requested) {
+          support.stopScreenSharing();
+        }
+      }
+      notifyListeners();
+    } catch (_) {}
   }
 }

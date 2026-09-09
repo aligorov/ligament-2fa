@@ -13,6 +13,9 @@ class WebSocketService {
   bool _disposed = false;
 
   PushPromptCallback? onPrompt;
+  PushPromptCallback? onSupportPrompt;
+  PushPromptCallback? onSupportSignal;
+  PushPromptCallback? onSupportEnded;
   VoidCallback? onConnected;
   VoidCallback? onDisconnected;
 
@@ -70,9 +73,23 @@ class WebSocketService {
 
       if (data['type'] == 'challenge_prompt') {
         onPrompt?.call(data);
+      } else if (data['type'] == 'support_prompt') {
+        onSupportPrompt?.call(data);
+      } else if (data['type'] == 'support_signal') {
+        onSupportSignal?.call(data);
+      } else if (data['type'] == 'support_ended') {
+        onSupportEnded?.call(data);
       }
     } catch (e) {
       debugPrint('ws_service: ошибка парсинга сообщения: $e');
+    }
+  }
+
+  void sendJson(Map<String, dynamic> data) {
+    try {
+      _channel?.sink.add(jsonEncode(data));
+    } catch (e) {
+      debugPrint('ws_service: ошибка отправки: $e');
     }
   }
 

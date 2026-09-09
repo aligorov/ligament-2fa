@@ -202,4 +202,102 @@ class ApiClient {
     }
     throw ApiException(res.statusCode, 'history_fetch_failed');
   }
+
+  /// Запрос экстренной удаленной помощи (SOS)
+  Future<Map<String, dynamic>> requestSupport({
+    required String category,
+    required String problemSummary,
+    String accessMode = 'full_control',
+  }) async {
+    final payload = {
+      'category': category,
+      'problem_summary': problemSummary,
+      'access_mode': accessMode,
+    };
+
+    final res = await http.post(
+      Uri.parse(_cleanUrl('/api/v1/app/support/request')),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+
+    final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    if (res.statusCode == 200) {
+      return data;
+    }
+    throw ApiException(res.statusCode, data['error']?.toString() ?? 'support_request_failed');
+  }
+
+  /// Получение текущей активной сессии поддержки
+  Future<Map<String, dynamic>?> getCurrentSupportSession() async {
+    final res = await http.get(
+      Uri.parse(_cleanUrl('/api/v1/app/support/current')),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      if (data['active'] == true) {
+        return data['session'] as Map<String, dynamic>?;
+      }
+      return null;
+    }
+    throw ApiException(res.statusCode, 'support_current_fetch_failed');
+  }
+
+  /// Решение пользователя по запросу на подключение к экрану (approve / deny)
+  Future<void> supportDecision({
+    required String sessionId,
+    required String decision,
+    String? numberMatch,
+  }) async {
+    final payload = <String, dynamic>{
+      'decision': decision,
+    };
+    if (numberMatch != null && numberMatch.isNotEmpty) {
+      payload['number_match'] = numberMatch;
+    }
+
+    final res = await http.post(
+      Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/decision')),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+
+    if (res.statusCode != 200) {
+      String code = 'decision_failed';
+      try {
+        final errObj = jsonDecode(utf8.decode(res.bodyBytes));
+        code = errObj['error']?.toString() ?? code;
+      } catch (_) {}
+      throw ApiException(res.statusCode, code);
+    }
+  }
+
+  /// Отправка WebRTC сигнального пакета оператору поддержки
+  Future<void> sendSupportSignal({
+    required String sessionId,
+    required Map<String, dynamic> signal,
+  }) async {
+    final res = await http.post(
+      Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/signal')),
+      headers: _headers(),
+      body: jsonEncode(signal),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'signal_failed');
+    }
+  }
+
+  /// Завершение сеанса удаленного доступа со стороны пользователя
+  Future<void> endSupportSession({
+    required String sessionId,
+  }) async {
+    final res = await http.post(
+      Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/end')),
+      headers: _headers(),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, 'end_support_failed');
+    }
+  }
 }

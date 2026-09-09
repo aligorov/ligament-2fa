@@ -511,6 +511,45 @@
 
 <section class="card">
   <div class="card-head">
+    <h2><span class="card-icon">🛟</span>Удаленная поддержка (SOS)</h2>
+    <p>Настройка экстренных запросов удаленной помощи (IT-служба и специалисты по 1С).</p>
+  </div>
+  <form action="/admin/settings" method="post" class="form">
+    {{csrf .CSRF}}<input type="hidden" name="section" value="support">
+    <div class="field">
+      <span class="field-label">Модуль удаленной помощи</span>
+      <label class="check"><input type="checkbox" name="support.enabled" value="1"{{if .S.Support.Enabled}} checked{{end}}> <span>включить прием SOS-запросов на удаленный доступ от сотрудников</span></label>
+    </div>
+    <div class="grid">
+      <label class="field">
+        <span class="field-label">Email IT-поддержки (уведомления)</span>
+        <textarea class="textarea" name="support.emails_it" rows="3" placeholder="it-help@company.local, sysadmin@company.local">{{range $i, $e := .S.Support.EmailsIT}}{{if $i}}, {{end}}{{$e}}{{end}}</textarea>
+        <span class="help">Адреса почты инженеров IT-службы (через запятую или по одному на строку).</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Email поддержки 1С (уведомления)</span>
+        <textarea class="textarea" name="support.emails_1c" rows="3" placeholder="1c-support@company.local, account@company.local">{{range $i, $e := .S.Support.Emails1C}}{{if $i}}, {{end}}{{$e}}{{end}}</textarea>
+        <span class="help">Адреса специалистов по 1С (через запятую или по одному на строку).</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Telegram Chat ID (IT-служба)</span>
+        <input class="input mono" type="text" name="support.telegram_chat_it" placeholder="-1001234567890" value="{{if .S.Support.TelegramChatIT}}{{.S.Support.TelegramChatIT}}{{end}}">
+        <span class="help">ID группы или чата дежурных IT-специалистов.</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Telegram Chat ID (Поддержка 1С)</span>
+        <input class="input mono" type="text" name="support.telegram_chat_1c" placeholder="-1009876543210" value="{{if .S.Support.TelegramChat1C}}{{.S.Support.TelegramChat1C}}{{end}}">
+        <span class="help">ID группы или чата специалистов по 1С.</span>
+      </label>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Сохранить секцию</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
     <h2><span class="card-icon">🔢</span>TOTP</h2>
     <p>Параметры кодов приложений-аутентификаторов.</p>
   </div>

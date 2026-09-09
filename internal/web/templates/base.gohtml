@@ -32,6 +32,10 @@
       <a class="nav-link{{if eq .Nav "telegram"}} active{{end}}" href="/me/telegram">Telegram</a>
       <a class="nav-link{{if eq .Nav "passkeys"}} active{{end}}" href="/me/passkeys">Passkeys</a>
       <a class="nav-link{{if eq .Nav "devices"}} active{{end}}" href="/me/devices">Устройства</a>
+      {{if or .IsAdmin .IsSupport}}
+      <div class="nav-section">Поддержка</div>
+      <a class="nav-link{{if eq .Nav "admin-support"}} active{{end}}" href="/admin/support">Удаленная помощь (SOS)</a>
+      {{end}}
       {{if .IsAdmin}}
       <div class="nav-section">Админ</div>
       <a class="nav-link{{if eq .Nav "admin-users"}} active{{end}}" href="/admin/users">Пользователи</a>

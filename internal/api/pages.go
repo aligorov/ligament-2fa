@@ -145,6 +145,10 @@ func (p *PagesAPI) Register(r chi.Router) {
 	admin.Get("/admin/backup", p.handlePageBackup)
 	admin.Get("/admin/license", p.handleAdminLicense)
 	admin.Post("/admin/license", p.handleAdminLicensePost)
+
+	support := r.With(p.requirePage, p.requireSupportOrAdmin)
+	support.Get("/admin/support", p.handleAdminSupport)
+	r.With(p.requirePage).Get("/admin/support/{id}/viewer", p.handleAdminSupportViewer)
 }
 
 // NotFound — HTML-404 (монтируется в корневой роутер BuildRouter).
@@ -217,6 +221,17 @@ func (p *PagesAPI) requireAdmin(next http.Handler) http.Handler {
 	})
 }
 
+// requireSupportOrAdmin — страницы поддержки /admin/support для роли admin или специалистов поддержки; остальные — /me.
+func (p *PagesAPI) requireSupportOrAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, ok := userFrom(r.Context()); ok && (u.Role == "admin" || u.IsSupportAny()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Redirect(w, r, "/me", http.StatusFound)
+	})
+}
+
 // ---- общие помощники ----
 
 // baseData собирает общие данные макета: заголовок, идентификатор активного
@@ -240,6 +255,9 @@ func (p *PagesAPI) baseData(r *http.Request, title, nav string) web.BaseData {
 	if u, ok := userFrom(r.Context()); ok {
 		b.Username = u.Username
 		b.IsAdmin = u.Role == "admin"
+		b.IsSupport = u.IsSupportAny()
+		b.IsSupportIT = u.IsSupportIT()
+		b.IsSupport1C = u.IsSupport1C()
 	}
 	if csrf, ok := r.Context().Value(ctxKeyCSRF).(string); ok {
 		b.CSRF = csrf
@@ -1439,6 +1457,14 @@ func (p *PagesAPI) userFormFields(r *http.Request, u *store.User) string {
 		u.PreferChannels = chs
 	}
 	u.RadiusPush = r.PostFormValue("radius_push") != ""
+	var supRoles []string
+	if r.PostFormValue("support_role_it") != "" {
+		supRoles = append(supRoles, "it")
+	}
+	if r.PostFormValue("support_role_1c") != "" {
+		supRoles = append(supRoles, "1c")
+	}
+	u.SupportRoles = supRoles
 	return strings.TrimSpace(r.PostFormValue("password"))
 }
 
@@ -2295,6 +2321,13 @@ var settingsForm = map[string][]settingsField{
 		{name: "policy.default_prefer_channels", key: "policy", kind: 'j'},
 		{name: "web.session_ttl", key: "web.session_ttl"},
 	},
+	"support": {
+		{name: "support.enabled", key: "support", kind: 'b'},
+		{name: "support.emails_it", key: "support"},
+		{name: "support.emails_1c", key: "support"},
+		{name: "support.telegram_chat_it", key: "support", kind: 'i'},
+		{name: "support.telegram_chat_1c", key: "support", kind: 'i'},
+	},
 }
 
 // handleAdminSettingsPost — POST /admin/settings: секция формы → flatten в
@@ -2361,7 +2394,7 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		var v json.RawMessage
 		switch f.kind {
 		case 'i':
-			n, err := strconv.Atoi(raw)
+			n, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil {
 				redirectFlash(w, r, "/admin/settings",
 					"Поле "+f.name+": ожидается целое число.", false)
@@ -2996,3 +3029,90 @@ func (p *PagesAPI) handleAdminOIDCClientDelete(w http.ResponseWriter, r *http.Re
 		map[string]any{"id": id.String()})
 	redirectFlash(w, r, "/admin/oidc", "Клиент удалён.", true)
 }
+
+// handleAdminSupport — GET /admin/support.
+func (p *PagesAPI) handleAdminSupport(w http.ResponseWriter, r *http.Request) {
+	category := strings.TrimSpace(r.URL.Query().Get("category"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+
+	sessions, err := p.st.SupportSessionList(r.Context(), store.SupportFilter{
+		Category: category,
+		Status:   status,
+	})
+	if err != nil {
+		flash500(w, r, "/admin", err)
+		return
+	}
+
+	data := web.AdminSupportData{
+		BaseData:       p.baseData(r, "Удаленная помощь (SOS)", "admin-support"),
+		CategoryFilter: category,
+		StatusFilter:   status,
+		Sessions:       sessions,
+	}
+	p.render(w, http.StatusOK, "admin_support", data)
+}
+
+// handleAdminSupportViewer — GET /admin/support/{id}/viewer.
+func (p *PagesAPI) handleAdminSupportViewer(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		redirectFlash(w, r, "/admin/support", "Неверный идентификатор сессии.", false)
+		return
+	}
+
+	u, ok := userFrom(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+
+	session, err := p.st.SupportSessionGet(r.Context(), id)
+	if err != nil {
+		redirectFlash(w, r, "/admin/support", "Сессия поддержки не найдена.", false)
+		return
+	}
+
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	isAuthorized := u.Role == "admin" || u.IsSupportAny()
+	isGuest := false
+
+	if !isAuthorized {
+		// Проверяем доступ коллеги по токену переадресации или назначенному TransferredToID
+		if token != "" {
+			hash := secrets.SHA256(token)
+			if len(session.TransferTokenHash) > 0 && subtle.ConstantTimeCompare(session.TransferTokenHash, hash) == 1 {
+				isAuthorized = true
+				isGuest = true
+			}
+		}
+		if !isAuthorized && session.TransferredToID != nil && *session.TransferredToID == u.ID {
+			isAuthorized = true
+			isGuest = true
+		}
+	}
+
+	if !isAuthorized {
+		redirectFlash(w, r, "/me", "У вас нет доступа к этой сессии поддержки.", false)
+		return
+	}
+
+	colleagues, _ := p.st.AllUsersBrief(r.Context())
+
+	wsEndpoint := fmt.Sprintf("/api/v1/support/ws/%s", session.ID)
+	if token != "" {
+		wsEndpoint += "?token=" + url.QueryEscape(token)
+	}
+
+	data := web.AdminSupportViewerData{
+		BaseData:      p.baseData(r, "Удаленный доступ — "+session.Username, "admin-support"),
+		Session:       session,
+		TransferToken: token,
+		IsGuest:       isGuest,
+		Colleagues:    colleagues,
+		WSEndpoint:    wsEndpoint,
+	}
+	p.render(w, http.StatusOK, "admin_support_viewer", data)
+}
+

@@ -18,7 +18,7 @@ services:
     restart: unless-stopped
 
   twofa:
-    image: aligorov/ligament_2fa:v0.4.38
+    image: aligorov/ligament_2fa:${TWOFA_IMAGE_TAG:-latest}
     depends_on:
       db:
         condition: service_healthy

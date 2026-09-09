@@ -152,6 +152,7 @@ type Deps struct {
 	ACME   *acme.Manager        // nil — ACME выключен
 	Radius *radiusserver.Server // nil — RADIUS не смонтирован
 	AppHub *delivery.AppHub     // nil — push в мобильные/десктопные приложения отключен
+	SupportNotifier *delivery.SupportNotifier // nil — оповещения техподдержки
 }
 
 // firewallMiddleware фильтрует запросы по IP ДО маршрутов и обработчиков:
@@ -246,6 +247,13 @@ func BuildRouter(d Deps) *Router {
 	d.Oidc.Register(r) // nil-безопасно: маршруты остаются, отвечают 503
 
 	appAPI := NewAppAPI(d.Core, d.St, d.PV, d.M, d.AppHub, d.Oidc)
+	if d.AppHub != nil {
+		admin.SetAppHub(d.AppHub)
+	}
+	if d.SupportNotifier != nil {
+		admin.SetSupportNotifier(d.SupportNotifier)
+		appAPI.SetSupportNotifier(d.SupportNotifier)
+	}
 	appAPI.Register(r)
 
 	registerOpenAPI(r)
