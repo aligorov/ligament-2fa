@@ -769,3 +769,28 @@ func mustNew(t *testing.T) *Renderer {
 }
 
 func ptrUser(u store.User) *store.User { return &u }
+
+func TestGroupCN(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"CN=VPN_WORK,CN=Users,DC=test,DC=corp", "VPN_WORK"},
+		{"CN=VPN_VIP,CN=Users,DC=test,DC=corp", "VPN_VIP"},
+		{"CN=Группа с запрещением репликации паролей RODC,CN=Users,DC=test,DC=corp", "Группа с запрещением репликации паролей RODC"},
+		{"CN=ad_trusted-publishers,OU=it,OU=groups,DC=test,DC=corp", "ad_trusted-publishers"},
+		{"CN=Администраторы домена,CN=Users,DC=test,DC=corp", "Администраторы домена"},
+		{"CN=Пользователи,CN=Builtin,DC=test,DC=corp", "Пользователи"},
+		{"CN=Администраторы,CN=Builtin,DC=test,DC=corp", "Администраторы"},
+		{"CN=Гости,CN=Builtin,DC=test,DC=corp", "Гости"},
+		{"OU=Managers,DC=test,DC=corp", "Managers"},
+		{"CN=VPN\\, Special,DC=test,DC=corp", "VPN, Special"},
+		{"PlainGroupName", "PlainGroupName"},
+	}
+	for _, tc := range cases {
+		got := groupCN(tc.in)
+		if got != tc.want {
+			t.Errorf("groupCN(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

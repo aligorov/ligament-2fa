@@ -351,7 +351,7 @@
 <div class="field">
   <span class="field-label">Группы LDAP/Active Directory</span>
   <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;">
-    {{range .Edit.LDAPGroups}}<span class="badge neutral">{{.}}</span>{{end}}
+    {{range .Edit.LDAPGroups}}<span class="badge neutral" title="{{.}}">{{groupCN .}}</span>{{end}}
   </div>
   <span class="help">Синхронизируются автоматически из каталога при входе пользователя.</span>
 </div>

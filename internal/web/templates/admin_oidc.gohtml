@@ -129,10 +129,10 @@
           <span class="field-label">Группы LDAP/Active Directory</span>
           <div class="select-grid" style="max-height: 140px;">
             {{range .LDAPGroups}}
-            <label class="select-chip">
+            <label class="select-chip" title="{{.}}">
               <input type="checkbox" name="allowed_groups" value="{{.}}">
               <div class="select-chip-label">
-                <span>{{.}}</span>
+                <span>{{groupCN .}}</span>
               </div>
             </label>
             {{end}}

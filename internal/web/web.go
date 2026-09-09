@@ -231,14 +231,28 @@ func vlanDesc(profiles map[string]string, vlanID string) string {
 	return "VLAN " + vlanID
 }
 
-// groupCN извлекает короткое имя (CN или OU) из Distinguished Name.
+// groupCN извлекает короткое имя (CN или OU) из Distinguished Name,
+// отсекая атрибуты домена и контейнеров (DC=..., CN=Users, OU=...).
 func groupCN(dn string) string {
-	for _, part := range strings.Split(dn, ",") {
-		part = strings.TrimSpace(part)
-		if idx := strings.Index(part, "="); idx > 0 {
-			key := strings.ToUpper(strings.TrimSpace(part[:idx]))
-			val := strings.TrimSpace(part[idx+1:])
-			if key == "CN" || key == "OU" {
+	lower := strings.ToLower(dn)
+	for _, prefix := range []string{"cn=", "ou="} {
+		if idx := strings.Index(lower, prefix); idx >= 0 {
+			start := idx + len(prefix)
+			var sb strings.Builder
+			runes := []rune(dn[start:])
+			for i := 0; i < len(runes); i++ {
+				if runes[i] == '\\' && i+1 < len(runes) {
+					sb.WriteRune(runes[i+1])
+					i++
+					continue
+				}
+				if runes[i] == ',' {
+					break
+				}
+				sb.WriteRune(runes[i])
+			}
+			val := strings.TrimSpace(sb.String())
+			if val != "" {
 				return val
 			}
 		}

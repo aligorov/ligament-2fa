@@ -93,10 +93,10 @@
       <span class="field-label">Группы LDAP / Active Directory</span>
       <div class="select-grid" style="max-height: 160px;">
         {{range .LDAPGroups}}
-        <label class="select-chip">
-          <input type="checkbox" name="allowed_groups" value="{{.}}"{{if hasStr $.Client.AllowedGroups .}} checked{{end}}>
+        <label class="select-chip" title="{{.}}">
+          <input type="checkbox" name="allowed_groups" value="{{.}}"{{if or (hasStr $.Client.AllowedGroups .) (hasStr $.Client.AllowedGroups (groupCN .))}} checked{{end}}>
           <div class="select-chip-label">
-            <span>{{.}}</span>
+            <span>{{groupCN .}}</span>
           </div>
         </label>
         {{end}}
