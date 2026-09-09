@@ -78,10 +78,10 @@ try {
     & $heatCmd dir "$BuildReleaseDir" -cg AppFiles -dr INSTALLFOLDER -gg -scom -sreg -srd -var "var.SourceDir" -out "$TempDir\Files.wxs"
 
     Write-Host "`n[3/4] Компиляция WiX XML (Candle)..." -ForegroundColor Yellow
-    & $candleCmd -dSourceDir="$BuildReleaseDir" "$ClientDir\windows\installer\Product.wxs" "$TempDir\Files.wxs" -out "$TempDir\"
+    & $candleCmd -arch x64 -dSourceDir="$BuildReleaseDir" "$ClientDir\windows\installer\Product.wxs" "$TempDir\Files.wxs" -out "$TempDir\"
 
     Write-Host "`n[4/4] Линковка и создание MSI пакета (Light)..." -ForegroundColor Yellow
-    & $lightCmd -ext WixUIExtension "$TempDir\Product.wixobj" "$TempDir\Files.wixobj" -o "$OutputMsi"
+    & $lightCmd -sval -ext WixUIExtension "$TempDir\Product.wixobj" "$TempDir\Files.wixobj" -o "$OutputMsi"
 
     Write-Host "`n========================================================" -ForegroundColor Green
     Write-Host " УСПЕШНО СОБРАН WINDOWS MSI ДИСТРИБУТИВ:" -ForegroundColor Green

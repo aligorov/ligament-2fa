@@ -1,4 +1,4 @@
-name: Build & Package Clients (Android, Windows, macOS)
+name: Build & Package Windows MSI
 
 on:
   push:
@@ -9,43 +9,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-android:
-    name: Build Android APK
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          cache: true
-
-      - name: Install dependencies
-        run: |
-          cd client
-          flutter pub get
-
-      - name: Build APK (Release)
-        run: |
-          cd client
-          flutter build apk --release
-          mkdir -p dist
-          cp build/app/outputs/flutter-apk/app-release.apk dist/Ligament-2FA.apk
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Ligament-2FA-Android-APK
-          path: client/dist/Ligament-2FA.apk
-
   build-windows:
     name: Build Windows MSI Installer
     runs-on: windows-latest
@@ -77,58 +40,3 @@ jobs:
         with:
           name: Ligament-2FA-Windows-MSI
           path: client/dist/Ligament-2FA-Windows-x64.msi
-
-  build-macos:
-    name: Build macOS DMG
-    runs-on: macos-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          cache: true
-
-      - name: Build macOS Application & DMG
-        run: |
-          cd client
-          flutter pub get
-          ./scripts/build_dmg.sh
-
-      - name: Upload DMG Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Ligament-2FA-macOS-DMG
-          path: client/dist/Ligament-2FA-macOS.dmg
-
-  build-ios:
-    name: Build iOS IPA
-    runs-on: macos-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          cache: true
-
-      - name: Build iOS App and Package IPA
-        run: |
-          cd client
-          flutter pub get
-          flutter build ios --release --no-codesign
-          mkdir -p dist/Payload
-          cp -R build/ios/iphoneos/Runner.app dist/Payload/
-          cd dist
-          zip -qry Ligament-2FA.ipa Payload
-          rm -rf Payload
-
-      - name: Upload iOS IPA Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Ligament-2FA-iOS-IPA
-          path: client/dist/Ligament-2FA.ipa

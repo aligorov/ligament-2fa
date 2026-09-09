@@ -7,7 +7,7 @@
            Version="0.4.37"
            Manufacturer="Ligament Security"
            UpgradeCode="4B5F3776-E1E7-44E8-BAA5-7FD81CE1B732">
-    <Package InstallerVersion="301" Compressed="yes" InstallScope="perMachine" Description="Ligament 2FA Client Installer" />
+    <Package InstallerVersion="301" Compressed="yes" InstallScope="perMachine" Platform="x64" Description="Ligament 2FA Client Installer" />
     <MajorUpgrade DowngradeErrorMessage="A newer version of Ligament 2FA is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
@@ -34,7 +34,7 @@
 
   <Fragment>
     <DirectoryRef Id="ApplicationProgramsFolder">
-      <Component Id="ApplicationShortcut" Guid="7244B7E0-ACFA-4FE0-9ED9-F04E313D9C33">
+      <Component Id="ApplicationShortcut" Guid="7244B7E0-ACFA-4FE0-9ED9-F04E313D9C33" Win64="yes">
         <Shortcut Id="ApplicationStartMenuShortcut"
                   Name="Ligament 2FA"
                   Description="Ligament Enterprise 2FA Authenticator"
@@ -47,7 +47,7 @@
     </DirectoryRef>
 
     <DirectoryRef Id="INSTALLFOLDER">
-      <Component Id="AutoStartupRegistry" Guid="83C6F77B-4B52-47C2-B812-9A4B39ECDA19">
+      <Component Id="AutoStartupRegistry" Guid="83C6F77B-4B52-47C2-B812-9A4B39ECDA19" Win64="yes">
         <!-- Run on Windows startup -->
         <RegistryValue Root="HKLM"
                        Key="Software\Microsoft\Windows\CurrentVersion\Run"
