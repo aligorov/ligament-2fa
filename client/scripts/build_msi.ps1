@@ -20,6 +20,7 @@ Write-Host "========================================================" -Foregroun
 
 # 1. Сборка релизной версии Flutter для Windows
 Set-Location $ClientDir
+$env:CL = "$env:CL /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
 Write-Host "`n[1/4] Компиляция Flutter Windows Release..." -ForegroundColor Yellow
 flutter build windows --release
 
