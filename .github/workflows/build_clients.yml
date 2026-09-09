@@ -102,3 +102,33 @@ jobs:
         with:
           name: Ligament-2FA-macOS-DMG
           path: client/dist/Ligament-2FA-macOS.dmg
+
+  build-ios:
+    name: Build iOS IPA
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Build iOS App and Package IPA
+        run: |
+          cd client
+          flutter pub get
+          flutter build ios --release --no-codesign
+          mkdir -p dist/Payload
+          cp -R build/ios/iphoneos/Runner.app dist/Payload/
+          cd dist
+          zip -qry Ligament-2FA.ipa Payload
+          rm -rf Payload
+
+      - name: Upload iOS IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ligament-2FA-iOS-IPA
+          path: client/dist/Ligament-2FA.ipa
