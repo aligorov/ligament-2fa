@@ -563,3 +563,55 @@ func TestLdapTestUserLookup(t *testing.T) {
 		t.Errorf("expected message to mention forbidden access, got %q", resDisallowed.Message)
 	}
 }
+
+func TestLdapSearchUsersPagingAndSizeLimit(t *testing.T) {
+	u1 := userEntry("CN=User1,OU=Users,DC=example,DC=com", map[string][]string{"sAMAccountName": {"user1"}})
+	u2 := userEntry("CN=User2,OU=Users,DC=example,DC=com", map[string][]string{"sAMAccountName": {"user2"}})
+
+	// 1. Тестируем, что при ошибке SizeLimitExceeded от сервера с возвращенными записями,
+	// searchUsers не падает, а возвращает имеющиеся записи.
+	connLimit := &fakeLdapConn{
+		searchFn: func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+			return &ldap.SearchResult{Entries: []*ldap.Entry{u1, u2}}, ldap.NewError(ldap.LDAPResultSizeLimitExceeded, errors.New("size limit exceeded"))
+		},
+	}
+	v := newFakeVerifier(connLimit)
+	cfg := testLDAPCfg()
+	entries, err := v.searchUsers(connLimit, cfg, "(&(objectClass=user)(sAMAccountName=*))", 100)
+	if err != nil {
+		t.Fatalf("searchUsers with SizeLimitExceeded returned error: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	// 2. Тестируем многостраничный поиск с ControlPaging cookie
+	called := 0
+	connPaging := &fakeLdapConn{
+		searchFn: func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+			called++
+			if called == 1 {
+				ctrl := ldap.NewControlPaging(2)
+				ctrl.SetCookie([]byte("page2-cookie"))
+				return &ldap.SearchResult{
+					Entries:  []*ldap.Entry{u1},
+					Controls: []ldap.Control{ctrl},
+				}, nil
+			}
+			return &ldap.SearchResult{
+				Entries: []*ldap.Entry{u2},
+			}, nil
+		},
+	}
+	vPaging := newFakeVerifier(connPaging)
+	entriesPaging, err := vPaging.searchUsers(connPaging, cfg, "(&(objectClass=user)(sAMAccountName=*))", 100)
+	if err != nil {
+		t.Fatalf("searchUsers with paging returned error: %v", err)
+	}
+	if len(entriesPaging) != 2 {
+		t.Fatalf("expected 2 entries from 2 pages, got %d", len(entriesPaging))
+	}
+	if called != 2 {
+		t.Fatalf("expected 2 search queries for 2 pages, got %d", called)
+	}
+}

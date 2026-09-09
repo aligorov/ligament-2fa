@@ -471,7 +471,7 @@ func (v *LdapVerifier) TestUserLookup(ctx context.Context, username string) (*Ld
 		ldapAttrs(cfg), nil,
 	)
 	userRes, err := conn.Search(userReq)
-	if err != nil {
+	if err != nil && (!ldap.IsErrorWithCode(err, ldap.LDAPResultSizeLimitExceeded) || userRes == nil || len(userRes.Entries) == 0) {
 		return nil, fmt.Errorf("поиск пользователя: %w", err)
 	}
 	if len(userRes.Entries) == 0 {
@@ -491,22 +491,27 @@ func (v *LdapVerifier) TestUserLookup(ctx context.Context, username string) (*Ld
 	}
 
 	groups := []string{}
-	base := cfg.GroupBaseDN
-	if base == "" {
-		base = cfg.BaseDN
+	if memberOf := entry.GetAttributeValues("memberOf"); len(memberOf) > 0 {
+		groups = append(groups, memberOf...)
 	}
-	groupFilter := cfg.GroupFilter
-	if groupFilter == "" {
-		groupFilter = "(&(objectClass=group)(member={dn}))"
-	}
-	groupReq := ldap.NewSearchRequest(
-		base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 10, false,
-		substFilter(groupFilter, "{dn}", entry.DN), nil, nil,
-	)
-	if groupRes, err := conn.Search(groupReq); err == nil {
-		for _, g := range groupRes.Entries {
-			if g.DN != "" {
-				groups = append(groups, g.DN)
+	if len(groups) == 0 {
+		base := cfg.GroupBaseDN
+		if base == "" {
+			base = cfg.BaseDN
+		}
+		groupFilter := cfg.GroupFilter
+		if groupFilter == "" {
+			groupFilter = "(&(objectClass=group)(member={dn}))"
+		}
+		groupReq := ldap.NewSearchRequest(
+			base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 10, false,
+			substFilter(groupFilter, "{dn}", entry.DN), nil, nil,
+		)
+		if groupRes, err := conn.Search(groupReq); err == nil {
+			for _, g := range groupRes.Entries {
+				if g.DN != "" {
+					groups = append(groups, g.DN)
+				}
 			}
 		}
 	}
@@ -568,15 +573,11 @@ func (v *LdapVerifier) SyncUsers(ctx context.Context, maxCount int) (*LdapSyncRe
 		syncFilter = fmt.Sprintf("(&%s(!(objectClass=computer)))", syncFilter)
 	}
 
-	if maxCount <= 0 || maxCount > 1000 {
-		maxCount = 500
+	if maxCount <= 0 || maxCount > 10000 {
+		maxCount = 2000
 	}
 
-	searchReq := ldap.NewSearchRequest(
-		cfg.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, maxCount, 30, false,
-		syncFilter, ldapAttrs(cfg), nil,
-	)
-	searchRes, err := conn.Search(searchReq)
+	entries, err := v.searchUsers(conn, cfg, syncFilter, maxCount)
 	if err != nil {
 		return nil, fmt.Errorf("поиск пользователей в LDAP: %w", err)
 	}
@@ -591,10 +592,10 @@ func (v *LdapVerifier) SyncUsers(ctx context.Context, maxCount int) (*LdapSyncRe
 	}
 
 	res := &LdapSyncResult{
-		TotalFound: len(searchRes.Entries),
+		TotalFound: len(entries),
 	}
 
-	for _, entry := range searchRes.Entries {
+	for _, entry := range entries {
 		uname := strings.TrimSpace(extractUsername(entry))
 		if uname == "" || strings.HasSuffix(uname, "$") {
 			res.Skipped++
@@ -603,14 +604,19 @@ func (v *LdapVerifier) SyncUsers(ctx context.Context, maxCount int) (*LdapSyncRe
 
 		groups := []string{}
 		if len(cfg.AllowGroups) > 0 || len(cfg.RoleMap) > 0 || len(cfg.GroupRadiusMap) > 0 {
-			gReq := ldap.NewSearchRequest(
-				groupBase, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 5, false,
-				substFilter(groupFilter, "{dn}", entry.DN), nil, nil,
-			)
-			if gRes, err := conn.Search(gReq); err == nil {
-				for _, g := range gRes.Entries {
-					if g.DN != "" {
-						groups = append(groups, g.DN)
+			if memberOf := entry.GetAttributeValues("memberOf"); len(memberOf) > 0 {
+				groups = append(groups, memberOf...)
+			}
+			if len(groups) == 0 {
+				gReq := ldap.NewSearchRequest(
+					groupBase, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 5, false,
+					substFilter(groupFilter, "{dn}", entry.DN), nil, nil,
+				)
+				if gRes, err := conn.Search(gReq); err == nil {
+					for _, g := range gRes.Entries {
+						if g.DN != "" {
+							groups = append(groups, g.DN)
+						}
 					}
 				}
 			}
@@ -655,7 +661,91 @@ func (v *LdapVerifier) SyncUsers(ctx context.Context, maxCount int) (*LdapSyncRe
 
 	res.Message = fmt.Sprintf("Синхронизация завершена: найдено %d, создано новых %d, обновлено %d, пропущено %d.",
 		res.TotalFound, res.Created, res.Updated, res.Skipped)
+	if len(res.Errors) > 0 {
+		res.Message += fmt.Sprintf(" (ошибок: %d)", len(res.Errors))
+	}
 	return res, nil
+}
+
+// searchUsers выполняет постраничный поиск пользователей с использованием RFC 2696 Simple Paged Results.
+// Это предотвращает ошибку LDAP Result Code 4 "Size Limit Exceeded", когда в каталоге Active Directory
+// содержится больше объектов, чем лимит страницы сервера (по умолчанию 1000 в AD) или запрошенный лимит.
+func (v *LdapVerifier) searchUsers(conn LdapConn, cfg settings.LDAPSettings, syncFilter string, maxCount int) ([]*ldap.Entry, error) {
+	if maxCount <= 0 || maxCount > 10000 {
+		maxCount = 2000
+	}
+
+	var pageSize uint32 = 250
+	if maxCount < int(pageSize) {
+		pageSize = uint32(maxCount)
+	}
+
+	pagingCtrl := ldap.NewControlPaging(pageSize)
+	var allEntries []*ldap.Entry
+
+	for {
+		searchReq := ldap.NewSearchRequest(
+			cfg.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 30, false,
+			syncFilter, ldapAttrs(cfg), []ldap.Control{pagingCtrl},
+		)
+
+		searchRes, err := conn.Search(searchReq)
+		if searchRes != nil && len(searchRes.Entries) > 0 {
+			allEntries = append(allEntries, searchRes.Entries...)
+		}
+
+		if err != nil {
+			// Если сервер вернул ошибку SizeLimitExceeded, но записи уже получены — используем их
+			if ldap.IsErrorWithCode(err, ldap.LDAPResultSizeLimitExceeded) && len(allEntries) > 0 {
+				break
+			}
+			// Если на первой странице возникла ошибка (например, LDAP-сервер не поддерживает RFC 2696 paging),
+			// выполняем fallback на обычный поиск без control paging
+			if len(allEntries) == 0 {
+				return v.searchUsersFallback(conn, cfg, syncFilter, maxCount)
+			}
+			break
+		}
+
+		if len(allEntries) >= maxCount {
+			allEntries = allEntries[:maxCount]
+			// RFC 2696: закрываем серверный контекст пейджинга
+			pagingCtrl.PagingSize = 0
+			_, _ = conn.Search(searchReq)
+			break
+		}
+
+		// Проверяем наличие следующей страницы
+		updatedCtrl := ldap.FindControl(searchRes.Controls, ldap.ControlTypePaging)
+		if ctrl, ok := updatedCtrl.(*ldap.ControlPaging); ok && ctrl != nil && len(ctrl.Cookie) > 0 {
+			pagingCtrl.SetCookie(ctrl.Cookie)
+			continue
+		}
+		break
+	}
+
+	return allEntries, nil
+}
+
+func (v *LdapVerifier) searchUsersFallback(conn LdapConn, cfg settings.LDAPSettings, syncFilter string, maxCount int) ([]*ldap.Entry, error) {
+	searchReq := ldap.NewSearchRequest(
+		cfg.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 30, false,
+		syncFilter, ldapAttrs(cfg), nil,
+	)
+	searchRes, err := conn.Search(searchReq)
+	if searchRes != nil && len(searchRes.Entries) > 0 {
+		if maxCount > 0 && len(searchRes.Entries) > maxCount {
+			return searchRes.Entries[:maxCount], nil
+		}
+		return searchRes.Entries, nil
+	}
+	if err != nil && !ldap.IsErrorWithCode(err, ldap.LDAPResultSizeLimitExceeded) {
+		return nil, fmt.Errorf("поиск пользователей в LDAP: %w", err)
+	}
+	if searchRes != nil {
+		return searchRes.Entries, nil
+	}
+	return nil, nil
 }
 
 // CompositeVerifier — выбор бэкенда первого фактора по источнику учётной
@@ -714,7 +804,7 @@ func substFilter(filter, placeholder, value string) string {
 
 // ldapAttrs — список запрашиваемых атрибутов контактов (непустые имена).
 func ldapAttrs(cfg settings.LDAPSettings) []string {
-	attrs := []string{"sAMAccountName", "uid", "userPrincipalName", "cn"}
+	attrs := []string{"sAMAccountName", "uid", "userPrincipalName", "cn", "memberOf"}
 	for _, a := range []string{cfg.Attrs.Email, cfg.Attrs.Phone, cfg.Attrs.DisplayName} {
 		if a != "" {
 			attrs = append(attrs, a)

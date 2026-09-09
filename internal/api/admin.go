@@ -1591,7 +1591,7 @@ func (a *AdminAPI) handleLdapSync(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.MaxCount <= 0 {
-		req.MaxCount = 500
+		req.MaxCount = 2000
 	}
 	res, err := a.ldapVerifier().SyncUsers(r.Context(), req.MaxCount)
 	if err != nil {

@@ -2407,7 +2407,7 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 			redirectFlash(w, r, "/admin/settings", "Настройки сохранены. "+res.Message, true)
 			return
 		case "sync_users":
-			res, err := p.ldapVerifier().SyncUsers(ctx, 500)
+			res, err := p.ldapVerifier().SyncUsers(ctx, 2000)
 			if err != nil {
 				p.admin.audit(ctx, "ldap_sync_users_fail", map[string]any{"error": err.Error(), "via": "html"})
 				redirectFlash(w, r, "/admin/settings", "Настройки сохранены. Ошибка синхронизации пользователей: "+err.Error(), false)
