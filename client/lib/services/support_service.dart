@@ -77,6 +77,7 @@ class SupportService extends ChangeNotifier {
         'iceServers': [
           {'urls': 'stun:stun.l.google.com:19302'},
           {'urls': 'stun:stun1.l.google.com:19302'},
+          {'urls': 'stun:stun.cloudflare.com:3478'},
         ],
         'sdpSemantics': 'unified-plan',
       };
@@ -124,20 +125,30 @@ class SupportService extends ChangeNotifier {
         _setupDataChannel(channel);
       };
 
-      // Захват экрана
-      final mediaConstraints = <String, dynamic>{
-        'audio': false,
-        'video': {
-          'mandatory': {
-            'minWidth': '1280',
-            'minHeight': '720',
-            'minFrameRate': '30',
+      // Захват экрана: на десктопе нужно получить источник через DesktopCapturer
+      MediaStream screenStream;
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+        // На десктопных платформах getDisplayMedia требует явный sourceId
+        final sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
+        if (sources.isEmpty) {
+          throw Exception('Не найдены источники экрана для захвата');
+        }
+        debugPrint('support_service: найдено ${sources.length} экранов, используем: ${sources.first.name}');
+        screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+          'audio': false,
+          'video': {
+            'deviceId': {'exact': sources.first.id},
+            'mandatory': {'frameRate': 15.0},
           },
-          'optional': [],
-        },
-      };
-
-      _localStream = await navigator.mediaDevices.getDisplayMedia(mediaConstraints);
+        });
+      } else {
+        // Мобильные платформы и Web
+        screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+          'audio': false,
+          'video': true,
+        });
+      }
+      _localStream = screenStream;
 
       for (final track in _localStream!.getVideoTracks()) {
         await _peerConnection!.addTrack(track, _localStream!);

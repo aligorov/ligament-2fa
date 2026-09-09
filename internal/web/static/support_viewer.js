@@ -106,33 +106,71 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const config = {
       iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" }
+        { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"] },
+        { urls: ["stun:stun.cloudflare.com:3478"] }
       ]
     };
 
     peerConnection = new RTCPeerConnection(config);
 
+    peerConnection.onconnectionstatechange = () => {
+      console.log("Support WebRTC: Connection state ->", peerConnection.connectionState);
+      if (peerConnection.connectionState === "connected") {
+        if (statusBadge) statusBadge.textContent = "Подключено (P2P)";
+      } else if (peerConnection.connectionState === "failed" || peerConnection.connectionState === "disconnected") {
+        if (statusBadge) statusBadge.textContent = "Связь потеряна";
+      }
+    };
+
+    peerConnection.oniceconnectionstatechange = () => {
+      console.log("Support WebRTC: ICE state ->", peerConnection.iceConnectionState);
+    };
+
     peerConnection.ontrack = (event) => {
       console.log("Support WebRTC: Remote track received", event);
+      const track = event.track;
+
+      function onStreamReady() {
+        if (videoPlaceholder) {
+          videoPlaceholder.classList.add("hidden");
+        }
+        hideNumberMatch();
+        if (statusBadge) {
+          statusBadge.textContent = "Активно (Трансляция)";
+        }
+      }
+
+      if (track) {
+        track.onunmute = () => {
+          console.log("Support WebRTC: Track unmuted (receiving video frames)");
+          onStreamReady();
+        };
+      }
+
       if (remoteVideo) {
         if (event.streams && event.streams[0]) {
           remoteVideo.srcObject = event.streams[0];
-        } else if (event.track) {
-          if (!remoteVideo.srcObject) {
-            remoteVideo.srcObject = new MediaStream();
-          }
-          remoteVideo.srcObject.addTrack(event.track);
+        } else if (track) {
+          remoteVideo.srcObject = new MediaStream([track]);
         }
-        remoteVideo.play().catch((e) => console.warn("Video play notice:", e));
+        remoteVideo.muted = true;
+        remoteVideo.playsInline = true;
+        remoteVideo.onloadeddata = () => {
+          console.log("Support WebRTC: First video frame rendered");
+          onStreamReady();
+        };
+        const playPromise = remoteVideo.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              console.log("Support WebRTC: Video playing");
+              onStreamReady();
+            })
+            .catch((e) => console.warn("Video play notice:", e));
+        }
       }
-      if (videoPlaceholder) {
-        videoPlaceholder.classList.add("hidden");
-      }
-      hideNumberMatch();
-      if (statusBadge) {
-        statusBadge.textContent = "Активно (Трансляция)";
-      }
+
+      onStreamReady();
     };
 
     peerConnection.onicecandidate = (event) => {
