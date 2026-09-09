@@ -66,6 +66,7 @@ func (mgr *Manager) IDTokenClaims(iss string, u *store.User, clientID, scope, no
 	}
 	if HasScope(scope, "profile") {
 		claims["preferred_username"] = u.Username
+		claims["username"] = u.Username
 		claims["name"] = u.DisplayName
 		if u.DisplayName == "" {
 			claims["name"] = u.Username

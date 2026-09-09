@@ -724,19 +724,40 @@ func (c *Core) NotifyLoginSuccess(ctx context.Context, username, method, ip, ua 
 
 		var sb strings.Builder
 		sb.WriteString("🔔 Вход в учётную запись\n\n")
-		sb.WriteString("👤 Пользователь: " + username + "\n")
+
+		userTitle := username
+		if user.DisplayName != "" && user.DisplayName != username {
+			userTitle = fmt.Sprintf("%s (%s)", username, user.DisplayName)
+		}
+		sb.WriteString("👤 Пользователь: " + userTitle + "\n")
+
 		if method != "" {
 			sb.WriteString("🌐 Способ: " + method + "\n")
 		}
 		if ip != "" {
 			label := "📍 IP-адрес"
+			ipVal := ip
 			if strings.HasPrefix(method, "Wi-Fi") {
 				label = "📡 Точка доступа (NAS)"
+			} else {
+				ipVal = FormatIPDescription(ip)
 			}
-			sb.WriteString(label + ": " + ip + "\n")
+			sb.WriteString(label + ": " + ipVal + "\n")
 		}
 		if ua != "" {
-			sb.WriteString("📱 Устройство: " + ua + "\n")
+			devStr, browserStr := FormatDeviceAndBrowser(ua)
+			devIcon := "💻"
+			if strings.Contains(devStr, "iPhone") || strings.Contains(devStr, "Android") || strings.Contains(devStr, "iPad") {
+				devIcon = "📱"
+			} else if strings.HasPrefix(method, "Wi-Fi") {
+				devIcon = "📱"
+			}
+			if devStr != "" {
+				sb.WriteString(devIcon + " Устройство: " + devStr + "\n")
+			}
+			if browserStr != "" {
+				sb.WriteString("🌐 Браузер: " + browserStr + "\n")
+			}
 		}
 		sb.WriteString("⏰ Время: " + timeStr + "\n")
 		if domain != "" {

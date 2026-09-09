@@ -64,12 +64,22 @@ type Manager struct {
 	m    *settings.M
 	rend *web.Renderer
 
+	notifier LoginNotifier
+
 	ads   func(*http.Request) web.AdsData
 	brand func(*http.Request) web.BrandData
 
 	key *rsa.PrivateKey
 	kid string
 }
+
+// LoginNotifier интерфейс отправки уведомлений о входе.
+type LoginNotifier interface {
+	NotifyLoginSuccess(ctx context.Context, username, method, ip, ua string)
+}
+
+// SetNotifier подключает обработчик уведомлений о входе.
+func (mgr *Manager) SetNotifier(n LoginNotifier) { mgr.notifier = n }
 
 // SetAds подключает решатель показа рекламы РСЯ / direct.
 func (mgr *Manager) SetAds(f func(*http.Request) web.AdsData) { mgr.ads = f }

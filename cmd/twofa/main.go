@@ -249,6 +249,7 @@ func main() {
 		slog.Error("main: OIDC-провайдер", "error", err)
 		os.Exit(1)
 	}
+	oidcMgr.SetNotifier(core)
 	radius := radiusserver.New(core, st, m)
 	radius.SetFirewall(guard)
 

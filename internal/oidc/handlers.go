@@ -5,6 +5,7 @@
 package oidc
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -501,6 +502,20 @@ func (mgr *Manager) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reques
 		"client_id": client.ClientID, "scope": FilterScopes(ar.Scope),
 	})
 
+	if mgr.notifier != nil {
+		appName := client.Name
+		if strings.TrimSpace(appName) == "" {
+			appName = client.ClientID
+		}
+		mgr.notifier.NotifyLoginSuccess(
+			context.WithoutCancel(r.Context()),
+			user.Username,
+			"OIDC ("+appName+")",
+			clientIP(r),
+			r.UserAgent(),
+		)
+	}
+
 	u, err := url.Parse(ar.RedirectURI)
 	if err != nil {
 		http.Error(w, "некорректный redirect_uri", http.StatusBadRequest)
@@ -666,6 +681,7 @@ func (mgr *Manager) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"sub": user.ID.String()}
 	if HasScope(t.Scope, "profile") {
 		out["preferred_username"] = user.Username
+		out["username"] = user.Username
 		out["name"] = user.DisplayName
 		if user.DisplayName == "" {
 			out["name"] = user.Username

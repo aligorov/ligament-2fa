@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,9 +36,10 @@ import (
 )
 
 var (
-	pgSt *store.Store
-	pgM  *settings.M
-	pgRt http.Handler
+	pgSt  *store.Store
+	pgM   *settings.M
+	pgRt  http.Handler
+	pgMgr *Manager
 )
 
 // pg поднимает хранилище, настройки и роутер OIDC (один раз на прогон).
@@ -73,7 +75,7 @@ func pg(t *testing.T) (*store.Store, *settings.M, http.Handler) {
 	}
 	r := chi.NewRouter()
 	mgr.Register(r)
-	pgSt, pgM, pgRt = st, m, r
+	pgSt, pgM, pgRt, pgMgr = st, m, r, mgr
 	return pgSt, pgM, pgRt
 }
 
@@ -91,6 +93,7 @@ func cleanOIDC(t *testing.T, st *store.Store) {
 // конфиденциальный и public-клиент.
 type oidcFixture struct {
 	st           *store.Store
+	mgr          *Manager
 	h            http.Handler
 	user         *store.User
 	session      *http.Cookie
@@ -105,7 +108,7 @@ type oidcFixture struct {
 // startSession), клиентов и возвращает всё готовое к флоу.
 func newFixture(t *testing.T) *oidcFixture {
 	t.Helper()
-	st, m, h := pg(t)
+	st, _, h := pg(t)
 	cleanOIDC(t, st)
 	ctx := context.Background()
 
@@ -140,7 +143,7 @@ func newFixture(t *testing.T) *oidcFixture {
 	}
 	_ = m // менеджер используется через pg()
 	return &oidcFixture{
-		st: st, h: h, user: user,
+		st: st, mgr: pgMgr, h: h, user: user,
 		session:    &http.Cookie{Name: cookieSession, Value: token},
 		csrf:       csrf,
 		confClient: confClient, confSecret: confSecret,
@@ -392,6 +395,9 @@ func TestOIDCCodeFlowHappyPath(t *testing.T) {
 	if claims["preferred_username"] != f.user.Username {
 		t.Errorf("preferred_username = %v", claims["preferred_username"])
 	}
+	if claims["username"] != f.user.Username {
+		t.Errorf("username = %v", claims["username"])
+	}
 	if claims["email"] != "oidc@example.com" || claims["email_verified"] != true {
 		t.Errorf("email/email_verified: %v/%v", claims["email"], claims["email_verified"])
 	}
@@ -411,7 +417,7 @@ func TestOIDCCodeFlowHappyPath(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &ui); err != nil {
 		t.Fatalf("userinfo json: %v", err)
 	}
-	if ui["sub"] != f.user.ID.String() || ui["preferred_username"] != f.user.Username {
+	if ui["sub"] != f.user.ID.String() || ui["preferred_username"] != f.user.Username || ui["username"] != f.user.Username {
 		t.Errorf("userinfo: %s", rec.Body.String())
 	}
 	if ui["email"] != "oidc@example.com" {
@@ -703,3 +709,72 @@ func TestOIDCConstantTimeSecret(t *testing.T) {
 		t.Error("префикс секрета не должен проходить")
 	}
 }
+
+type fakeOIDCNotifier struct {
+	sync.Mutex
+	called   bool
+	username string
+	method   string
+	ip       string
+	ua       string
+}
+
+func (n *fakeOIDCNotifier) NotifyLoginSuccess(ctx context.Context, username, method, ip, ua string) {
+	n.Lock()
+	defer n.Unlock()
+	n.called = true
+	n.username = username
+	n.method = method
+	n.ip = ip
+	n.ua = ua
+}
+
+// TestOIDCAuthorizeNotification проверяет, что при подтверждении согласия отправляется уведомление о входе.
+func TestOIDCAuthorizeNotification(t *testing.T) {
+	f := newFixture(t)
+	notif := &fakeOIDCNotifier{}
+	f.mgr.SetNotifier(notif)
+
+	q := f.authorizeQuery()
+	form := url.Values{
+		"csrf_token":            {f.csrf},
+		"client_id":             {q.Get("client_id")},
+		"redirect_uri":          {q.Get("redirect_uri")},
+		"response_type":         {q.Get("response_type")},
+		"scope":                 {q.Get("scope")},
+		"state":                 {q.Get("state")},
+		"nonce":                 {q.Get("nonce")},
+		"code_challenge":        {q.Get("code_challenge")},
+		"code_challenge_method": {q.Get("code_challenge_method")},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oidc/authorize/confirm", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "TestBrowser/1.0 (Macintosh)")
+	req.RemoteAddr = "192.168.1.100:12345"
+	req.AddCookie(&http.Cookie{Name: cookieSession, Value: f.sessionToken})
+
+	rec := httptest.NewRecorder()
+	f.h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("confirm: статус %d, хочу 302: %s", rec.Code, rec.Body.String())
+	}
+
+	notif.Lock()
+	defer notif.Unlock()
+	if !notif.called {
+		t.Fatal("уведомление NotifyLoginSuccess не было вызвано")
+	}
+	if notif.username != f.user.Username {
+		t.Errorf("username = %q, want %q", notif.username, f.user.Username)
+	}
+	if notif.method != "OIDC ("+f.confClient.Name+")" {
+		t.Errorf("method = %q, want %q", notif.method, "OIDC ("+f.confClient.Name+")")
+	}
+	if notif.ip != "192.168.1.100" {
+		t.Errorf("ip = %q, want 192.168.1.100", notif.ip)
+	}
+	if notif.ua != "TestBrowser/1.0 (Macintosh)" {
+		t.Errorf("ua = %q, want TestBrowser/1.0 (Macintosh)", notif.ua)
+	}
+}
+
