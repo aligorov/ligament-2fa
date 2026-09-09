@@ -723,6 +723,9 @@ func (a *AdminAPI) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 // (pgx.ErrNoRows) — входящее значение как есть; любая другая ошибка БД
 // возвращается наверх (вызывающий отвечает 500, а не молча заменяет значение).
 func (a *AdminAPI) mergedValue(ctx context.Context, key string, inc json.RawMessage) (json.RawMessage, error) {
+	if isReplaceableSettingKey(key) {
+		return inc, nil
+	}
 	var cur json.RawMessage
 	err := a.st.Pool().QueryRow(ctx,
 		`SELECT value FROM settings WHERE key = $1`, key).Scan(&cur)
@@ -736,6 +739,19 @@ func (a *AdminAPI) mergedValue(ctx context.Context, key string, inc json.RawMess
 		return inc, nil
 	}
 	return mergeSettingValue(cur, inc), nil
+}
+
+func isReplaceableSettingKey(key string) bool {
+	switch key {
+	case "radius.reply_attributes", "radius.vlan_profiles", "radius.nas_inventory":
+		return true
+	default:
+		return false
+	}
+}
+
+func isReplaceableSubField(k string) bool {
+	return k == "group_radius_map" || k == "role_map"
 }
 
 // mergeSettingValue рекурсивно мержит inc в cur (оба — JSON-объекты;
@@ -759,6 +775,10 @@ func mergeSettingMap(dst, inc map[string]json.RawMessage) {
 	for k, v := range inc {
 		if isNoChangeValue(v) {
 			continue // маска/пустое — оставить текущее значение поля
+		}
+		if isReplaceableSubField(k) {
+			dst[k] = v
+			continue
 		}
 		// Вложенные объекты мержатся так же рекурсивно.
 		if merged := mergeSettingValue(dst[k], v); merged != nil {

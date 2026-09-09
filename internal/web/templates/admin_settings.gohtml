@@ -678,10 +678,10 @@
       </div>
 
       <!-- Скрытое поле для отправки в форму (name="ldap.group_radius_map") -->
-      <textarea name="ldap.group_radius_map" id="ldap-group-radius-raw" style="display:none;">{{.LDAPGroupRadiusMap}}</textarea>
+      <textarea name="ldap.group_radius_map" id="ldap-group-radius-raw" hidden class="is-hidden" style="display:none;">{{.LDAPGroupRadiusMap}}</textarea>
 
       <!-- Скрытый блок для передачи справочника VLAN в JavaScript -->
-      <div id="vlan-profiles-data" data-profiles="{{.VLANProfilesJSON}}" style="display:none;"></div>
+      <div id="vlan-profiles-data" data-profiles="{{.VLANProfilesJSON}}" hidden class="is-hidden" style="display:none;"></div>
 
       <!-- Автодополнение для стандартных RADIUS-атрибутов -->
       <datalist id="radius-common-attrs">

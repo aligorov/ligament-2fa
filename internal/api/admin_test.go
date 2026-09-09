@@ -78,6 +78,47 @@ func TestMergeSettingValueReplace(t *testing.T) {
 	}
 }
 
+func TestMergeSettingValueReplaceableFields(t *testing.T) {
+	// group_radius_map и role_map должны заменяться целиком,
+	// а не накапливать удалённые группы при deep merge.
+	cur := json.RawMessage(`{
+		"enabled": true,
+		"group_radius_map": {
+			"WiFi-Staff": {
+				"Tunnel-Type": "13",
+				"Tunnel-Medium-Type": "6",
+				"Tunnel-Private-Group-Id": "100"
+			}
+		},
+		"role_map": {
+			"CN=OldGroup": "admin"
+		}
+	}`)
+	inc := json.RawMessage(`{
+		"enabled": true,
+		"group_radius_map": {},
+		"role_map": {}
+	}`)
+	got := mergeSettingValue(cur, inc)
+	var m struct {
+		Enabled        bool                         `json:"enabled"`
+		GroupRadiusMap map[string]map[string]string `json:"group_radius_map"`
+		RoleMap        map[string]string            `json:"role_map"`
+	}
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("unmarshal %s: %v", got, err)
+	}
+	if !m.Enabled {
+		t.Errorf("enabled = false, want true")
+	}
+	if len(m.GroupRadiusMap) != 0 {
+		t.Errorf("group_radius_map = %v, want empty after deletion (WiFi-Staff must not persist)", m.GroupRadiusMap)
+	}
+	if len(m.RoleMap) != 0 {
+		t.Errorf("role_map = %v, want empty after deletion", m.RoleMap)
+	}
+}
+
 func TestParseChannels(t *testing.T) {
 	chs, ok := parseChannels([]string{"totp", "email", "telegram", "sms", "telegram_push"})
 	if !ok || len(chs) != 5 {

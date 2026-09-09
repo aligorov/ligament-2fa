@@ -1047,6 +1047,9 @@ ul.codes li code {
   padding-top: var(--sp-2);
   border-top: 1px solid var(--line);
 }
+.is-hidden, [hidden], #ldap-group-radius-raw, #vlan-profiles-data {
+  display: none !important;
+}
 
 /* ---- элементы выбора групп и пользователей ---- */
 .badge.info {
