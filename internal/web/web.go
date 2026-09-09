@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/skip2/go-qrcode"
 
 	"github.com/aligorov/twofa/internal/channel"
@@ -240,4 +241,21 @@ var funcs = template.FuncMap{
 	"dict":       templateDict,
 	"deref":      deref,
 	"vlanDesc":   vlanDesc,
+	"join":       strings.Join,
+	"hasUUID": func(list []uuid.UUID, id uuid.UUID) bool {
+		for _, x := range list {
+			if x == id {
+				return true
+			}
+		}
+		return false
+	},
+	"hasStr": func(list []string, s string) bool {
+		for _, x := range list {
+			if strings.EqualFold(strings.TrimSpace(x), strings.TrimSpace(s)) {
+				return true
+			}
+		}
+		return false
+	},
 }

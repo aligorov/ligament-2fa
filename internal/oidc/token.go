@@ -4,6 +4,7 @@
 package oidc
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -51,6 +52,13 @@ func (mgr *Manager) SignIDToken(claims map[string]any) (string, error) {
 // ограниченные scope (profile → preferred_username/name/groups,
 // email → email/email_verified).
 func (mgr *Manager) IDTokenClaims(iss string, u *store.User, clientID, scope, nonce, amr string, authTime, now time.Time) map[string]any {
+	groups := []string{u.Role}
+	if mgr != nil && mgr.st != nil {
+		if lgn, err := mgr.st.UserGroupNames(context.Background(), u.ID); err == nil {
+			groups = append(groups, lgn...)
+		}
+	}
+	groups = append(groups, u.LDAPGroups...)
 	claims := map[string]any{
 		"iss":       iss,
 		"sub":       u.ID.String(),
@@ -59,7 +67,7 @@ func (mgr *Manager) IDTokenClaims(iss string, u *store.User, clientID, scope, no
 		"iat":       now.Unix(),
 		"auth_time": authTime.Unix(),
 		"amr":       SplitAMR(amr),
-		"groups":    []string{u.Role},
+		"groups":    uniqueStrings(groups),
 	}
 	if nonce != "" {
 		claims["nonce"] = nonce

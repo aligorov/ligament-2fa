@@ -112,8 +112,17 @@ func (a *AdminAPI) Register(r chi.Router) {
 		r.Post("/firewall/ip", a.handleFirewallIPAdd)
 		r.Delete("/firewall/ip/{id}", a.handleFirewallIPDelete)
 		r.Delete("/firewall/bans/{ip}", a.handleFirewallUnban)
+		r.Get("/groups", a.handleGroupsList)
+		r.Post("/groups", a.handleGroupCreate)
+		r.Get("/groups/{id}", a.handleGroupGet)
+		r.Put("/groups/{id}", a.handleGroupUpdate)
+		r.Delete("/groups/{id}", a.handleGroupDelete)
+		r.Get("/groups/{id}/members", a.handleGroupMembersGet)
+		r.Put("/groups/{id}/members", a.handleGroupMembersSet)
 		r.Get("/oidc/clients", a.handleOIDCClientsList)
 		r.Post("/oidc/clients", a.handleOIDCClientCreate)
+		r.Get("/oidc/clients/{id}", a.handleOIDCClientGet)
+		r.Put("/oidc/clients/{id}", a.handleOIDCClientUpdate)
 		r.Delete("/oidc/clients/{id}", a.handleOIDCClientDelete)
 		r.Get("/radius/cert", a.handleRadiusCertGet)
 		r.Post("/radius/acme/renew", a.handleRadiusACMERenew)
@@ -204,6 +213,7 @@ type adminUser struct {
 	PreferChannels []string          `json:"prefer_channels"`
 	RadiusPush     bool              `json:"radius_push"`
 	RadiusReply    map[string]string `json:"radius_reply"`
+	LDAPGroups     []string          `json:"ldap_groups"`
 }
 
 // toAdminUser переводит store.User в безопасное представление ответа;
@@ -212,6 +222,10 @@ func toAdminUser(u *store.User) adminUser {
 	chs := make([]string, len(u.PreferChannels))
 	for i, c := range u.PreferChannels {
 		chs[i] = string(c)
+	}
+	ldapGrps := u.LDAPGroups
+	if ldapGrps == nil {
+		ldapGrps = []string{}
 	}
 	return adminUser{
 		ID:             u.ID.String(),
@@ -224,6 +238,7 @@ func toAdminUser(u *store.User) adminUser {
 		PreferChannels: chs,
 		RadiusPush:     u.RadiusPush,
 		RadiusReply:    u.RadiusReply,
+		LDAPGroups:     ldapGrps,
 	}
 }
 
@@ -908,12 +923,14 @@ func (a *AdminAPI) SetFirewall(f firewallInvalidate) { a.fw = f }
 // adminOIDCClient — клиент OIDC в ответах API: секрет никогда не покидает
 // БД (в ответе создания — только что сгенерированный, один раз).
 type adminOIDCClient struct {
-	ID           string    `json:"id"`
-	ClientID     string    `json:"client_id"`
-	Name         string    `json:"name"`
-	RedirectURIs []string  `json:"redirect_uris"`
-	IsPublic     bool      `json:"is_public"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	ClientID      string    `json:"client_id"`
+	Name          string    `json:"name"`
+	RedirectURIs  []string  `json:"redirect_uris"`
+	IsPublic      bool      `json:"is_public"`
+	AllowedUsers  []string  `json:"allowed_users"`
+	AllowedGroups []string  `json:"allowed_groups"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // toAdminOIDCClient переводит store.OIDCClient в безопасное представление;
@@ -923,13 +940,23 @@ func toAdminOIDCClient(c store.OIDCClient) adminOIDCClient {
 	if uris == nil {
 		uris = []string{}
 	}
+	allowedUsers := c.AllowedUsers
+	if allowedUsers == nil {
+		allowedUsers = []string{}
+	}
+	allowedGroups := c.AllowedGroups
+	if allowedGroups == nil {
+		allowedGroups = []string{}
+	}
 	return adminOIDCClient{
-		ID:           c.ID.String(),
-		ClientID:     c.ClientID,
-		Name:         c.Name,
-		RedirectURIs: uris,
-		IsPublic:     c.IsPublic,
-		CreatedAt:    c.CreatedAt,
+		ID:            c.ID.String(),
+		ClientID:      c.ClientID,
+		Name:          c.Name,
+		RedirectURIs:  uris,
+		IsPublic:      c.IsPublic,
+		AllowedUsers:  allowedUsers,
+		AllowedGroups: allowedGroups,
+		CreatedAt:     c.CreatedAt,
 	}
 }
 
@@ -974,11 +1001,13 @@ func (a *AdminAPI) handleOIDCClientsList(w http.ResponseWriter, r *http.Request)
 }
 
 type oidcClientCreateReq struct {
-	Name         string   `json:"name"`
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"client_secret"`
-	RedirectURIs []string `json:"redirect_uris"`
-	IsPublic     bool     `json:"is_public"`
+	Name          string   `json:"name"`
+	ClientID      string   `json:"client_id"`
+	ClientSecret  string   `json:"client_secret"`
+	RedirectURIs  []string `json:"redirect_uris"`
+	IsPublic      bool     `json:"is_public"`
+	AllowedUsers  []string `json:"allowed_users"`
+	AllowedGroups []string `json:"allowed_groups"`
 }
 
 // handleOIDCClientCreate — POST /api/v1/admin/oidc/clients {name,
@@ -1003,14 +1032,18 @@ func (a *AdminAPI) handleOIDCClientCreate(w http.ResponseWriter, r *http.Request
 		cid = oidc.NewClientID()
 	}
 	c := &store.OIDCClient{
-		ClientID:     cid,
-		Name:         strings.TrimSpace(req.Name),
-		RedirectURIs: uris,
-		IsPublic:     req.IsPublic,
+		ClientID:      cid,
+		Name:          strings.TrimSpace(req.Name),
+		RedirectURIs:  uris,
+		IsPublic:      req.IsPublic,
+		AllowedUsers:  cleanStringList(req.AllowedUsers),
+		AllowedGroups: cleanStringList(req.AllowedGroups),
 	}
 	resp := map[string]any{
 		"id": "", "client_id": c.ClientID, "name": c.Name,
-		"redirect_uris": uris, "is_public": c.IsPublic,
+		"redirect_uris":  uris, "is_public": c.IsPublic,
+		"allowed_users":  c.AllowedUsers,
+		"allowed_groups": c.AllowedGroups,
 	}
 	if !c.IsPublic {
 		secret := strings.TrimSpace(req.ClientSecret)
@@ -1034,6 +1067,94 @@ func (a *AdminAPI) handleOIDCClientCreate(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+// handleOIDCClientGet — GET /api/v1/admin/oidc/clients/{id}.
+func (a *AdminAPI) handleOIDCClientGet(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	client, err := a.st.OIDCClientByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		slog.Error("api: admin oidc получить клиента", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	writeJSON(w, http.StatusOK, toAdminOIDCClient(*client))
+}
+
+type oidcClientUpdateReq struct {
+	Name          string   `json:"name"`
+	RedirectURIs  []string `json:"redirect_uris"`
+	IsPublic      *bool    `json:"is_public,omitempty"`
+	AllowedUsers  []string `json:"allowed_users"`
+	AllowedGroups []string `json:"allowed_groups"`
+	ClientSecret  string   `json:"client_secret,omitempty"`
+}
+
+// handleOIDCClientUpdate — PUT /api/v1/admin/oidc/clients/{id}.
+func (a *AdminAPI) handleOIDCClientUpdate(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	client, err := a.st.OIDCClientByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		slog.Error("api: admin oidc клиент не найден", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	var req oidcClientUpdateReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Name) != "" {
+		client.Name = strings.TrimSpace(req.Name)
+	}
+	if len(req.RedirectURIs) > 0 {
+		uris, err := validateRedirectURIs(req.RedirectURIs)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_redirect_uri")
+			return
+		}
+		client.RedirectURIs = uris
+	}
+	if req.IsPublic != nil {
+		client.IsPublic = *req.IsPublic
+	}
+	if req.AllowedUsers != nil {
+		client.AllowedUsers = cleanStringList(req.AllowedUsers)
+	}
+	if req.AllowedGroups != nil {
+		client.AllowedGroups = cleanStringList(req.AllowedGroups)
+	}
+	resp := map[string]any{
+		"ok": true,
+	}
+	if !client.IsPublic && strings.TrimSpace(req.ClientSecret) != "" {
+		secret := strings.TrimSpace(req.ClientSecret)
+		client.ClientSecretHash = oidc.HashClientSecret(secret)
+		resp["client_secret"] = secret
+	}
+	if err := a.st.OIDCClientUpdate(r.Context(), client); err != nil {
+		slog.Error("api: admin oidc обновить клиента", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	a.audit(r.Context(), "oidc_client_update", map[string]any{"id": id.String(), "client_id": client.ClientID})
+	resp["client"] = toAdminOIDCClient(*client)
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // handleOIDCClientDelete — DELETE /api/v1/admin/oidc/clients/{id} (каскад
 // чистит коды и токены клиента).
 func (a *AdminAPI) handleOIDCClientDelete(w http.ResponseWriter, r *http.Request) {
@@ -1052,6 +1173,193 @@ func (a *AdminAPI) handleOIDCClientDelete(w http.ResponseWriter, r *http.Request
 		return
 	}
 	a.audit(r.Context(), "oidc_client_delete", map[string]any{"id": id.String()})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ---- Groups: локальные группы пользователей ----
+
+type adminGroup struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	MemberCount int       `json:"member_count"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func toAdminGroup(g store.Group) adminGroup {
+	return adminGroup{
+		ID:          g.ID.String(),
+		Name:        g.Name,
+		Description: g.Description,
+		MemberCount: g.MemberCount,
+		CreatedAt:   g.CreatedAt,
+		UpdatedAt:   g.UpdatedAt,
+	}
+}
+
+type groupCreateReq struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+func (a *AdminAPI) handleGroupsList(w http.ResponseWriter, r *http.Request) {
+	groups, err := a.st.GroupList(r.Context())
+	if err != nil {
+		slog.Error("api: admin список групп", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	out := make([]adminGroup, len(groups))
+	for i, g := range groups {
+		out[i] = toAdminGroup(g)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": out})
+}
+
+func (a *AdminAPI) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
+	var req groupCreateReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	g := &store.Group{
+		Name:        name,
+		Description: strings.TrimSpace(req.Description),
+	}
+	if err := a.st.GroupCreate(r.Context(), g); err != nil {
+		slog.Error("api: admin создать группу", "error", err)
+		writeError(w, http.StatusBadRequest, "create_failed")
+		return
+	}
+	a.audit(r.Context(), "group_create", map[string]any{"id": g.ID.String(), "name": g.Name})
+	writeJSON(w, http.StatusCreated, toAdminGroup(*g))
+}
+
+func (a *AdminAPI) handleGroupGet(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	g, err := a.st.GroupByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		slog.Error("api: admin получить группу", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	writeJSON(w, http.StatusOK, toAdminGroup(*g))
+}
+
+func (a *AdminAPI) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	g, err := a.st.GroupByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		slog.Error("api: admin получить группу перед обновлением", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	var req groupCreateReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	g.Name = name
+	g.Description = strings.TrimSpace(req.Description)
+	if err := a.st.GroupUpdate(r.Context(), id, g.Name, g.Description); err != nil {
+		slog.Error("api: admin обновить группу", "error", err)
+		writeError(w, http.StatusBadRequest, "update_failed")
+		return
+	}
+	a.audit(r.Context(), "group_update", map[string]any{"id": g.ID.String(), "name": g.Name})
+	writeJSON(w, http.StatusOK, toAdminGroup(*g))
+}
+
+func (a *AdminAPI) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if err := a.st.GroupDelete(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		slog.Error("api: admin удалить группу", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	a.audit(r.Context(), "group_delete", map[string]any{"id": id.String()})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *AdminAPI) handleGroupMembersGet(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	members, err := a.st.GroupMembers(r.Context(), id)
+	if err != nil {
+		slog.Error("api: admin участники группы", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	memberIDs := make([]string, len(members))
+	for i, m := range members {
+		memberIDs[i] = m.ID.String()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"members": memberIDs})
+}
+
+type groupMembersSetReq struct {
+	UserIDs []string `json:"user_ids"`
+}
+
+func (a *AdminAPI) handleGroupMembersSet(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	var req groupMembersSetReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	var uids []uuid.UUID
+	for _, raw := range req.UserIDs {
+		uid, err := uuid.Parse(strings.TrimSpace(raw))
+		if err == nil {
+			uids = append(uids, uid)
+		}
+	}
+	if err := a.st.SetGroupMembers(r.Context(), id, uids); err != nil {
+		slog.Error("api: admin обновить участников группы", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	a.audit(r.Context(), "group_members_update", map[string]any{"id": id.String(), "count": len(uids)})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

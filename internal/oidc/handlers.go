@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-ldap/ldap/v3"
 
 	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/secrets"
@@ -395,6 +396,95 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
+// dnEqual сравнивает DN по правилам RFC 4517: регистр типов и значений не значим.
+func dnEqual(a, b string) bool {
+	dnA, errA := ldap.ParseDN(a)
+	dnB, errB := ldap.ParseDN(b)
+	if errA == nil && errB == nil {
+		return dnA.EqualFold(dnB)
+	}
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// groupCN — значение первого RDN записи группы (обычно CN).
+func groupCN(dn string) string {
+	if parsed, err := ldap.ParseDN(dn); err == nil && len(parsed.RDNs) > 0 && len(parsed.RDNs[0].Attributes) > 0 {
+		return parsed.RDNs[0].Attributes[0].Value
+	}
+	if i := strings.IndexByte(dn, '='); i >= 0 {
+		v := dn[i+1:]
+		if j := strings.IndexByte(v, ','); j >= 0 {
+			v = v[:j]
+		}
+		return v
+	}
+	return dn
+}
+
+// uniqueStrings удаляет дубликаты из среза строк с сохранением порядка.
+func uniqueStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// isUserAllowed проверяет доступ пользователя к OIDC-клиенту.
+// Если allowed_users и allowed_groups пусты — доступ разрешён всем.
+// Пользователи с системной ролью "admin" имеют доступ всегда.
+func (mgr *Manager) isUserAllowed(ctx context.Context, u *store.User, client *store.OIDCClient) bool {
+	if u.Role == "admin" {
+		return true
+	}
+	if len(client.AllowedUsers) == 0 && len(client.AllowedGroups) == 0 {
+		return true
+	}
+
+	for _, au := range client.AllowedUsers {
+		if strings.EqualFold(strings.TrimSpace(au), u.Username) {
+			return true
+		}
+	}
+
+	if len(client.AllowedGroups) > 0 {
+		if mgr.st != nil {
+			if localGroups, err := mgr.st.UserGroupNames(ctx, u.ID); err == nil {
+				for _, lg := range localGroups {
+					for _, ag := range client.AllowedGroups {
+						if strings.EqualFold(strings.TrimSpace(ag), lg) {
+							return true
+						}
+					}
+				}
+			}
+		}
+
+		for _, ug := range u.LDAPGroups {
+			ugTrim := strings.TrimSpace(ug)
+			ugCN := groupCN(ugTrim)
+			for _, ag := range client.AllowedGroups {
+				agTrim := strings.TrimSpace(ag)
+				if strings.EqualFold(agTrim, ugTrim) ||
+					(ugCN != "" && strings.EqualFold(agTrim, ugCN)) ||
+					(strings.Contains(agTrim, "=") && dnEqual(agTrim, ugTrim)) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 // handleAuthorize — GET /oidc/authorize: валидация клиента и запроса,
 // без сессии — редирект на /login?next=<authorize>, с сессией — страница
 // согласия.
@@ -412,6 +502,13 @@ func (mgr *Manager) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	user, csrf, _, ok := mgr.sessionUser(r)
 	if !ok {
 		http.Redirect(w, r, "/login?next="+url.QueryEscape(ar.authorizeURL()), http.StatusFound)
+		return
+	}
+	if !mgr.isUserAllowed(r.Context(), user, client) {
+		mgr.audit(r, user.Username, "oidc_access_denied", "forbidden", map[string]any{
+			"client_id": client.ClientID,
+		})
+		mgr.renderErrorPage(w, r, http.StatusForbidden, "Доступ к приложению ограничен. У вашей учётной записи нет прав для входа.")
 		return
 	}
 	mgr.renderConsent(w, r, ar, client, user, csrf)
@@ -484,6 +581,13 @@ func (mgr *Manager) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reques
 	}
 	if code := validateAuthorize(ar, client); code != "" {
 		redirectWithError(w, r, ar.RedirectURI, code, ar.State)
+		return
+	}
+	if !mgr.isUserAllowed(r.Context(), user, client) {
+		mgr.audit(r, user.Username, "oidc_access_denied", "forbidden", map[string]any{
+			"client_id": client.ClientID,
+		})
+		mgr.renderErrorPage(w, r, http.StatusForbidden, "Доступ к приложению ограничен. У вашей учётной записи нет прав для входа.")
 		return
 	}
 
@@ -691,7 +795,14 @@ func (mgr *Manager) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		if user.DisplayName == "" {
 			out["name"] = user.Username
 		}
-		out["groups"] = []string{user.Role}
+		groups := []string{user.Role}
+		if mgr.st != nil {
+			if lgn, err := mgr.st.UserGroupNames(r.Context(), user.ID); err == nil {
+				groups = append(groups, lgn...)
+			}
+		}
+		groups = append(groups, user.LDAPGroups...)
+		out["groups"] = uniqueStrings(groups)
 	}
 	if HasScope(t.Scope, "email") && user.Email != "" {
 		out["email"] = user.Email

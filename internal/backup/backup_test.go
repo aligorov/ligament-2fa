@@ -206,7 +206,7 @@ func TestInsertStatementsEmpty(t *testing.T) {
 // (users до всех ссылающихся), settings/audit_log/schema_migrations — без FK.
 func TestDumpTableOrderFK(t *testing.T) {
 	want := []string{
-		"users", "totp_secrets", "backup_codes", "challenges", "sessions",
+		"users", "groups", "user_groups", "totp_secrets", "backup_codes", "challenges", "sessions",
 		"settings", "audit_log", "trusted_devices", "webauthn_credentials",
 		"oidc_clients", "schema_migrations",
 	}

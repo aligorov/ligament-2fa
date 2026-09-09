@@ -30,18 +30,28 @@
   {{if .Clients}}
   <div class="table-wrap">
     <table class="table">
-      <tr><th>client_id</th><th>Название</th><th>Redirect URI</th><th>Тип</th><th>Создан</th><th></th></tr>
+      <tr><th>client_id</th><th>Название</th><th>Redirect URI</th><th>Тип</th><th>Доступ</th><th>Создан</th><th>Действия</th></tr>
       {{range .Clients}}
       <tr>
         <td class="mono">{{.ClientID}}</td>
         <td>{{.Name}}</td>
         <td class="mono">{{range .RedirectURIs}}{{.}}<br>{{end}}</td>
         <td>{{if .IsPublic}}<span class="badge neutral">public (PKCE)</span>{{else}}<span class="badge neutral">confidential</span>{{end}}</td>
-        <td>{{dt .CreatedAt}}</td>
         <td>
+          {{if and (eq (len .AllowedUsers) 0) (eq (len .AllowedGroups) 0)}}
+            <span class="badge ok">Всем пользователям</span>
+          {{else}}
+            <span class="badge warn" title="Группы: {{join .AllowedGroups ", "}} | Пользователи: {{join .AllowedUsers ", "}}">
+              Ограничен ({{len .AllowedGroups}} гр., {{len .AllowedUsers}} польз.)
+            </span>
+          {{end}}
+        </td>
+        <td>{{dt .CreatedAt}}</td>
+        <td class="row-actions">
+          <a class="btn secondary sm" href="/admin/oidc/clients/{{.ID}}/edit">Изменить</a>
           <form action="/admin/oidc/clients/{{.ID}}/delete" method="post" class="form-inline">
             {{csrf $.CSRF}}
-            <button type="submit" class="btn danger sm">Удалить</button>
+            <button type="submit" class="btn danger sm" data-confirm="Удалить приложение {{.Name}}?">Удалить</button>
           </form>
         </td>
       </tr>
@@ -66,7 +76,7 @@
     {{csrf .CSRF}}
     <label class="field">
       <span class="field-label">Название приложения</span>
-      <input class="input" type="text" name="name" id="oidc-name" placeholder="Grafana" required>
+      <input class="input" type="text" name="name" id="oidc-name" placeholder="Grafana, Proxmox PVE, Nextcloud" required>
     </label>
     <label class="field">
       <span class="field-label">Redirect URI (по одному в строке)</span>
@@ -89,6 +99,72 @@
       <input type="checkbox" name="is_public" id="oidc-is-public" value="1">
       <span>Public-клиент (без секрета, PKCE S256 обязателен)</span>
     </label>
+
+    <details class="advanced-details" style="margin: 8px 0 16px;">
+      <summary class="muted" style="cursor: pointer; font-size: 0.95rem; user-select: none; font-weight: 600;">
+        🔒 Контроль доступа к приложению <span class="badge neutral" style="font-weight:normal;">По умолчанию: открыт всем</span>
+      </summary>
+      <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 12px;">
+        <p class="help" style="margin:0;">Если ни одна группа и ни один пользователь не выбраны — доступ открыт всем активным пользователям. Системные администраторы имеют доступ всегда.</p>
+
+        {{if .AllGroups}}
+        <div class="field">
+          <span class="field-label">Локальные группы</span>
+          <div class="select-grid" style="max-height: 140px;">
+            {{range .AllGroups}}
+            <label class="select-chip">
+              <input type="checkbox" name="allowed_groups" value="{{.Name}}">
+              <div class="select-chip-label">
+                <span>{{.Name}}</span>
+                {{if .Description}}<span class="select-chip-sub">{{.Description}}</span>{{end}}
+              </div>
+            </label>
+            {{end}}
+          </div>
+        </div>
+        {{end}}
+
+        {{if .LDAPGroups}}
+        <div class="field">
+          <span class="field-label">Группы LDAP/Active Directory</span>
+          <div class="select-grid" style="max-height: 140px;">
+            {{range .LDAPGroups}}
+            <label class="select-chip">
+              <input type="checkbox" name="allowed_groups" value="{{.}}">
+              <div class="select-chip-label">
+                <span>{{.}}</span>
+              </div>
+            </label>
+            {{end}}
+          </div>
+        </div>
+        {{end}}
+
+        {{if .AllUsers}}
+        <div class="field">
+          <span class="field-label">Отдельные пользователи</span>
+          <div class="select-grid" style="max-height: 140px;">
+            {{range .AllUsers}}
+            <label class="select-chip">
+              <input type="checkbox" name="allowed_users" value="{{.Username}}">
+              <div class="select-chip-label">
+                <span>{{.Username}}</span>
+                {{if .DisplayName}}<span class="select-chip-sub">{{.DisplayName}}</span>{{end}}
+              </div>
+            </label>
+            {{end}}
+          </div>
+        </div>
+        {{end}}
+
+        <label class="field">
+          <span class="field-label">Дополнительные группы / DN вручную (по одной в строке)</span>
+          <textarea class="input mono" name="manual_groups" rows="2" placeholder="CN=Proxmox-Users,OU=Groups,DC=company,DC=local"></textarea>
+          <span class="help">Укажите DN или имена групп Active Directory / OpenLDAP, если их нет в списке выше.</span>
+        </label>
+      </div>
+    </details>
+
     <div class="form-actions">
       <button type="submit" class="btn primary">Создать клиента</button>
     </div>

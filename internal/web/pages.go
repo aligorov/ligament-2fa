@@ -145,6 +145,18 @@ type AdminUsersData struct {
 	EditReplyJSON string
 	BackupCodes   []string // новые резервные коды (показ один раз)
 	VLANProfiles  map[string]string
+	UserGroups    map[uuid.UUID][]string
+	AllGroups     []store.Group
+	EditGroupIDs  []uuid.UUID
+}
+
+// AdminGroupsData — /admin/groups: список локальных групп и форма создания/редактирования.
+type AdminGroupsData struct {
+	BaseData
+	Groups        []store.Group
+	Edit          *store.Group
+	AllUsers      []*store.User
+	EditMemberIDs []uuid.UUID
 }
 
 // AdminAuditData — /admin/audit: последние записи журнала.
@@ -262,6 +274,20 @@ type AdminOIDCClientsData struct {
 	Clients         []store.OIDCClient
 	OneTimeClientID string // созданный client_id (показ один раз)
 	OneTimeSecret   string // созданный client_secret (показ один раз)
+	AllGroups       []store.Group
+	AllUsers        []*store.User
+	LDAPGroups      []string
+}
+
+// AdminOIDCEditData — /admin/oidc/clients/{id}/edit: форма изменения OIDC-клиента и прав доступа.
+type AdminOIDCEditData struct {
+	BaseData
+	Client        *store.OIDCClient
+	OneTimeSecret string // если был сгенерирован новый секрет
+	AllGroups     []store.Group
+	AllUsers      []*store.User
+	LDAPGroups    []string
+	ManualGroups  string
 }
 
 // AdminLicenseData — /admin/license: статус-карточка лицензии и формы

@@ -2427,6 +2427,14 @@ paths:
                   items: {type: string}
                   description: "Абсолютные http(s)-URL; совпадение при authorize строгое."
                 is_public: {type: boolean, description: "public-клиент без секрета (PKCE S256 обязателен)."}
+                allowed_users:
+                  type: array
+                  items: {type: string}
+                  description: "Имена пользователей с доступом. Пусто = доступ разрешён всем."
+                allowed_groups:
+                  type: array
+                  items: {type: string}
+                  description: "Имена групп (локальные или LDAP CN/DN) с доступом. Пусто = доступ разрешён всем."
             example: {name: Grafana, redirect_uris: ["https://grafana.example.com/login/generic_oauth"], is_public: false}
       responses:
         '201':
@@ -2437,6 +2445,74 @@ paths:
         '400': {$ref: '#/components/responses/BadRequest'}
 
   /api/v1/admin/oidc/clients/{id}:
+    get:
+      tags: [Admin]
+      summary: "OIDC: получить клиентское приложение"
+      description: "Возвращает клиента OIDC по id. Секрет никогда не возвращается. Аудит не пишется (чтение)."
+      operationId: adminOIDCClientGet
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Клиент OIDC.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OIDCClient'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      tags: [Admin]
+      summary: "OIDC: обновить клиентское приложение"
+      description: "Обновляет параметры клиента OIDC: имя, redirect_uris, public/confidential, списки доступа allowed_users / allowed_groups, ротация client_secret. Аудит oidc_client_update."
+      operationId: adminOIDCClientUpdate
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, example: Grafana}
+                redirect_uris:
+                  type: array
+                  items: {type: string}
+                is_public: {type: boolean}
+                allowed_users:
+                  type: array
+                  items: {type: string}
+                allowed_groups:
+                  type: array
+                  items: {type: string}
+                client_secret:
+                  type: string
+                  description: "Новый client_secret при ротации (только для confidential)."
+      responses:
+        '200':
+          description: Клиент обновлен.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  client: {$ref: '#/components/schemas/OIDCClient'}
+                  client_secret: {type: string}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
     delete:
       tags: [Admin]
       summary: "OIDC: удалить клиентское приложение"
@@ -2455,6 +2531,189 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Ok'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/admin/groups:
+    get:
+      tags: [Admin]
+      summary: "Группы: список локальных групп пользователей"
+      description: "Возвращает локальные группы с числом участников. Аудит не пишется (чтение)."
+      operationId: adminGroupsList
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Список групп.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [groups]
+                properties:
+                  groups:
+                    type: array
+                    items: {$ref: '#/components/schemas/Group'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [Admin]
+      summary: "Группы: создать новую группу"
+      description: "Создает локальную группу пользователей. Аудит group_create."
+      operationId: adminGroupCreate
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, example: "Отдел разработки"}
+                description: {type: string, example: "Инженеры и разработчики"}
+      responses:
+        '201':
+          description: Группа создана.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Group'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/admin/groups/{id}:
+    get:
+      tags: [Admin]
+      summary: "Группы: получить группу по ID"
+      description: "Возвращает группу пользователей по id с числом участников. Аудит не пишется."
+      operationId: adminGroupGet
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Группа пользователей.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Group'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      tags: [Admin]
+      summary: "Группы: обновить параметры группы"
+      description: "Обновляет имя и описание локальной группы пользователей. Аудит group_update."
+      operationId: adminGroupUpdate
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, example: "Отдел разработки"}
+                description: {type: string, example: "Инженеры и разработчики"}
+      responses:
+        '200':
+          description: Группа обновлена.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Group'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Admin]
+      summary: "Группы: удалить группу"
+      description: "Удаляет группу по id. Связи в user_groups удаляются каскадно. Аудит group_delete."
+      operationId: adminGroupDelete
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Удалено.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ok'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/admin/groups/{id}/members:
+    get:
+      tags: [Admin]
+      summary: "Группы: получить список участников группы"
+      description: "Возвращает массив UUID пользователей, состоящих в группе. Аудит не пишется."
+      operationId: adminGroupMembersGet
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Список UUID участников.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [members]
+                properties:
+                  members:
+                    type: array
+                    items: {type: string, format: uuid}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    put:
+      tags: [Admin]
+      summary: "Группы: установить список участников группы"
+      description: "Заменяет список пользователей в группе на переданный массив user_ids. Аудит group_members_update."
+      operationId: adminGroupMembersSet
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_ids]
+              properties:
+                user_ids:
+                  type: array
+                  items: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Состав участников обновлен.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ok'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
         '404': {$ref: '#/components/responses/NotFound'}
 
   /api/v1/admin/backup:
@@ -2970,6 +3229,8 @@ components:
         name: {type: string}
         redirect_uris: {type: array, items: {type: string}}
         is_public: {type: boolean, description: "public-клиент: без секрета, PKCE S256 обязателен."}
+        allowed_users: {type: array, items: {type: string}, description: "Имена пользователей с доступом."}
+        allowed_groups: {type: array, items: {type: string}, description: "Группы с доступом."}
         created_at: {type: string, format: date-time}
     OIDCClientCreated:
       type: object
@@ -2982,8 +3243,21 @@ components:
         name: {type: string}
         redirect_uris: {type: array, items: {type: string}}
         is_public: {type: boolean}
+        allowed_users: {type: array, items: {type: string}}
+        allowed_groups: {type: array, items: {type: string}}
         created_at: {type: string, format: date-time}
       example: {id: 019b…, client_id: mfa_aBcD1234, client_secret: "one-time-secret", name: Grafana, redirect_uris: ["https://grafana.example.com/login/generic_oauth"], is_public: false, created_at: "2026-09-05T12:00:00Z"}
+    Group:
+      type: object
+      description: "Локальная группа пользователей."
+      required: [id, name, description, member_count, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, example: "Отдел разработки"}
+        description: {type: string, example: "Инженеры и разработчики"}
+        member_count: {type: integer, example: 5}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
     OIDCDiscovery:
       type: object
       description: "Discovery-документ OpenID Connect Provider (issuer — server.domain, иначе схема+Host запроса)."
@@ -3376,6 +3650,11 @@ components:
             type: string
           nullable: true
           description: RADIUS-атрибуты ответа для пользователя.
+        ldap_groups:
+          type: array
+          items:
+            type: string
+          description: "Группы LDAP/Active Directory пользователя."
     UserCreateRequest:
       type: object
       required: [username, password]

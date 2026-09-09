@@ -47,6 +47,8 @@ type tableSpec struct {
 // конфигурация (oidc_clients) переносится, in-flight входы истекают.
 var tables = []tableSpec{
 	{name: "users", order: "id"},
+	{name: "groups", order: "id"},
+	{name: "user_groups", order: "user_id, group_id"},
 	{name: "totp_secrets", order: "user_id"},
 	{name: "backup_codes", order: "id"},
 	{name: "challenges", order: "id"},

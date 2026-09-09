@@ -120,6 +120,11 @@ func (p *PagesAPI) Register(r chi.Router) {
 	admin.Post("/admin/users", p.handleAdminUserCreate)
 	admin.Get("/admin/users/{id}", p.handleAdminUserEdit)
 	admin.Post("/admin/users/{id}", p.handleAdminUserAction)
+	admin.Get("/admin/groups", p.handleAdminGroups)
+	admin.Post("/admin/groups", p.handleAdminGroupCreate)
+	admin.Get("/admin/groups/{id}", p.handleAdminGroupEdit)
+	admin.Post("/admin/groups/{id}", p.handleAdminGroupUpdate)
+	admin.Post("/admin/groups/{id}/delete", p.handleAdminGroupDelete)
 	admin.Get("/admin/audit", p.handleAdminAudit)
 	admin.Get("/admin/firewall", p.handleAdminFirewall)
 	admin.Post("/admin/firewall/ip", p.handleAdminFirewallIPAdd)
@@ -127,6 +132,8 @@ func (p *PagesAPI) Register(r chi.Router) {
 	admin.Post("/admin/firewall/bans/{ip}/delete", p.handleAdminFirewallUnban)
 	admin.Get("/admin/oidc", p.handleAdminOIDC)
 	admin.Post("/admin/oidc/clients", p.handleAdminOIDCClientCreate)
+	admin.Get("/admin/oidc/clients/{id}/edit", p.handleAdminOIDCClientEdit)
+	admin.Post("/admin/oidc/clients/{id}", p.handleAdminOIDCClientUpdate)
 	admin.Post("/admin/oidc/clients/{id}/delete", p.handleAdminOIDCClientDelete)
 	admin.Get("/admin/challenges", p.handleAdminChallenges)
 	admin.Get("/admin/settings", p.handleAdminSettings)
@@ -1330,10 +1337,14 @@ func (p *PagesAPI) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		flash500(w, r, "/admin/users", err)
 		return
 	}
+	userGroups, _ := p.st.AllUserGroupsMap(r.Context())
+	allGroups, _ := p.st.GroupList(r.Context())
 	p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
 		BaseData:     p.baseData(r, "Пользователи", "admin-users"),
 		Users:        derefUsers(users),
 		VLANProfiles: p.m.Get().Radius.VLANProfiles,
+		UserGroups:   userGroups,
+		AllGroups:    allGroups,
 	})
 }
 
@@ -1449,6 +1460,15 @@ func (p *PagesAPI) handleAdminUserCreate(w http.ResponseWriter, r *http.Request)
 		flash500(w, r, "/admin/users", err)
 		return
 	}
+	if groupsRaw := r.PostForm["groups"]; len(groupsRaw) > 0 {
+		var gids []uuid.UUID
+		for _, raw := range groupsRaw {
+			if gid, err := uuid.Parse(raw); err == nil {
+				gids = append(gids, gid)
+			}
+		}
+		_ = p.st.SetUserGroups(r.Context(), u.ID, gids)
+	}
 	p.admin.audit(r.Context(), "user_create", map[string]any{"username": u.Username})
 	redirectFlash(w, r, "/admin/users", "Пользователь создан.", true)
 }
@@ -1485,12 +1505,22 @@ func (p *PagesAPI) handleAdminUserEdit(w http.ResponseWriter, r *http.Request) {
 			replyJSON = string(b)
 		}
 	}
+	userGroups, _ := p.st.AllUserGroupsMap(r.Context())
+	allGroups, _ := p.st.GroupList(r.Context())
+	curGroups, _ := p.st.UserGroups(r.Context(), u.ID)
+	editGroupIDs := make([]uuid.UUID, len(curGroups))
+	for i, g := range curGroups {
+		editGroupIDs[i] = g.ID
+	}
 	p.render(w, http.StatusOK, "admin_users", web.AdminUsersData{
 		BaseData:      p.baseData(r, "Пользователи", "admin-users"),
 		Users:         derefUsers(users),
 		Edit:          u,
 		EditReplyJSON: replyJSON,
 		VLANProfiles:  p.m.Get().Radius.VLANProfiles,
+		UserGroups:    userGroups,
+		AllGroups:     allGroups,
+		EditGroupIDs:  editGroupIDs,
 	})
 }
 
@@ -1571,6 +1601,13 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 			flash500(w, r, back, err)
 			return
 		}
+		var gids []uuid.UUID
+		for _, raw := range r.PostForm["groups"] {
+			if gid, err := uuid.Parse(raw); err == nil {
+				gids = append(gids, gid)
+			}
+		}
+		_ = p.st.SetUserGroups(ctx, u.ID, gids)
 		p.admin.audit(ctx, "user_update", map[string]any{"user_id": u.ID.String()})
 		redirectFlash(w, r, back, "Пользователь сохранён.", true)
 
@@ -1636,6 +1673,143 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 	default:
 		redirectFlash(w, r, back, "Неизвестное действие.", false)
 	}
+}
+
+// handleAdminGroups — GET /admin/groups: список групп и форма создания.
+func (p *PagesAPI) handleAdminGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := p.st.GroupList(r.Context())
+	if err != nil {
+		flash500(w, r, "/admin/groups", err)
+		return
+	}
+	users, err := p.st.UserList(r.Context())
+	if err != nil {
+		flash500(w, r, "/admin/groups", err)
+		return
+	}
+	p.render(w, http.StatusOK, "admin_groups", web.AdminGroupsData{
+		BaseData: p.baseData(r, "Группы пользователей", "admin-groups"),
+		Groups:   groups,
+		AllUsers: users,
+	})
+}
+
+// handleAdminGroupCreate — POST /admin/groups: создание группы.
+func (p *PagesAPI) handleAdminGroupCreate(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	desc := strings.TrimSpace(r.PostFormValue("description"))
+	if name == "" {
+		redirectFlash(w, r, "/admin/groups", "Название группы не может быть пустым.", false)
+		return
+	}
+	g := &store.Group{
+		Name:        name,
+		Description: desc,
+	}
+	if err := p.st.GroupCreate(r.Context(), g); err != nil {
+		if isUniqueViolation(err) {
+			redirectFlash(w, r, "/admin/groups", "Группа с таким названием уже существует.", false)
+			return
+		}
+		flash500(w, r, "/admin/groups", err)
+		return
+	}
+	var memberIDs []uuid.UUID
+	for _, raw := range r.PostForm["members"] {
+		if uid, err := uuid.Parse(raw); err == nil {
+			memberIDs = append(memberIDs, uid)
+		}
+	}
+	if len(memberIDs) > 0 {
+		_ = p.st.SetGroupMembers(r.Context(), g.ID, memberIDs)
+	}
+	p.auditPage(r.Context(), "admin", "group_create", clientIP(r), "ok", map[string]any{"group": g.Name})
+	redirectFlash(w, r, "/admin/groups", "Группа создана.", true)
+}
+
+// handleAdminGroupEdit — GET /admin/groups/{id}: редактирование группы и участников.
+func (p *PagesAPI) handleAdminGroupEdit(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		redirectFlash(w, r, "/admin/groups", "Некорректный идентификатор группы.", false)
+		return
+	}
+	g, err := p.st.GroupByID(r.Context(), id)
+	if err != nil {
+		redirectFlash(w, r, "/admin/groups", "Группа не найдена.", false)
+		return
+	}
+	groups, err := p.st.GroupList(r.Context())
+	if err != nil {
+		flash500(w, r, "/admin/groups", err)
+		return
+	}
+	users, err := p.st.UserList(r.Context())
+	if err != nil {
+		flash500(w, r, "/admin/groups", err)
+		return
+	}
+	members, _ := p.st.GroupMembers(r.Context(), id)
+	memberIDs := make([]uuid.UUID, len(members))
+	for i, m := range members {
+		memberIDs[i] = m.ID
+	}
+	p.render(w, http.StatusOK, "admin_groups", web.AdminGroupsData{
+		BaseData:      p.baseData(r, "Группы пользователей", "admin-groups"),
+		Groups:        groups,
+		Edit:          g,
+		AllUsers:      users,
+		EditMemberIDs: memberIDs,
+	})
+}
+
+// handleAdminGroupUpdate — POST /admin/groups/{id}: сохранение названия, описания и участников.
+func (p *PagesAPI) handleAdminGroupUpdate(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		redirectFlash(w, r, "/admin/groups", "Некорректный идентификатор группы.", false)
+		return
+	}
+	_ = r.ParseForm()
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	desc := strings.TrimSpace(r.PostFormValue("description"))
+	if name == "" {
+		redirectFlash(w, r, "/admin/groups/"+id.String(), "Название группы не может быть пустым.", false)
+		return
+	}
+	if err := p.st.GroupUpdate(r.Context(), id, name, desc); err != nil {
+		if isUniqueViolation(err) {
+			redirectFlash(w, r, "/admin/groups/"+id.String(), "Группа с таким названием уже существует.", false)
+			return
+		}
+		flash500(w, r, "/admin/groups", err)
+		return
+	}
+	var memberIDs []uuid.UUID
+	for _, raw := range r.PostForm["members"] {
+		if uid, err := uuid.Parse(raw); err == nil {
+			memberIDs = append(memberIDs, uid)
+		}
+	}
+	_ = p.st.SetGroupMembers(r.Context(), id, memberIDs)
+	p.auditPage(r.Context(), "admin", "group_update", clientIP(r), "ok", map[string]any{"group_id": id.String()})
+	redirectFlash(w, r, "/admin/groups", "Группа сохранена.", true)
+}
+
+// handleAdminGroupDelete — POST /admin/groups/{id}/delete: удаление группы.
+func (p *PagesAPI) handleAdminGroupDelete(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		redirectFlash(w, r, "/admin/groups", "Некорректный идентификатор группы.", false)
+		return
+	}
+	if err := p.st.GroupDelete(r.Context(), id); err != nil {
+		redirectFlash(w, r, "/admin/groups", "Группа не найдена.", false)
+		return
+	}
+	p.auditPage(r.Context(), "admin", "group_delete", clientIP(r), "ok", map[string]any{"group_id": id.String()})
+	redirectFlash(w, r, "/admin/groups", "Группа удалена.", true)
 }
 
 // handleAdminAudit — GET /admin/audit: последние записи журнала.
@@ -2336,14 +2510,20 @@ func (p *PagesAPI) handleAdminOIDC(w http.ResponseWriter, r *http.Request) {
 		flash500(w, r, "/admin/oidc", err)
 		return
 	}
+	allGroups, _ := p.st.GroupList(r.Context())
+	allUsers, _ := p.st.UserList(r.Context())
+	ldapGroups := p.extractKnownLDAPGroups(r.Context())
 	p.render(w, http.StatusOK, "admin_oidc", web.AdminOIDCClientsData{
-		BaseData: p.baseData(r, "OIDC", "admin-oidc"),
-		Clients:  clients,
+		BaseData:   p.baseData(r, "OIDC", "admin-oidc"),
+		Clients:    clients,
+		AllGroups:  allGroups,
+		AllUsers:   allUsers,
+		LDAPGroups: ldapGroups,
 	})
 }
 
 // handleAdminOIDCClientCreate — POST /admin/oidc/clients (form: name,
-// redirect_uris по одному в строке, is_public). Секрет показывается ровно
+// redirect_uris по одному в строке, is_public, allowed_groups, allowed_users, manual_groups). Секрет показывается ровно
 // один раз — ответ 200 телом страницы (без PRG-редиректа, иначе секрет
 // пришлось бы класть в URL).
 func (p *PagesAPI) handleAdminOIDCClientCreate(w http.ResponseWriter, r *http.Request) {
@@ -2357,6 +2537,10 @@ func (p *PagesAPI) handleAdminOIDCClientCreate(w http.ResponseWriter, r *http.Re
 	}
 	isPublic := r.PostFormValue("is_public") != ""
 
+	allGroups, _ := p.st.GroupList(r.Context())
+	allUsers, _ := p.st.UserList(r.Context())
+	ldapGroups := p.extractKnownLDAPGroups(r.Context())
+
 	renderErr := func(msg string) {
 		clients, err := p.st.OIDCClients(r.Context())
 		if err != nil {
@@ -2369,7 +2553,10 @@ func (p *PagesAPI) handleAdminOIDCClientCreate(w http.ResponseWriter, r *http.Re
 				b.FlashErr = msg
 				return b
 			}(),
-			Clients: clients,
+			Clients:    clients,
+			AllGroups:  allGroups,
+			AllUsers:   allUsers,
+			LDAPGroups: ldapGroups,
 		})
 	}
 	if name == "" {
@@ -2387,15 +2574,28 @@ func (p *PagesAPI) handleAdminOIDCClientCreate(w http.ResponseWriter, r *http.Re
 		customID = oidc.NewClientID()
 	}
 
+	allowedGroups := r.PostForm["allowed_groups"]
+	allowedUsers := r.PostForm["allowed_users"]
+	for _, line := range strings.Split(r.PostFormValue("manual_groups"), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			allowedGroups = append(allowedGroups, line)
+		}
+	}
+
 	c := &store.OIDCClient{
-		ClientID:     customID,
-		Name:         name,
-		RedirectURIs: uris,
-		IsPublic:     isPublic,
+		ClientID:      customID,
+		Name:          name,
+		RedirectURIs:  uris,
+		IsPublic:      isPublic,
+		AllowedUsers:  cleanStringList(allowedUsers),
+		AllowedGroups: cleanStringList(allowedGroups),
 	}
 	d := web.AdminOIDCClientsData{
 		BaseData:        p.baseData(r, "OIDC", "admin-oidc"),
 		OneTimeClientID: c.ClientID,
+		AllGroups:       allGroups,
+		AllUsers:        allUsers,
+		LDAPGroups:      ldapGroups,
 	}
 	if !isPublic {
 		secret := strings.TrimSpace(r.PostFormValue("client_secret"))
@@ -2417,6 +2617,173 @@ func (p *PagesAPI) handleAdminOIDCClientCreate(w http.ResponseWriter, r *http.Re
 		return
 	}
 	p.render(w, http.StatusOK, "admin_oidc", d)
+}
+
+// handleAdminOIDCClientEdit — GET /admin/oidc/clients/{id}/edit: форма редактирования клиента.
+func (p *PagesAPI) handleAdminOIDCClientEdit(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		redirectFlash(w, r, "/admin/oidc", "Некорректный id.", false)
+		return
+	}
+	c, err := p.st.OIDCClientByID(r.Context(), id)
+	if err != nil {
+		redirectFlash(w, r, "/admin/oidc", "Клиент не найден.", false)
+		return
+	}
+	allGroups, _ := p.st.GroupList(r.Context())
+	allUsers, _ := p.st.UserList(r.Context())
+	ldapGroups := p.extractKnownLDAPGroups(r.Context())
+
+	knownMap := make(map[string]bool)
+	for _, g := range allGroups {
+		knownMap[strings.ToLower(g.Name)] = true
+	}
+	for _, lg := range ldapGroups {
+		knownMap[strings.ToLower(lg)] = true
+	}
+	var manual []string
+	for _, ag := range c.AllowedGroups {
+		if !knownMap[strings.ToLower(ag)] {
+			manual = append(manual, ag)
+		}
+	}
+
+	p.render(w, http.StatusOK, "admin_oidc_edit", web.AdminOIDCEditData{
+		BaseData:     p.baseData(r, "Редактирование OIDC", "admin-oidc"),
+		Client:       c,
+		AllGroups:    allGroups,
+		AllUsers:     allUsers,
+		LDAPGroups:   ldapGroups,
+		ManualGroups: strings.Join(manual, "\n"),
+	})
+}
+
+// handleAdminOIDCClientUpdate — POST /admin/oidc/clients/{id}: сохранение изменений клиента.
+func (p *PagesAPI) handleAdminOIDCClientUpdate(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		redirectFlash(w, r, "/admin/oidc", "Некорректный id.", false)
+		return
+	}
+	c, err := p.st.OIDCClientByID(r.Context(), id)
+	if err != nil {
+		redirectFlash(w, r, "/admin/oidc", "Клиент не найден.", false)
+		return
+	}
+	_ = r.ParseForm()
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	if name == "" {
+		redirectFlash(w, r, "/admin/oidc/clients/"+id.String()+"/edit", "Название приложения не может быть пустым.", false)
+		return
+	}
+	var uris []string
+	for _, line := range strings.Split(r.PostFormValue("redirect_uris"), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			uris = append(uris, line)
+		}
+	}
+	uris, err = validateRedirectURIs(uris)
+	if err != nil {
+		redirectFlash(w, r, "/admin/oidc/clients/"+id.String()+"/edit", "Каждый redirect_uri должен быть абсолютным http(s)-URL.", false)
+		return
+	}
+
+	allowedGroups := r.PostForm["allowed_groups"]
+	allowedUsers := r.PostForm["allowed_users"]
+	for _, line := range strings.Split(r.PostFormValue("manual_groups"), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			allowedGroups = append(allowedGroups, line)
+		}
+	}
+
+	c.Name = name
+	c.RedirectURIs = uris
+	c.AllowedUsers = cleanStringList(allowedUsers)
+	c.AllowedGroups = cleanStringList(allowedGroups)
+
+	var oneTimeSecret string
+	if !c.IsPublic && r.PostFormValue("regenerate_secret") == "1" {
+		oneTimeSecret = oidc.NewClientSecret()
+		c.ClientSecretHash = oidc.HashClientSecret(oneTimeSecret)
+	}
+
+	if err := p.st.OIDCClientUpdate(r.Context(), c); err != nil {
+		flash500(w, r, "/admin/oidc/clients/"+id.String()+"/edit", err)
+		return
+	}
+	p.auditPage(r.Context(), "admin", "oidc_client_update", clientIP(r), "ok", map[string]any{
+		"client_id":         c.ClientID,
+		"regenerate_secret": oneTimeSecret != "",
+	})
+
+	if oneTimeSecret != "" {
+		allGroups, _ := p.st.GroupList(r.Context())
+		allUsers, _ := p.st.UserList(r.Context())
+		ldapGroups := p.extractKnownLDAPGroups(r.Context())
+		p.render(w, http.StatusOK, "admin_oidc_edit", web.AdminOIDCEditData{
+			BaseData: func() web.BaseData {
+				b := p.baseData(r, "Редактирование OIDC", "admin-oidc")
+				b.Flash = "Секрет приложения обновлён."
+				return b
+			}(),
+			Client:        c,
+			OneTimeSecret: oneTimeSecret,
+			AllGroups:     allGroups,
+			AllUsers:      allUsers,
+			LDAPGroups:    ldapGroups,
+		})
+		return
+	}
+
+	redirectFlash(w, r, "/admin/oidc", "Настройки приложения сохранены.", true)
+}
+
+func (p *PagesAPI) extractKnownLDAPGroups(ctx context.Context) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(g string) {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			return
+		}
+		if _, ok := seen[g]; !ok {
+			seen[g] = struct{}{}
+			out = append(out, g)
+		}
+	}
+	if p.m != nil {
+		for _, g := range p.m.Get().LDAP.AllowGroups {
+			add(g)
+		}
+	}
+	if users, err := p.st.UserList(ctx); err == nil {
+		for _, u := range users {
+			for _, g := range u.LDAPGroups {
+				add(g)
+			}
+		}
+	}
+	return out
+}
+
+func cleanStringList(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	var out []string
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out
 }
 
 // handleAdminOIDCClientDelete — POST /admin/oidc/clients/{id}/delete.

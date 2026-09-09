@@ -1047,3 +1047,55 @@ ul.codes li code {
   padding-top: var(--sp-2);
   border-top: 1px solid var(--line);
 }
+
+/* ---- элементы выбора групп и пользователей ---- */
+.badge.info {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+}
+.select-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--sp-2);
+  max-height: 260px;
+  overflow-y: auto;
+  padding: var(--sp-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.select-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0.4rem 0.6rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  font-size: 0.86rem;
+  user-select: none;
+}
+.select-chip:hover {
+  border-color: var(--accent);
+}
+.select-chip input[type="checkbox"],
+.select-chip input[type="radio"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.select-chip-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-chip-sub {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+

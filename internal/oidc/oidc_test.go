@@ -3,6 +3,7 @@
 package oidc
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -471,6 +472,62 @@ func TestOIDCClientIP(t *testing.T) {
 	req4.RemoteAddr = "192.168.1.100:54321"
 	if got := mgr.clientIP(req4); got != "192.168.1.100" {
 		t.Errorf("clientIP plain RemoteAddr = %q, want 192.168.1.100", got)
+	}
+}
+
+// TestIsUserAllowed: проверка контроля доступа к OIDC-клиенту.
+func TestIsUserAllowed(t *testing.T) {
+	mgr := testManager(t)
+	ctx := context.Background()
+
+	adminUser := &store.User{Username: "superadmin", Role: "admin"}
+	plainUser := &store.User{Username: "jdoe", Role: "user"}
+	ldapUser := &store.User{
+		Username:   "corpuser",
+		Role:       "user",
+		LDAPGroups: []string{"CN=DevOps,OU=Groups,DC=corp,DC=local", "CN=VPN-Users,OU=Groups,DC=corp,DC=local"},
+	}
+
+	// 1. Пустые списки доступа — доступ открыт всем
+	openClient := &store.OIDCClient{ClientID: "open-app"}
+	if !mgr.isUserAllowed(ctx, adminUser, openClient) || !mgr.isUserAllowed(ctx, plainUser, openClient) {
+		t.Error("openClient должен разрешать доступ всем")
+	}
+
+	// 2. Ограничение по пользователю
+	userRestricted := &store.OIDCClient{
+		ClientID:     "user-app",
+		AllowedUsers: []string{"jdoe"},
+	}
+	if !mgr.isUserAllowed(ctx, plainUser, userRestricted) {
+		t.Error("jdoe должен иметь доступ к user-app")
+	}
+	if !mgr.isUserAllowed(ctx, adminUser, userRestricted) {
+		t.Error("admin должен иметь доступ ко всем приложениям")
+	}
+	if mgr.isUserAllowed(ctx, &store.User{Username: "alice", Role: "user"}, userRestricted) {
+		t.Error("alice не должна иметь доступ к user-app")
+	}
+
+	// 3. Ограничение по группе LDAP (короткое имя CN)
+	ldapRestrictedCN := &store.OIDCClient{
+		ClientID:      "ldap-app-cn",
+		AllowedGroups: []string{"DevOps"},
+	}
+	if !mgr.isUserAllowed(ctx, ldapUser, ldapRestrictedCN) {
+		t.Error("ldapUser (член CN=DevOps) должен иметь доступ по короткому имени DevOps")
+	}
+	if mgr.isUserAllowed(ctx, plainUser, ldapRestrictedCN) {
+		t.Error("plainUser не должен иметь доступ к ldap-app-cn")
+	}
+
+	// 4. Ограничение по группе LDAP (полный DN)
+	ldapRestrictedDN := &store.OIDCClient{
+		ClientID:      "ldap-app-dn",
+		AllowedGroups: []string{"cn=devops,ou=groups,dc=corp,dc=local"},
+	}
+	if !mgr.isUserAllowed(ctx, ldapUser, ldapRestrictedDN) {
+		t.Error("ldapUser должен иметь доступ по полному DN без учёта регистра")
 	}
 }
 

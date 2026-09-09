@@ -1,0 +1,135 @@
+{{define "layout"}}{{template "layout_app" .}}{{end}}
+{{define "content"}}
+<header class="page-head">
+  <h1>Группы пользователей</h1>
+  <p class="page-sub">Локальные группы для распределения прав доступа к приложениям OpenID Connect и структурирования пользователей.</p>
+</header>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Список групп</h2>
+    <p>Всего создано локальных групп: {{len .Groups}}.</p>
+  </div>
+  {{if .Groups}}
+  <div class="table-wrap">
+    <table class="table">
+      <tr>
+        <th>Название</th>
+        <th>Описание</th>
+        <th>Участников</th>
+        <th>Создана</th>
+        <th>Действия</th>
+      </tr>
+      {{range .Groups}}
+      <tr>
+        <td class="cell-strong"><span class="badge info">{{.Name}}</span></td>
+        <td>{{if .Description}}{{.Description}}{{else}}<span class="muted">—</span>{{end}}</td>
+        <td><span class="badge neutral">{{.MemberCount}} польз.</span></td>
+        <td>{{dt .CreatedAt}}</td>
+        <td class="row-actions">
+          <a class="btn secondary sm" href="/admin/groups/{{.ID}}">Участники / Изменить</a>
+          <form action="/admin/groups/{{.ID}}/delete" method="post" class="form-inline">
+            {{csrf $.CSRF}}
+            <button type="submit" class="btn danger sm" data-confirm="Удалить группу {{.Name}}?">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+  {{else}}
+  <div class="empty">
+    <p>Локальных групп пока нет — создайте первую группу в форме ниже.</p>
+  </div>
+  {{end}}
+</section>
+
+{{if .Edit}}
+<section class="card">
+  <div class="card-head">
+    <h2>Редактирование группы: {{.Edit.Name}}</h2>
+    <p>Изменение названия, описания и состава участников.</p>
+  </div>
+  <form action="/admin/groups/{{.Edit.ID}}" method="post" class="form wide">
+    {{csrf .CSRF}}
+    <div class="field-row">
+      <label class="field">
+        <span class="field-label">Название группы</span>
+        <input class="input" type="text" name="name" value="{{.Edit.Name}}" required placeholder="Например: DevOps, Бухгалтерия">
+      </label>
+      <label class="field">
+        <span class="field-label">Описание</span>
+        <input class="input" type="text" name="description" value="{{.Edit.Description}}" placeholder="Краткое назначение группы">
+      </label>
+    </div>
+
+    <div class="field">
+      <span class="field-label">Участники группы (отметьте пользователей)</span>
+      {{if .AllUsers}}
+      <div class="select-grid">
+        {{range .AllUsers}}
+        <label class="select-chip">
+          <input type="checkbox" name="members" value="{{.ID}}"{{if hasUUID $.EditMemberIDs .ID}} checked{{end}}>
+          <div class="select-chip-label">
+            <span>{{.Username}}</span>
+            {{if .DisplayName}}<span class="select-chip-sub">{{.DisplayName}}</span>{{end}}
+          </div>
+        </label>
+        {{end}}
+      </div>
+      {{else}}
+      <p class="muted">Пользователи не найдены.</p>
+      {{end}}
+    </div>
+
+    <div class="form-actions" style="display:flex; gap:8px;">
+      <button type="submit" class="btn primary">Сохранить изменения</button>
+      <a href="/admin/groups" class="btn secondary">Отмена</a>
+    </div>
+  </form>
+</section>
+{{else}}
+<section class="card">
+  <div class="card-head">
+    <h2>Новая группа</h2>
+    <p>Создание группы и назначение начальных участников.</p>
+  </div>
+  <form action="/admin/groups" method="post" class="form wide">
+    {{csrf .CSRF}}
+    <div class="field-row">
+      <label class="field">
+        <span class="field-label">Название группы</span>
+        <input class="input" type="text" name="name" required placeholder="Например: DevOps, Бухгалтерия, Руководство">
+      </label>
+      <label class="field">
+        <span class="field-label">Описание</span>
+        <input class="input" type="text" name="description" placeholder="Краткое описание группы">
+      </label>
+    </div>
+
+    <div class="field">
+      <span class="field-label">Участники группы</span>
+      {{if .AllUsers}}
+      <div class="select-grid">
+        {{range .AllUsers}}
+        <label class="select-chip">
+          <input type="checkbox" name="members" value="{{.ID}}">
+          <div class="select-chip-label">
+            <span>{{.Username}}</span>
+            {{if .DisplayName}}<span class="select-chip-sub">{{.DisplayName}}</span>{{end}}
+          </div>
+        </label>
+        {{end}}
+      </div>
+      {{else}}
+      <p class="muted">Пользователи ещё не созданы.</p>
+      {{end}}
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn primary">Создать группу</button>
+    </div>
+  </form>
+</section>
+{{end}}
+{{end}}

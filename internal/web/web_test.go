@@ -20,9 +20,9 @@ import (
 // wantPages — все страницы пакета; тесты ниже опираются на этот набор.
 var wantPages = []string{
 	"login", "me_profile", "me_totp", "me_backup", "me_telegram",
-	"me_passkeys", "me_devices", "admin_users", "admin_audit", "admin_firewall",
+	"me_passkeys", "me_devices", "admin_users", "admin_groups", "admin_audit", "admin_firewall",
 	"admin_challenges", "admin_settings", "admin_license", "error",
-	"oidc_consent", "admin_oidc",
+	"oidc_consent", "admin_oidc", "admin_oidc_edit",
 }
 
 const (
@@ -359,6 +359,43 @@ func TestRenderPages(t *testing.T) {
 				`name="is_public"`, "one-time-secret",
 				`action="/admin/oidc/clients/22222222-2222-2222-2222-222222222222/delete"`,
 				"openid-configuration",
+			},
+		},
+		{
+			name: "admin_groups",
+			tmpl: "admin_groups",
+			data: AdminGroupsData{
+				BaseData: base("Группы"),
+				Groups: []store.Group{{
+					ID:          uuid.MustParse("33333333-3333-3333-3333-333333333333"),
+					Name:        "DevOps",
+					Description: "Инженеры инфраструктуры",
+					MemberCount: 2,
+					CreatedAt:   lastUsed,
+				}},
+			},
+			want: []string{
+				"Группы пользователей", "DevOps", "Инженеры инфраструктуры",
+				"2 польз.", `action="/admin/groups"`,
+			},
+		},
+		{
+			name: "admin_oidc_edit",
+			tmpl: "admin_oidc_edit",
+			data: AdminOIDCEditData{
+				BaseData: base("Редактирование OIDC"),
+				Client: &store.OIDCClient{
+					ID:           uuid.MustParse("22222222-2222-2222-2222-222222222222"),
+					ClientID:     "mfa_aBcD1234",
+					Name:         "Proxmox PVE",
+					RedirectURIs: []string{"https://pve.example.com:8006"},
+					IsPublic:     false,
+					AllowedUsers: []string{"admin"},
+				},
+			},
+			want: []string{
+				"Редактирование приложения OIDC", "mfa_aBcD1234", "Proxmox PVE",
+				`action="/admin/oidc/clients/22222222-2222-2222-2222-222222222222"`,
 			},
 		},
 		{

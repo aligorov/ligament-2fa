@@ -24,6 +24,8 @@ type OIDCClient struct {
 	Name             string    `json:"name"`
 	RedirectURIs     []string  `json:"redirect_uris"`
 	IsPublic         bool      `json:"is_public"`
+	AllowedUsers     []string  `json:"allowed_users"`
+	AllowedGroups    []string  `json:"allowed_groups"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -51,19 +53,27 @@ type OIDCToken struct {
 }
 
 // OIDCClientUpsert создаёт клиента или обновляет по client_id (name,
-// redirect_uris, is_public, client_secret_hash). ID и created_at
+// redirect_uris, is_public, client_secret_hash, allowed_users, allowed_groups). ID и created_at
 // возвращаются из БД.
 func (s *Store) OIDCClientUpsert(ctx context.Context, c *OIDCClient) error {
+	if c.AllowedUsers == nil {
+		c.AllowedUsers = []string{}
+	}
+	if c.AllowedGroups == nil {
+		c.AllowedGroups = []string{}
+	}
 	err := s.Pool().QueryRow(ctx, `
-		INSERT INTO oidc_clients (client_id, client_secret_hash, name, redirect_uris, is_public)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO oidc_clients (client_id, client_secret_hash, name, redirect_uris, is_public, allowed_users, allowed_groups)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (client_id) DO UPDATE SET
 		  client_secret_hash = EXCLUDED.client_secret_hash,
 		  name = EXCLUDED.name,
 		  redirect_uris = EXCLUDED.redirect_uris,
-		  is_public = EXCLUDED.is_public
+		  is_public = EXCLUDED.is_public,
+		  allowed_users = EXCLUDED.allowed_users,
+		  allowed_groups = EXCLUDED.allowed_groups
 		RETURNING id, created_at`,
-		c.ClientID, c.ClientSecretHash, c.Name, c.RedirectURIs, c.IsPublic).
+		c.ClientID, c.ClientSecretHash, c.Name, c.RedirectURIs, c.IsPublic, c.AllowedUsers, c.AllowedGroups).
 		Scan(&c.ID, &c.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("store: oidc_clients upsert %s: %w", c.ClientID, err)
@@ -74,7 +84,7 @@ func (s *Store) OIDCClientUpsert(ctx context.Context, c *OIDCClient) error {
 // OIDCClients возвращает всех клиентов по времени создания.
 func (s *Store) OIDCClients(ctx context.Context) ([]OIDCClient, error) {
 	rows, err := s.Pool().Query(ctx, `
-		SELECT id, client_id, client_secret_hash, name, redirect_uris, is_public, created_at
+		SELECT id, client_id, client_secret_hash, name, redirect_uris, is_public, allowed_users, allowed_groups, created_at
 		FROM oidc_clients ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("store: oidc_clients: %w", err)
@@ -84,8 +94,14 @@ func (s *Store) OIDCClients(ctx context.Context) ([]OIDCClient, error) {
 	for rows.Next() {
 		var c OIDCClient
 		if err := rows.Scan(&c.ID, &c.ClientID, &c.ClientSecretHash, &c.Name,
-			&c.RedirectURIs, &c.IsPublic, &c.CreatedAt); err != nil {
+			&c.RedirectURIs, &c.IsPublic, &c.AllowedUsers, &c.AllowedGroups, &c.CreatedAt); err != nil {
 			return nil, fmt.Errorf("store: oidc_clients scan: %w", err)
+		}
+		if c.AllowedUsers == nil {
+			c.AllowedUsers = []string{}
+		}
+		if c.AllowedGroups == nil {
+			c.AllowedGroups = []string{}
 		}
 		out = append(out, c)
 	}
@@ -96,17 +112,70 @@ func (s *Store) OIDCClients(ctx context.Context) ([]OIDCClient, error) {
 func (s *Store) OIDCClientByClientID(ctx context.Context, clientID string) (*OIDCClient, error) {
 	c := &OIDCClient{}
 	err := s.Pool().QueryRow(ctx, `
-		SELECT id, client_id, client_secret_hash, name, redirect_uris, is_public, created_at
+		SELECT id, client_id, client_secret_hash, name, redirect_uris, is_public, allowed_users, allowed_groups, created_at
 		FROM oidc_clients WHERE client_id = $1`, clientID).
 		Scan(&c.ID, &c.ClientID, &c.ClientSecretHash, &c.Name,
-			&c.RedirectURIs, &c.IsPublic, &c.CreatedAt)
+			&c.RedirectURIs, &c.IsPublic, &c.AllowedUsers, &c.AllowedGroups, &c.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: oidc_clients по client_id %s: %w", clientID, err)
 	}
+	if c.AllowedUsers == nil {
+		c.AllowedUsers = []string{}
+	}
+	if c.AllowedGroups == nil {
+		c.AllowedGroups = []string{}
+	}
 	return c, nil
+}
+
+// OIDCClientByID возвращает клиента по UUID id; ErrNotFound, если нет.
+func (s *Store) OIDCClientByID(ctx context.Context, id uuid.UUID) (*OIDCClient, error) {
+	c := &OIDCClient{}
+	err := s.Pool().QueryRow(ctx, `
+		SELECT id, client_id, client_secret_hash, name, redirect_uris, is_public, allowed_users, allowed_groups, created_at
+		FROM oidc_clients WHERE id = $1`, id).
+		Scan(&c.ID, &c.ClientID, &c.ClientSecretHash, &c.Name,
+			&c.RedirectURIs, &c.IsPublic, &c.AllowedUsers, &c.AllowedGroups, &c.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: oidc_clients по id %s: %w", id, err)
+	}
+	if c.AllowedUsers == nil {
+		c.AllowedUsers = []string{}
+	}
+	if c.AllowedGroups == nil {
+		c.AllowedGroups = []string{}
+	}
+	return c, nil
+}
+
+// OIDCClientUpdate обновляет редактируемые поля клиента (name, redirect_uris, allowed_users, allowed_groups, и опционально client_secret_hash).
+func (s *Store) OIDCClientUpdate(ctx context.Context, c *OIDCClient) error {
+	if c.AllowedUsers == nil {
+		c.AllowedUsers = []string{}
+	}
+	if c.AllowedGroups == nil {
+		c.AllowedGroups = []string{}
+	}
+	query := `UPDATE oidc_clients SET name = $2, redirect_uris = $3, allowed_users = $4, allowed_groups = $5 WHERE id = $1`
+	args := []any{c.ID, c.Name, c.RedirectURIs, c.AllowedUsers, c.AllowedGroups}
+	if c.ClientSecretHash != "" {
+		query = `UPDATE oidc_clients SET name = $2, redirect_uris = $3, allowed_users = $4, allowed_groups = $5, client_secret_hash = $6 WHERE id = $1`
+		args = append(args, c.ClientSecretHash)
+	}
+	ct, err := s.Pool().Exec(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("store: oidc_clients update %s: %w", c.ID, err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // OIDCClientDelete удаляет клиента по id вместе с его кодами и токенами;

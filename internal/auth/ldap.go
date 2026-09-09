@@ -265,6 +265,7 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 			// никто не знает (в т.ч. администратор twofa).
 			PasswordHash: secrets.HashPassword(secrets.RandomToken(32)),
 			Source:       store.SourceLDAP,
+			LDAPGroups:   res.groups,
 		}
 	default:
 		return nil, err
@@ -275,11 +276,13 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 	}
 
 	changed := u.Email != res.email || u.Phone != res.phone ||
-		u.DisplayName != res.displayName || u.Role != res.role
+		u.DisplayName != res.displayName || u.Role != res.role ||
+		!reflect.DeepEqual(u.LDAPGroups, res.groups)
 	u.Email = res.email
 	u.Phone = res.phone
 	u.DisplayName = res.displayName
 	u.Role = res.role
+	u.LDAPGroups = res.groups
 	if len(cfg.GroupRadiusMap) > 0 {
 		if !reflect.DeepEqual(u.RadiusReply, res.radiusReply) {
 			u.RadiusReply = res.radiusReply
@@ -318,8 +321,10 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 			u = raced
 			if u.Email != res.email || u.Phone != res.phone ||
 				u.DisplayName != res.displayName || u.Role != res.role ||
+				!reflect.DeepEqual(u.LDAPGroups, res.groups) ||
 				(len(cfg.GroupRadiusMap) > 0 && !reflect.DeepEqual(u.RadiusReply, res.radiusReply)) {
 				u.Email, u.Phone, u.DisplayName, u.Role = res.email, res.phone, res.displayName, res.role
+				u.LDAPGroups = res.groups
 				if len(cfg.GroupRadiusMap) > 0 {
 					u.RadiusReply = res.radiusReply
 				}
