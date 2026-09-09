@@ -11,6 +11,7 @@ import (
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
 	"layeh.com/radius/rfc2868"
+	"layeh.com/radius/rfc2869"
 	"layeh.com/radius/rfc3580"
 	mt "layeh.com/radius/vendors/mikrotik"
 )
@@ -24,7 +25,7 @@ const (
 	kindInteger                 // uint32 (Session-Timeout, ...)
 )
 
-// standardAttrs — известные стандартные (RFC 2865) атрибуты, разрешённые в
+// standardAttrs — известные стандартные (RFC 2865 / RFC 2869) атрибуты, разрешённые в
 // reply-карте. layeh.com/radius не экспортирует словарь имя→тип
 // (нет ни rfc2865.Attr, ни radius.AttributesType — проверено по исходникам
 // замороженной библиотеки), поэтому v1 ограничен этой явной таблицей.
@@ -35,13 +36,16 @@ var standardAttrs = map[string]struct {
 	typ  radius.Type
 	kind attrKind
 }{
-	"Framed-IP-Address": {rfc2865.FramedIPAddress_Type, kindIP},
-	"Framed-IP-Netmask": {rfc2865.FramedIPNetmask_Type, kindIP},
-	"Session-Timeout":   {rfc2865.SessionTimeout_Type, kindInteger},
-	"Idle-Timeout":      {rfc2865.IdleTimeout_Type, kindInteger},
-	"Port-Limit":        {rfc2865.PortLimit_Type, kindInteger},
-	"Framed-MTU":        {rfc2865.FramedMTU_Type, kindInteger},
-	"Filter-Id":         {rfc2865.FilterID_Type, kindString},
+	"Framed-IP-Address":     {rfc2865.FramedIPAddress_Type, kindIP},
+	"Framed-IP-Netmask":     {rfc2865.FramedIPNetmask_Type, kindIP},
+	"Session-Timeout":       {rfc2865.SessionTimeout_Type, kindInteger},
+	"Idle-Timeout":          {rfc2865.IdleTimeout_Type, kindInteger},
+	"Port-Limit":            {rfc2865.PortLimit_Type, kindInteger},
+	"Framed-MTU":            {rfc2865.FramedMTU_Type, kindInteger},
+	"Filter-Id":             {rfc2865.FilterID_Type, kindString},
+	"Framed-Route":          {rfc2865.FramedRoute_Type, kindString},
+	"Framed-Pool":           {rfc2869.FramedPool_Type, kindString},
+	"Acct-Interim-Interval": {rfc2869.AcctInterimInterval_Type, kindInteger},
 }
 
 // applyReplyAttrs добавляет reply-атрибуты в ответ Access-Accept. Поддержаны:

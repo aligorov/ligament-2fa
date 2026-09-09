@@ -495,9 +495,38 @@
   <label class="field" style="margin-top: 8px;">
     <span class="field-label">RADIUS Reply <span class="muted">(JSON)</span></span>
     <textarea class="textarea mono" name="radius_reply" rows="3" placeholder='{"Mikrotik-Group": "vpn"}'>{{if .Edit}}{{.EditReplyJSON}}{{end}}</textarea>
-    <span class="help">Специальные атрибуты Access-Accept (Mikrotik-Group, Filter-Id, Framed-Pool и др.). VLAN можно задать в поле выше или здесь.</span>
+    <div class="radius-presets" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px;">
+      <span class="muted" style="font-size: 0.8rem; align-self: center;">Шаблоны:</span>
+      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_std')">⚡ MikroTik: 30M/50M</button>
+      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_vip')">⚡ MikroTik: 100M (VIP)</button>
+      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_guest')">⚡ MikroTik: 5M/10M</button>
+      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'unifi_vlan20')">🌐 UniFi: VLAN 20</button>
+      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'unifi_vlan30')">🌐 UniFi: VLAN 30</button>
+      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'workday')">⏱️ Смена 8ч + 1 сессия</button>
+      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'vpn_pool')">🛡️ VPN: Пул адресов</button>
+    </div>
+    <span class="help">Специальные атрибуты Access-Accept (скорость MikroTik-Rate-Limit, VLAN Tunnel-Private-Group-Id, тайм-ауты Session-Timeout, пулы Framed-Pool и др.).</span>
   </label>
 </details>
+<script>
+function applyRadiusPreset(btn, preset) {
+  const form = btn.closest('form');
+  const textarea = form ? form.querySelector('textarea[name="radius_reply"]') : null;
+  if (!textarea) return;
+  const presets = {
+    'mikrotik_std': '{\\n  "Mikrotik-Rate-Limit": "30M/50M"\\n}',
+    'mikrotik_vip': '{\\n  "Mikrotik-Rate-Limit": "100M/100M",\\n  "Mikrotik-Group": "full"\\n}',
+    'mikrotik_guest': '{\\n  "Mikrotik-Rate-Limit": "5M/10M",\\n  "Mikrotik-Address-List": "guest_users"\\n}',
+    'unifi_vlan20': '{\\n  "Tunnel-Private-Group-Id": "20"\\n}',
+    'unifi_vlan30': '{\\n  "Tunnel-Private-Group-Id": "30"\\n}',
+    'workday': '{\\n  "Session-Timeout": "28800",\\n  "Idle-Timeout": "1800",\\n  "Port-Limit": "1"\\n}',
+    'vpn_pool': '{\\n  "Framed-Pool": "vpn_users",\\n  "Session-Timeout": "28800"\\n}'
+  };
+  if (presets[preset]) {
+    textarea.value = presets[preset].replace(/\\\\n/g, '\\n');
+  }
+}
+</script>
 <div class="form-actions">
   <button type="submit" class="btn primary">Сохранить</button>
 </div>
