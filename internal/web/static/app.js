@@ -778,25 +778,40 @@ function initGroupsMemberSelector() {
     function syncAdButtons() {
       adButtons.forEach((btn) => {
         const matching = getMatchingChips(btn);
+        const total = matching.length;
+        let checkedCount = 0;
+        matching.forEach((chip) => {
+          const cb = chip.querySelector('input[name="members"]');
+          if (cb && cb.checked) checkedCount++;
+        });
 
-        // Бейдж с количеством пользователей в группе AD
+        // Бейдж с количеством пользователей в группе AD и статусом выбора
         let countBadge = btn.querySelector(".ad-group-count");
         if (!countBadge) {
           countBadge = document.createElement("span");
           countBadge.className = "ad-group-count";
           btn.querySelector(".select-chip-label")?.appendChild(countBadge);
         }
-        countBadge.textContent = matching.length;
 
-        const allChecked = matching.length > 0 && matching.every((chip) => {
-          const cb = chip.querySelector('input[name="members"]');
-          return cb && cb.checked;
-        });
-
-        if (allChecked) {
+        const adName = btn.dataset.adGroupCn || btn.dataset.adGroup || "";
+        if (total === 0) {
+          countBadge.textContent = "0";
+          btn.classList.remove("active", "partial");
+          btn.title = `${adName} (нет синхронизированных пользователей в БД)`;
+        } else if (checkedCount === total) {
+          countBadge.textContent = `${total}/${total} ✓`;
           btn.classList.add("active");
-        } else {
+          btn.classList.remove("partial");
+          btn.title = `${adName} (все ${total} участников выбраны)`;
+        } else if (checkedCount > 0) {
+          countBadge.textContent = `${checkedCount}/${total}`;
+          btn.classList.add("partial");
           btn.classList.remove("active");
+          btn.title = `${adName} (выбрано ${checkedCount} из ${total} участников)`;
+        } else {
+          countBadge.textContent = `${total}`;
+          btn.classList.remove("active", "partial");
+          btn.title = `${adName} (всего ${total} участников в БД)`;
         }
       });
     }

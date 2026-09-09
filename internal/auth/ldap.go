@@ -197,25 +197,40 @@ func (v *LdapVerifier) authenticate(ctx context.Context, cfg settings.LDAPSettin
 		displayName: entry.GetAttributeValue(cfg.Attrs.DisplayName),
 	}
 
-	// Группы нужны для allow-list, role_map и group_radius_map.
-	groups := []string{}
-	if len(cfg.AllowGroups) > 0 || len(cfg.RoleMap) > 0 || len(cfg.GroupRadiusMap) > 0 {
+	// Группы нужны для allow-list, role_map, group_radius_map и OIDC/групп.
+	groups := entry.GetAttributeValues("memberOf")
+	if len(groups) == 0 && (len(cfg.AllowGroups) > 0 || len(cfg.RoleMap) > 0 || len(cfg.GroupRadiusMap) > 0) {
 		base := cfg.GroupBaseDN
 		if base == "" {
 			base = cfg.BaseDN
 		}
+		groupFilter := cfg.GroupFilter
+		if groupFilter == "" {
+			groupFilter = "(&(objectClass=group)(member={dn}))"
+		}
 		groupReq := ldap.NewSearchRequest(
 			base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
-			substFilter(cfg.GroupFilter, "{dn}", entry.DN), nil, nil,
+			substFilter(groupFilter, "{dn}", entry.DN), nil, nil,
 		)
-		groupRes, err := conn.Search(groupReq)
-		if err != nil {
-			return nil, fmt.Errorf("auth/ldap: поиск групп: %w", err)
-		}
-		for _, g := range groupRes.Entries {
-			if g.DN != "" {
-				groups = append(groups, g.DN)
+		if groupRes, err := conn.Search(groupReq); err == nil {
+			for _, g := range groupRes.Entries {
+				if g.DN != "" {
+					groups = append(groups, g.DN)
+				}
 			}
+		}
+	}
+	if entry.GetAttributeValue("primaryGroupID") == "513" {
+		hasDomainUsers := false
+		for _, g := range groups {
+			gl := strings.ToLower(g)
+			if strings.Contains(gl, "domain users") || strings.Contains(gl, "пользователи домена") {
+				hasDomainUsers = true
+				break
+			}
+		}
+		if !hasDomainUsers {
+			groups = append(groups, "Пользователи домена")
 		}
 	}
 	if !memberAllowed(groups, cfg.AllowGroups) {
@@ -602,23 +617,31 @@ func (v *LdapVerifier) SyncUsers(ctx context.Context, maxCount int) (*LdapSyncRe
 			continue
 		}
 
-		groups := []string{}
-		if len(cfg.AllowGroups) > 0 || len(cfg.RoleMap) > 0 || len(cfg.GroupRadiusMap) > 0 {
-			if memberOf := entry.GetAttributeValues("memberOf"); len(memberOf) > 0 {
-				groups = append(groups, memberOf...)
-			}
-			if len(groups) == 0 {
-				gReq := ldap.NewSearchRequest(
-					groupBase, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 5, false,
-					substFilter(groupFilter, "{dn}", entry.DN), nil, nil,
-				)
-				if gRes, err := conn.Search(gReq); err == nil {
-					for _, g := range gRes.Entries {
-						if g.DN != "" {
-							groups = append(groups, g.DN)
-						}
+		groups := entry.GetAttributeValues("memberOf")
+		if len(groups) == 0 && cfg.GroupFilter != "" && (len(cfg.AllowGroups) > 0 || len(cfg.RoleMap) > 0 || len(cfg.GroupRadiusMap) > 0) {
+			gReq := ldap.NewSearchRequest(
+				groupBase, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 5, false,
+				substFilter(groupFilter, "{dn}", entry.DN), nil, nil,
+			)
+			if gRes, err := conn.Search(gReq); err == nil {
+				for _, g := range gRes.Entries {
+					if g.DN != "" {
+						groups = append(groups, g.DN)
 					}
 				}
+			}
+		}
+		if entry.GetAttributeValue("primaryGroupID") == "513" {
+			hasDomainUsers := false
+			for _, g := range groups {
+				gl := strings.ToLower(g)
+				if strings.Contains(gl, "domain users") || strings.Contains(gl, "пользователи домена") {
+					hasDomainUsers = true
+					break
+				}
+			}
+			if !hasDomainUsers {
+				groups = append(groups, "Пользователи домена")
 			}
 		}
 
@@ -804,7 +827,7 @@ func substFilter(filter, placeholder, value string) string {
 
 // ldapAttrs — список запрашиваемых атрибутов контактов (непустые имена).
 func ldapAttrs(cfg settings.LDAPSettings) []string {
-	attrs := []string{"sAMAccountName", "uid", "userPrincipalName", "cn", "memberOf"}
+	attrs := []string{"sAMAccountName", "uid", "userPrincipalName", "cn", "memberOf", "primaryGroupID"}
 	for _, a := range []string{cfg.Attrs.Email, cfg.Attrs.Phone, cfg.Attrs.DisplayName} {
 		if a != "" {
 			attrs = append(attrs, a)

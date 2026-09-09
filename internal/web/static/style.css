@@ -1116,24 +1116,34 @@ button.select-chip:hover {
   border-color: var(--accent);
 }
 button.select-chip.active {
-  background: rgba(37, 99, 235, 0.12);
   border-color: var(--accent);
-  color: var(--accent);
+  background: var(--surface);
+  color: var(--text);
   font-weight: 500;
+}
+button.select-chip.partial {
+  border-color: var(--line-strong);
 }
 .ad-group-count {
   display: inline-block;
   font-size: 0.72rem;
-  padding: 1px 5px;
+  padding: 1px 6px;
   margin-left: 6px;
   border-radius: 9999px;
   background: var(--surface-2);
   color: var(--muted);
+  font-weight: 500;
   transition: background 0.15s, color 0.15s;
 }
 button.select-chip.active .ad-group-count {
   background: var(--accent);
   color: #fff;
+  font-weight: 600;
+}
+button.select-chip.partial .ad-group-count {
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* ---- удобный список пользователей ---- */
