@@ -95,6 +95,45 @@ class AlertService {
     }
   }
 
+  /// Оповещение о новом сообщении в чате поддержки
+  Future<void> triggerChatNotification({
+    required String sender,
+    required String message,
+  }) async {
+    await init();
+
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        if (Platform.isWindows) {
+          await windowManager.setProgressBar(1.0);
+        }
+      } catch (_) {}
+
+      try {
+        await _audioPlayer.play(AssetSource('sounds/alert.mp3'));
+      } catch (_) {}
+    } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      const androidDetails = AndroidNotificationDetails(
+        'chat_messages_channel',
+        'Чат технической поддержки',
+        channelDescription: 'Сообщения от инженера поддержки',
+        importance: Importance.high,
+        priority: Priority.high,
+      );
+      const iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      );
+      await _localNotifications.show(
+        1001,
+        sender.isNotEmpty ? 'Сообщение от: $sender' : 'Новое сообщение в чате',
+        message,
+        const NotificationDetails(android: androidDetails, iOS: iosDetails),
+      );
+    }
+  }
+
   /// Сброс AlwaysOnTop и индикатора на таскбаре после завершения обработки запроса
   Future<void> resetWindowPriority() async {
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS)) {

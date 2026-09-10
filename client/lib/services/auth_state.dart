@@ -146,6 +146,13 @@ class AuthState extends ChangeNotifier {
       notifyListeners();
     };
 
+    support.onChatMessageReceived = (msg) {
+      alert.triggerChatNotification(
+        sender: msg.senderName,
+        message: msg.text,
+      );
+    };
+
     ws.onSupportSignal = (signal) {
       support.handleRemoteSignal(signal);
     };
@@ -159,9 +166,10 @@ class AuthState extends ChangeNotifier {
     ws.onSupportIncoming = (msg) {
       if (isEngineer) {
         loadSupportQueue();
+        final clientName = msg['display_name'] ?? msg['employee_name'] ?? msg['username'] ?? 'Пользователь';
         alert.triggerAlert(
           title: 'Новое SOS-обращение: ${msg['category'] == '1c' ? '1С' : 'IT'}',
-          body: '${msg['employee_name'] ?? msg['username'] ?? 'Пользователь'}: ${msg['problem_summary'] ?? ''}',
+          body: '$clientName: ${msg['problem_summary'] ?? ''}',
           challengeId: msg['session_id']?.toString(),
         );
       }
@@ -453,6 +461,7 @@ class AuthState extends ChangeNotifier {
       category: category,
       problemSummary: problemSummary,
       accessMode: accessMode,
+      api: api,
     );
     notifyListeners();
   }
@@ -521,7 +530,10 @@ class AuthState extends ChangeNotifier {
       final sessId = support.activeSessionId;
       if (sessId != null && api != null) {
         try {
-          await api!.endSupportSession(sessionId: sessId);
+          await api!.endSupportSession(sessionId: sessId).timeout(
+            const Duration(milliseconds: 1500),
+            onTimeout: () => null,
+          );
         } catch (e) {
           debugPrint('auth_state: ошибка завершения сессии поддержки: $e');
         }
@@ -562,6 +574,7 @@ class AuthState extends ChangeNotifier {
               category: category,
               problemSummary: summary,
               accessMode: accessMode,
+              api: api,
             );
             final cat = category == '1c' ? '1С-поддержка' : 'IT-служба';
             alert.triggerAlert(
@@ -578,6 +591,7 @@ class AuthState extends ChangeNotifier {
               category: category,
               problemSummary: summary,
               accessMode: accessMode,
+              api: api,
             );
             notifyListeners();
           }

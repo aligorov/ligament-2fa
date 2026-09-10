@@ -495,11 +495,20 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } else if (msg.type === "chat_message") {
       appendChatMessage(msg);
+      playMessageSound();
       if (!viewerChatDrawer || !viewerChatDrawer.classList.contains("visible")) {
         unreadChatCount++;
         updateChatBadge();
-        playSosChime();
       }
+      if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+        try {
+          new Notification(msg.sender_name || "Пользователь (SOS Чат)", {
+            body: msg.text || "Новое сообщение",
+            icon: "/favicon.ico"
+          });
+        } catch (_) {}
+      }
+      flashDocumentTitle("💬 Новое сообщение!");
     } else if (msg.type === "file_start") {
       handleIncomingFileStart(msg);
     } else if (msg.type === "file_chunk") {
@@ -749,26 +758,28 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Полноэкранный режим (Fullscreen API)
-  if (btnFullscreen) {
-    btnFullscreen.addEventListener("click", () => {
-      const root = viewerEl || document.documentElement;
-      if (!document.fullscreenElement) {
-        if (root.requestFullscreen) {
-          root.requestFullscreen().catch((err) => console.warn("Fullscreen request error:", err));
-        } else if (root.webkitRequestFullscreen) {
-          root.webkitRequestFullscreen();
-        }
-      } else {
-        if (document.exitFullscreen) {
-          document.exitFullscreen();
-        }
+  function toggleFullscreen() {
+    const root = viewerEl || document.documentElement;
+    if (!document.fullscreenElement) {
+      if (root.requestFullscreen) {
+        root.requestFullscreen().catch((err) => console.warn("Fullscreen request error:", err));
+      } else if (root.webkitRequestFullscreen) {
+        root.webkitRequestFullscreen();
       }
-    });
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      }
+    }
+  }
+
+  if (btnFullscreen) {
+    btnFullscreen.addEventListener("click", toggleFullscreen);
 
     document.addEventListener("fullscreenchange", () => {
       if (document.fullscreenElement) {
         btnFullscreen.classList.add("active");
-        btnFullscreen.title = "Выйти из полноэкранного режима (Esc)";
+        btnFullscreen.title = "Выйти из полноэкранного режима (Esc / F11)";
       } else {
         btnFullscreen.classList.remove("active");
         btnFullscreen.title = "На весь экран (F11)";
@@ -860,19 +871,52 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Блокировка клавиатуры и мыши клиента
-  if (btnBlockInput) {
-    btnBlockInput.addEventListener("click", () => {
-      isClientInputBlocked = !isClientInputBlocked;
-      sendControlMessage({ type: "block_input", enabled: isClientInputBlocked });
-      if (isClientInputBlocked) {
-        btnBlockInput.classList.add("active");
-        btnBlockInput.textContent = "🔓 Разблок ввода клиента";
-      } else {
-        btnBlockInput.classList.remove("active");
-        btnBlockInput.textContent = "🔒 Блок ввода клиента";
-      }
-    });
+  function toggleBlockInput() {
+    if (!btnBlockInput) return;
+    isClientInputBlocked = !isClientInputBlocked;
+    sendControlMessage({ type: "block_input", enabled: isClientInputBlocked });
+    if (isClientInputBlocked) {
+      btnBlockInput.classList.add("active");
+      btnBlockInput.textContent = "🔓 Разблок ввода клиента";
+    } else {
+      btnBlockInput.classList.remove("active");
+      btnBlockInput.textContent = "🔒 Блок ввода клиента";
+    }
   }
+
+  if (btnBlockInput) {
+    btnBlockInput.addEventListener("click", toggleBlockInput);
+  }
+
+  // Глобальные горячие клавиши просмотрщика
+  window.addEventListener("keydown", (e) => {
+    // F11: Полноэкранный режим
+    if (e.key === "F11") {
+      e.preventDefault();
+      toggleFullscreen();
+      return;
+    }
+    // Ctrl+Alt+C: Открыть/закрыть чат
+    if (e.ctrlKey && e.altKey && (e.key === "c" || e.key === "C" || e.code === "KeyC")) {
+      e.preventDefault();
+      toggleChatDrawer();
+      return;
+    }
+    // Ctrl+Alt+L: Блокировка/разблокировка ввода клиента
+    if (e.ctrlKey && e.altKey && (e.key === "l" || e.key === "L" || e.code === "KeyL")) {
+      e.preventDefault();
+      toggleBlockInput();
+      return;
+    }
+    // Escape: выход из полноэкранного режима или снятие фокуса
+    if (e.key === "Escape") {
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      } else if (document.activeElement === viewerScreenContainer) {
+        viewerScreenContainer.blur();
+      }
+    }
+  });
 
   // Буфер обмена
   if (btnClipboardToggle && clipboardDrawer) {
@@ -905,6 +949,47 @@ document.addEventListener("DOMContentLoaded", () => {
   // ----------------------------------------------------
   // ЧАТ С ПОЛЬЗОВАТЕЛЕМ
   // ----------------------------------------------------
+  function playMessageSound() {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      if (ctx.state === "suspended") {
+        ctx.resume();
+      }
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.setValueAtTime(880.0, ctx.currentTime + 0.1); // A5
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.32);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.32);
+    } catch (_) {}
+  }
+
+  let titleFlashTimer = null;
+  const originalDocTitle = document.title;
+  function flashDocumentTitle(text) {
+    if (!document.hidden) return;
+    if (titleFlashTimer) clearInterval(titleFlashTimer);
+    let state = false;
+    titleFlashTimer = setInterval(() => {
+      document.title = state ? text : originalDocTitle;
+      state = !state;
+    }, 1000);
+  }
+  window.addEventListener("focus", () => {
+    if (titleFlashTimer) {
+      clearInterval(titleFlashTimer);
+      titleFlashTimer = null;
+      document.title = originalDocTitle;
+    }
+  });
+
   function updateChatBadge() {
     if (!chatBadge) return;
     if (unreadChatCount > 0) {
@@ -1381,8 +1466,41 @@ document.addEventListener("DOMContentLoaded", () => {
     setupInputCapture();
   }
 
+  // Режим чата или автоматического подключения к экрану
+  const urlParams = new URLSearchParams(window.location.search);
+  const isChatOnly = urlParams.get("chat") === "1";
+  const btnRequestScreen = document.getElementById("btn-request-screen");
+  const chatOnlyPrompt = document.getElementById("chat-only-prompt");
+  const btnStartScreenPrompt = document.getElementById("btn-start-screen-prompt");
+
+  function initiateScreenShare() {
+    if (chatOnlyPrompt) chatOnlyPrompt.style.display = "none";
+    if (btnRequestScreen) btnRequestScreen.style.display = "none";
+    const spinner = document.getElementById("viewer-spinner");
+    if (spinner) spinner.style.display = "block";
+    startConnectFlow();
+  }
+
+  if (btnRequestScreen) {
+    btnRequestScreen.addEventListener("click", initiateScreenShare);
+  }
+  if (btnStartScreenPrompt) {
+    btnStartScreenPrompt.addEventListener("click", initiateScreenShare);
+  }
+
   // Инициализация WebSockets и WebRTC
   initWS();
-  startConnectFlow();
+  if (isChatOnly) {
+    toggleChatDrawer(true);
+    if (btnRequestScreen) btnRequestScreen.style.display = "inline-flex";
+    if (chatOnlyPrompt) chatOnlyPrompt.style.display = "block";
+    const spinner = document.getElementById("viewer-spinner");
+    if (spinner) spinner.style.display = "none";
+    if (connectionStatusText) {
+      connectionStatusText.textContent = "Режим чата по заявке (доступ к экрану не запрашивался)";
+    }
+  } else {
+    startConnectFlow();
+  }
 });
 

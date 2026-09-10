@@ -103,6 +103,20 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _showQueueChatModal(BuildContext context, AuthState auth, Map<String, dynamic> sess) {
+    final sessId = sess['id']?.toString();
+    if (sessId == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SupportOperatorScreen(
+          sessionId: sessId,
+          sessionData: sess,
+          isChatOnly: true,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
@@ -165,41 +179,71 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: const Color(0xFF1E293B),
         title: Row(
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('Ligament 2FA', style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
-                if (badge != null)
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          auth.displayName.isNotEmpty ? auth.displayName : 'Ligament 2FA',
+                          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (auth.username.isNotEmpty && auth.displayName != auth.username) ...[
+                        const SizedBox(width: 6),
+                        Text(
+                          '(@${auth.username})',
+                          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 2),
                   Container(
-                    margin: const EdgeInsets.only(top: 2),
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                       color: auth.isAdmin
                           ? const Color(0xFF8B5CF6).withValues(alpha: 0.25)
-                          : (auth.is1CEngineer ? const Color(0xFFF59E0B).withValues(alpha: 0.25) : const Color(0xFF0284C7).withValues(alpha: 0.25)),
+                          : (auth.is1CEngineer
+                              ? const Color(0xFFF59E0B).withValues(alpha: 0.25)
+                              : (auth.isITEngineer
+                                  ? const Color(0xFF0284C7).withValues(alpha: 0.25)
+                                  : const Color(0xFF64748B).withValues(alpha: 0.25))),
                       borderRadius: BorderRadius.circular(4),
                       border: Border.all(
                         color: auth.isAdmin
                             ? const Color(0xFF8B5CF6)
-                            : (auth.is1CEngineer ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8)),
+                            : (auth.is1CEngineer
+                                ? const Color(0xFFF59E0B)
+                                : (auth.isITEngineer
+                                    ? const Color(0xFF38BDF8)
+                                    : const Color(0xFF64748B))),
                         width: 1,
                       ),
                     ),
                     child: Text(
-                      badge,
+                      badge ?? '👤 Пользователь',
                       style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.bold,
                         color: auth.isAdmin
                             ? const Color(0xFFA78BFA)
-                            : (auth.is1CEngineer ? const Color(0xFFFBBF24) : const Color(0xFF38BDF8)),
+                            : (auth.is1CEngineer
+                                ? const Color(0xFFFBBF24)
+                                : (auth.isITEngineer
+                                    ? const Color(0xFF38BDF8)
+                                    : const Color(0xFFCBD5E1))),
                       ),
                     ),
                   ),
-              ],
+                ],
+              ),
             ),
-            const Spacer(),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
@@ -380,10 +424,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildQueueItem(AuthState auth, Map<String, dynamic> sess) {
     final is1C = sess['category'] == '1c';
-    final clientName = sess['employee_name'] ?? sess['username'] ?? 'Сотрудник';
-    final pcName = sess['pc_name'] ?? '—';
-    final osName = sess['os_name'] ?? '—';
-    final ip = sess['ip'] ?? '—';
+    final clientName = sess['display_name'] ?? sess['employee_name'] ?? sess['username'] ?? 'Сотрудник';
+    final pcName = sess['device_name'] ?? sess['pc_name'] ?? '—';
+    final osName = sess['platform'] ?? sess['os_name'] ?? '—';
+    final ip = sess['last_ip'] ?? sess['ip'] ?? '—';
     final summary = sess['problem_summary'] ?? 'Запрос помощи';
     final fullControl = sess['access_mode'] == 'full_control';
 
@@ -496,22 +540,39 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _connectingToSession ? null : () => _connectAsOperator(auth, sess),
-                icon: Icon(fullControl ? Icons.sports_esports : Icons.desktop_windows, size: 18),
-                label: Text(
-                  fullControl ? '🎮 Подключиться и управлять' : '👁 Подключиться (просмотр)',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _showQueueChatModal(context, auth, sess),
+                    icon: const Icon(Icons.chat_bubble_outline, size: 16),
+                    label: const Text('💬 Чат', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF38BDF8),
+                      side: const BorderSide(color: Color(0xFF0284C7)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
                 ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: is1C ? const Color(0xFFF59E0B) : const Color(0xFF0284C7),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _connectingToSession ? null : () => _connectAsOperator(auth, sess),
+                    icon: Icon(fullControl ? Icons.sports_esports : Icons.desktop_windows, size: 16),
+                    label: Text(
+                      fullControl ? '🎮 Экран' : '👁 Экран',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: is1C ? const Color(0xFFF59E0B) : const Color(0xFF0284C7),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
           ],
         ),
@@ -638,7 +699,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const SizedBox(width: 8),
-          if (isActive) ...[
+          if (isActive || support.state == SupportSessionState.requested || support.state == SupportSessionState.authorizing) ...[
             ElevatedButton.icon(
               onPressed: () => _showInSessionChatModal(context, auth),
               icon: const Icon(Icons.chat_bubble_outline, size: 13),
@@ -659,14 +720,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
             ),
-            const SizedBox(width: 4),
-            IconButton(
-              onPressed: () => _showReceivedFilesModal(context, auth),
-              icon: const Icon(Icons.folder_open, size: 18, color: Color(0xFF94A3B8)),
-              tooltip: 'Файлы от инженера',
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-            ),
+            if (isActive) ...[
+              const SizedBox(width: 4),
+              IconButton(
+                onPressed: () => _showReceivedFilesModal(context, auth),
+                icon: const Icon(Icons.folder_open, size: 18, color: Color(0xFF94A3B8)),
+                tooltip: 'Файлы от инженера',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              ),
+            ],
             const SizedBox(width: 4),
           ],
           OutlinedButton(

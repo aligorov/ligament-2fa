@@ -26,12 +26,14 @@ class SupportOperatorScreen extends StatefulWidget {
   final String sessionId;
   final String? numberMatch;
   final Map<String, dynamic> sessionData;
+  final bool isChatOnly;
 
   const SupportOperatorScreen({
     super.key,
     required this.sessionId,
     this.numberMatch,
     required this.sessionData,
+    this.isChatOnly = false,
   });
 
   @override
@@ -45,6 +47,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   WebSocketChannel? _wsChannel;
   final List<RTCIceCandidate> _pendingCandidates = [];
 
+  late bool _isChatOnly;
+  String? _currentNumberMatch;
   String _connectionStatus = 'Инициализация...';
   bool _isConnected = false;
   bool _isInputBlocked = false;
@@ -71,17 +75,32 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   @override
   void initState() {
     super.initState();
+    _isChatOnly = widget.isChatOnly;
+    _currentNumberMatch = widget.numberMatch;
     final accessMode = widget.sessionData['access_mode']?.toString();
     _isControlEnabled = accessMode != 'view_only';
-    _initRendererAndWebRTC();
+    if (_isChatOnly) {
+      _connectionStatus = 'Режим чата';
+      _connectWebSocket();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showOperatorChatModal();
+      });
+    } else {
+      _initRendererAndWebRTC();
+    }
   }
 
   Future<void> _initRendererAndWebRTC() async {
+    setState(() {
+      _connectionStatus = 'Ожидание согласия пользователя (${_currentNumberMatch ?? '2FA'})...';
+    });
     await _remoteRenderer.initialize();
-    _connectWebSocketAndWebRTC();
+    _connectWebSocket();
+    await _setupPeerConnection();
   }
 
-  void _connectWebSocketAndWebRTC() async {
+  void _connectWebSocket() {
+    if (_wsChannel != null) return;
     final auth = context.read<AuthState>();
     var serverUrl = auth.serverUrl ?? '';
     if (serverUrl.startsWith('https://')) {
@@ -93,10 +112,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       serverUrl = serverUrl.substring(0, serverUrl.length - 1);
     }
     final wsUrl = '$serverUrl/api/v1/support/ws/${widget.sessionId}?token=${auth.token}';
-
-    setState(() {
-      _connectionStatus = 'Ожидание согласия пользователя (${widget.numberMatch ?? '2FA'})...';
-    });
 
     try {
       final uri = Uri.parse(wsUrl);
@@ -123,13 +138,40 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           }
         },
       );
-
-      _setupPeerConnection();
     } catch (e) {
       if (mounted) {
         setState(() {
           _connectionStatus = 'Исключение подключения: $e';
         });
+      }
+    }
+  }
+
+  Future<void> _requestScreenAccess() async {
+    setState(() {
+      _connectionStatus = 'Запрос доступа к экрану у пользователя...';
+    });
+    final auth = context.read<AuthState>();
+    try {
+      final res = await auth.connectToSupportSession(widget.sessionId);
+      if (mounted) {
+        setState(() {
+          _isChatOnly = false;
+          _currentNumberMatch = res['number_match']?.toString();
+        });
+        await _initRendererAndWebRTC();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _connectionStatus = 'Ошибка запроса: $e';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFFEF4444),
+            content: Text('Ошибка запроса экрана: $e'),
+          ),
+        );
       }
     }
   }
@@ -245,6 +287,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             _chatMessages.add(msg);
             _unreadChatCount++;
           });
+          context.read<AuthState>().alert.triggerChatNotification(
+            sender: msg.senderName,
+            message: msg.text,
+          );
         }
       } catch (_) {}
     }
@@ -549,7 +595,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       } catch (_) {}
     }
     if (!sent) {
-      _sendWsSignal({'type': 'input_control', 'data': msg});
+      if (msg['type'] == 'chat_message') {
+        _sendWsSignal(msg);
+      } else {
+        _sendWsSignal({'type': 'input_control', 'data': msg});
+      }
     }
   }
 
@@ -867,15 +917,14 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
     if (confirm == true && mounted) {
       final auth = context.read<AuthState>();
-      _cleanupResources();
+      final sessId = widget.sessionId;
+      Navigator.of(context).pop();
       try {
-        await auth.api?.endSupportSession(sessionId: widget.sessionId).timeout(
-          const Duration(seconds: 3),
+        auth.api?.endSupportSession(sessionId: sessId).timeout(
+          const Duration(seconds: 2),
           onTimeout: () => null,
         );
       } catch (_) {}
-      if (!mounted) return;
-      Navigator.of(context).pop();
     }
   }
 
@@ -888,10 +937,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final clientName = widget.sessionData['employee_name'] ??
+    final clientName = widget.sessionData['display_name'] ??
+        widget.sessionData['employee_name'] ??
         widget.sessionData['username'] ??
         'Клиент';
-    final pcName = widget.sessionData['pc_name'] ?? 'PC';
+    final pcName = widget.sessionData['device_name'] ?? widget.sessionData['pc_name'] ?? 'PC';
     final is1C = widget.sessionData['category'] == '1c';
 
     return Scaffold(
@@ -1042,7 +1092,10 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     itemBuilder: (ctx) => [
                       const PopupMenuItem(value: 'win_key', child: Text('⊞ Пуск (Win)', style: TextStyle(color: Colors.white))),
                       const PopupMenuItem(value: 'win_r', child: Text('⊞ Win + R (Выполнить)', style: TextStyle(color: Colors.white))),
+                      const PopupMenuItem(value: 'win_e', child: Text('⊞ Win + E (Проводник)', style: TextStyle(color: Colors.white))),
+                      const PopupMenuItem(value: 'win_x', child: Text('⊞ Win + X (Админ-меню)', style: TextStyle(color: Colors.white))),
                       const PopupMenuItem(value: 'win_d', child: Text('⊞ Win + D (Рабочий стол)', style: TextStyle(color: Colors.white))),
+                      const PopupMenuItem(value: 'win_l', child: Text('⊞ Win + L (Блокировка)', style: TextStyle(color: Colors.white))),
                       const PopupMenuItem(value: 'task_mgr', child: Text('⚡ Диспетчер задач', style: TextStyle(color: Colors.white))),
                       const PopupMenuItem(value: 'ctrl_alt_del', child: Text('🔒 Ctrl+Alt+Del', style: TextStyle(color: Colors.white))),
                       const PopupMenuItem(value: 'alt_tab', child: Text('🔄 Alt + Tab', style: TextStyle(color: Colors.white))),
@@ -1166,6 +1219,21 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     },
                   ),
 
+                  // Кнопка запроса экрана в режиме чата
+                  if (_isChatOnly)
+                    ElevatedButton.icon(
+                      onPressed: _requestScreenAccess,
+                      icon: const Icon(Icons.desktop_windows, size: 14),
+                      label: const Text('Запросить экран (2FA)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0284C7),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+
                   // Кнопка завершения сеанса
                   ElevatedButton.icon(
                     onPressed: _endSession,
@@ -1185,7 +1253,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           ),
 
           // Карточка с контрольным числом (если сеанс еще авторизуется клиентом)
-          if (!_isConnected && widget.numberMatch != null)
+          if (!_isConnected && !_isChatOnly && _currentNumberMatch != null)
             Container(
               margin: const EdgeInsets.all(16),
               padding: const EdgeInsets.all(16),
@@ -1208,7 +1276,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
-                      widget.numberMatch!,
+                      _currentNumberMatch!,
                       style: const TextStyle(
                         color: Color(0xFF38BDF8),
                         fontSize: 32,
@@ -1275,19 +1343,71 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                   }
                 },
                 child: Center(
-                  child: _remoteRenderer.srcObject == null
+                  child: _isChatOnly
                       ? Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const CircularProgressIndicator(color: Color(0xFF38BDF8)),
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0284C7).withValues(alpha: 0.15),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.chat_outlined, size: 48, color: Color(0xFF38BDF8)),
+                            ),
                             const SizedBox(height: 16),
-                            Text(
-                              _connectionStatus,
-                              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
+                            const Text(
+                              'Текстовый чат с пользователем',
+                              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 8),
+                            const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 32),
+                              child: Text(
+                                'Вы находитесь в режиме прямого чата.\nТрансляция экрана начнется после запроса доступа и 2FA подтверждения.',
+                                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                            ElevatedButton.icon(
+                              onPressed: _requestScreenAccess,
+                              icon: const Icon(Icons.desktop_windows, size: 18),
+                              label: const Text('🎮 Запросить доступ к экрану (2FA)', style: TextStyle(fontWeight: FontWeight.bold)),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF0284C7),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            OutlinedButton.icon(
+                              onPressed: _showOperatorChatModal,
+                              icon: const Icon(Icons.chat_bubble_outline, size: 16),
+                              label: Text(_chatMessages.isEmpty ? '💬 Открыть окно чата' : '💬 Чат (${_chatMessages.length})'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: const Color(0xFF38BDF8),
+                                side: const BorderSide(color: Color(0xFF0284C7)),
+                                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              ),
                             ),
                           ],
                         )
-                      : InteractiveViewer(
+                      : _remoteRenderer.srcObject == null
+                          ? Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const CircularProgressIndicator(color: Color(0xFF38BDF8)),
+                                const SizedBox(height: 16),
+                                Text(
+                                  _connectionStatus,
+                                  style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
+                                ),
+                              ],
+                            )
+                          : InteractiveViewer(
                           scaleEnabled: _zoomMode == OperatorZoomMode.zoomIn,
                           minScale: 1.0,
                           maxScale: 3.0,

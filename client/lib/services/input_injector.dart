@@ -11,6 +11,18 @@ final class _CGPoint extends ffi.Struct {
   external double y;
 }
 
+// Win32 RECT struct for ClipCursor
+final class _RECT extends ffi.Struct {
+  @ffi.Int32()
+  external int left;
+  @ffi.Int32()
+  external int top;
+  @ffi.Int32()
+  external int right;
+  @ffi.Int32()
+  external int bottom;
+}
+
 /// Сервис внедрения пользовательского ввода (мышь и клавиатура) на Windows, macOS и Linux.
 class InputInjector {
   static final InputInjector instance = InputInjector._();
@@ -38,6 +50,8 @@ class InputInjector {
   void Function(int, int, int, int, int)? _winMouseEvent;
   void Function(int, int, int, int)? _winKeybdEvent;
   int Function(int)? _winBlockInput;
+  int Function(ffi.Pointer<_RECT>)? _winClipCursor;
+  int Function()? _winLockWorkStation;
   int Function(int)? _winGetSystemMetrics;
 
   void _initMacCG() {
@@ -85,6 +99,12 @@ class InputInjector {
       _winBlockInput = _user32Lib!.lookupFunction<
           ffi.Int32 Function(ffi.Int32),
           int Function(int)>('BlockInput');
+      _winClipCursor = _user32Lib!.lookupFunction<
+          ffi.Int32 Function(ffi.Pointer<_RECT>),
+          int Function(ffi.Pointer<_RECT>)>('ClipCursor');
+      _winLockWorkStation = _user32Lib!.lookupFunction<
+          ffi.Int32 Function(),
+          int Function()>('LockWorkStation');
       _winGetSystemMetrics = _user32Lib!.lookupFunction<
           ffi.Int32 Function(ffi.Int32),
           int Function(int)>('GetSystemMetrics');
@@ -282,7 +302,24 @@ class InputInjector {
     if (kIsWeb) return;
     try {
       if (Platform.isWindows) {
-        _winBlockInput?.call(blocked ? 1 : 0);
+        if (blocked) {
+          // 1. Аппаратно запираем физический курсор мыши в точку 0,0
+          // ClipCursor работает без повышенных прав UAC/Admin!
+          final rect = calloc<_RECT>();
+          rect.ref.left = 0;
+          rect.ref.top = 0;
+          rect.ref.right = 1;
+          rect.ref.bottom = 1;
+          _winClipCursor?.call(rect);
+          calloc.free(rect);
+
+          // 2. Блокируем ввод через BlockInput (если процесс имеет права админа)
+          _winBlockInput?.call(1);
+        } else {
+          // Освобождаем курсор мыши
+          _winClipCursor?.call(ffi.Pointer.fromAddress(0));
+          _winBlockInput?.call(0);
+        }
       } else if (Platform.isMacOS) {
         // CGAssociateMouseAndMouseCursorPosition: 0 отключает физическое движение курсора мышью
         _cgAssociateMouse?.call(blocked ? 0 : 1);
@@ -325,8 +362,54 @@ class InputInjector {
           _winKeybdEvent?.call(vkD, 0, keyUp, 0);
           _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);
           break;
+        case 'win_e':
+          final vkE = 'E'.codeUnitAt(0);
+          _winKeybdEvent?.call(vkLWin, 0, 0, 0);
+          _winKeybdEvent?.call(vkE, 0, 0, 0);
+          _winKeybdEvent?.call(vkE, 0, keyUp, 0);
+          _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);
+          break;
+        case 'win_x':
+          final vkX = 'X'.codeUnitAt(0);
+          _winKeybdEvent?.call(vkLWin, 0, 0, 0);
+          _winKeybdEvent?.call(vkX, 0, 0, 0);
+          _winKeybdEvent?.call(vkX, 0, keyUp, 0);
+          _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);
+          break;
+        case 'win_i':
+          final vkI = 'I'.codeUnitAt(0);
+          _winKeybdEvent?.call(vkLWin, 0, 0, 0);
+          _winKeybdEvent?.call(vkI, 0, 0, 0);
+          _winKeybdEvent?.call(vkI, 0, keyUp, 0);
+          _winKeybdEvent?.call(vkLWin, 0, keyUp, 0);
+          break;
+        case 'win_l':
+          _winLockWorkStation?.call();
+          break;
+        case 'ctrl_c':
+          final vkC = 'C'.codeUnitAt(0);
+          _winKeybdEvent?.call(vkControl, 0, 0, 0);
+          _winKeybdEvent?.call(vkC, 0, 0, 0);
+          _winKeybdEvent?.call(vkC, 0, keyUp, 0);
+          _winKeybdEvent?.call(vkControl, 0, keyUp, 0);
+          break;
+        case 'ctrl_v':
+          final vkV = 'V'.codeUnitAt(0);
+          _winKeybdEvent?.call(vkControl, 0, 0, 0);
+          _winKeybdEvent?.call(vkV, 0, 0, 0);
+          _winKeybdEvent?.call(vkV, 0, keyUp, 0);
+          _winKeybdEvent?.call(vkControl, 0, keyUp, 0);
+          break;
+        case 'ctrl_a':
+          final vkA = 'A'.codeUnitAt(0);
+          _winKeybdEvent?.call(vkControl, 0, 0, 0);
+          _winKeybdEvent?.call(vkA, 0, 0, 0);
+          _winKeybdEvent?.call(vkA, 0, keyUp, 0);
+          _winKeybdEvent?.call(vkControl, 0, keyUp, 0);
+          break;
         case 'task_mgr':
         case 'ctrl_alt_del':
+        case 'ctrl_shift_esc':
           // Ctrl+Shift+Esc гарантированно открывает Диспетчер задач без требования SAS
           _winKeybdEvent?.call(vkControl, 0, 0, 0);
           _winKeybdEvent?.call(vkShift, 0, 0, 0);
@@ -356,6 +439,7 @@ class InputInjector {
       switch (hotkey) {
         case 'win_key':
         case 'spotlight':
+        case 'cmd_space':
           // Cmd + Space (Spotlight)
           _postMacKey(55, true); // Cmd
           _postMacKey(49, true); // Space
@@ -364,6 +448,7 @@ class InputInjector {
           break;
         case 'task_mgr':
         case 'ctrl_alt_del':
+        case 'cmd_opt_esc':
           // Cmd + Option + Escape (Завершить принудительно)
           _postMacKey(55, true); // Cmd
           _postMacKey(58, true); // Option
@@ -373,6 +458,7 @@ class InputInjector {
           _postMacKey(55, false);
           break;
         case 'alt_tab':
+        case 'cmd_tab':
           // Cmd + Tab
           _postMacKey(55, true);
           _postMacKey(48, true);
@@ -384,6 +470,27 @@ class InputInjector {
           _postMacKey(55, true);
           _postMacKey(12, true);
           _postMacKey(12, false);
+          _postMacKey(55, false);
+          break;
+        case 'ctrl_c':
+        case 'cmd_c':
+          _postMacKey(55, true);
+          _postMacKey(8, true);
+          _postMacKey(8, false);
+          _postMacKey(55, false);
+          break;
+        case 'ctrl_v':
+        case 'cmd_v':
+          _postMacKey(55, true);
+          _postMacKey(9, true);
+          _postMacKey(9, false);
+          _postMacKey(55, false);
+          break;
+        case 'ctrl_a':
+        case 'cmd_a':
+          _postMacKey(55, true);
+          _postMacKey(0, true);
+          _postMacKey(0, false);
           _postMacKey(55, false);
           break;
         case 'esc':

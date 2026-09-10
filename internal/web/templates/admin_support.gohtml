@@ -152,6 +152,7 @@
     <!-- Правая колонка: действия оператора -->
     <div class="support-col-actions">
       {{if not $isClosed}}
+        <a class="btn secondary sm" href="/admin/support/{{.ID}}/viewer?chat=1" title="Открыть текстовый чат по заявке без захвата экрана">💬 Чат</a>
         <a class="btn {{if $isWaiting}}primary pulse-btn{{else if $isConnecting}}info{{else}}ok{{end}} sm" href="/admin/support/{{.ID}}/viewer">
           {{if eq .Status "active"}}Перейти к экрану 🖥{{else if $isConnecting}}К авторизации 🔵{{else}}Подключиться ⚡{{end}}
         </a>

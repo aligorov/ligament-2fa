@@ -122,6 +122,7 @@ class SupportService extends ChangeNotifier {
   List<SupportChatMessage> get chatMessages => List.unmodifiable(_chatMessages);
   int get unreadChatCount => _unreadChatCount;
   List<ReceivedFileItem> get receivedFiles => List.unmodifiable(_receivedFiles);
+  void Function(SupportChatMessage message)? onChatMessageReceived;
 
   void markChatAsRead() {
     _unreadChatCount = 0;
@@ -274,8 +275,10 @@ class SupportService extends ChangeNotifier {
     required String category,
     required String problemSummary,
     String accessMode = 'full_control',
+    ApiClient? api,
   }) {
     _activeSessionId = sessionId;
+    if (api != null) _api = api;
     _category = category;
     _problemSummary = problemSummary;
     _accessMode = accessMode;
@@ -291,8 +294,10 @@ class SupportService extends ChangeNotifier {
     String? category,
     String? problemSummary,
     String? accessMode,
+    ApiClient? api,
   }) {
     _activeSessionId = sessionId;
+    if (api != null) _api = api;
     if (category != null) _category = category;
     if (problemSummary != null) _problemSummary = problemSummary;
     if (accessMode != null && accessMode.isNotEmpty) _accessMode = accessMode;
@@ -425,12 +430,21 @@ class SupportService extends ChangeNotifier {
 
   /// Обработка сигнальных WebRTC пакетов от браузера оператора (Answer, Candidates)
   Future<void> handleRemoteSignal(Map<String, dynamic> signal) async {
-    if (_peerConnection == null) return;
-
     try {
       final payload = (signal['data'] is Map<String, dynamic>)
           ? signal['data'] as Map<String, dynamic>
           : signal;
+
+      if (payload['type'] == 'chat_message' ||
+          (payload['type'] == 'input_control' && (payload['data'] as Map?)?['type'] == 'chat_message')) {
+        final chatData = payload['type'] == 'chat_message'
+            ? payload
+            : (payload['data'] as Map<String, dynamic>);
+        _handleRemoteInput(chatData);
+        return;
+      }
+
+      if (_peerConnection == null) return;
 
       if (payload.containsKey('sdp')) {
         final sdpMap = payload['sdp'] as Map<String, dynamic>;
@@ -600,6 +614,7 @@ class SupportService extends ChangeNotifier {
         _chatMessages.add(chatMsg);
         _unreadChatCount++;
         notifyListeners();
+        onChatMessageReceived?.call(chatMsg);
       } catch (e) {
         debugPrint('support_service: ошибка разбора чат-сообщения: $e');
       }
@@ -720,7 +735,7 @@ class SupportService extends ChangeNotifier {
         try {
           dc.onMessage = null;
           dc.onDataChannelState = null;
-          await dc.close();
+          await dc.close().timeout(const Duration(milliseconds: 500), onTimeout: () => null);
         } catch (_) {}
       }
 
@@ -731,10 +746,10 @@ class SupportService extends ChangeNotifier {
         try {
           for (final track in stream.getTracks()) {
             try {
-              await track.stop();
+              await track.stop().timeout(const Duration(milliseconds: 500), onTimeout: () => null);
             } catch (_) {}
           }
-          await stream.dispose();
+          await stream.dispose().timeout(const Duration(milliseconds: 500), onTimeout: () => null);
         } catch (_) {}
       }
 
@@ -749,8 +764,8 @@ class SupportService extends ChangeNotifier {
           pc.onDataChannel = null;
           pc.onIceConnectionState = null;
           pc.onRenegotiationNeeded = null;
-          await pc.close();
-          await pc.dispose();
+          await pc.close().timeout(const Duration(milliseconds: 500), onTimeout: () => null);
+          await pc.dispose().timeout(const Duration(milliseconds: 500), onTimeout: () => null);
         } catch (_) {}
       }
     } catch (e) {
