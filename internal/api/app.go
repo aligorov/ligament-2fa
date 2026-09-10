@@ -662,7 +662,14 @@ func (a *AppAPI) handleWS(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if messageType == websocket.PingMessage {
-			_ = conn.WriteMessage(websocket.PongMessage, nil)
+			// Контрольный кадр пишем напрямую через WriteControl: это единственный
+			// write-метод gorilla/websocket, разрешённый ДОКУМЕНТАЦИЕЙ для
+			// конкурентного вызова параллельно с WriteMessage writer-горутины хаба
+			// ("The Close and WriteControl methods can be called concurrently with
+			// all other methods", gorilla/websocket@v1.5.3 doc.go, Concurrency).
+			// WriteMessage здесь гонялся бы с рассылкой хаба и детонировал панику
+			// "concurrent write to websocket connection" (conn.go).
+			_ = conn.WriteControl(websocket.PongMessage, nil, time.Now().Add(3*time.Second))
 		}
 	}
 }

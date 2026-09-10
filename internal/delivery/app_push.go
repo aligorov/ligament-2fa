@@ -5,12 +5,22 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+)
+
+const (
+	// wsSendQueueSize — ёмкость исходящего буфера одного соединения.
+	wsSendQueueSize = 16
+	// wsWriteTimeout — дедлайн на запись одного кадра в writer-горутине.
+	wsWriteTimeout = 3 * time.Second
 )
 
 // AppPushPrompt — структура оповещения о входящем запросе на авторизацию.
@@ -26,26 +36,144 @@ type AppPushPrompt struct {
 	Timestamp        time.Time `json:"timestamp"`
 }
 
+// wsClient — обёртка WebSocket-соединения с выделенной горутиной-писателем.
+//
+// gorilla/websocket допускает ровно ОДНОГО конкурентного писателя на соединение:
+// параллельный вызов WriteMessage/SetWriteDeadline детонирует панику
+// "concurrent write to websocket connection" (conn.go), а после первой паники
+// флаг isWriting залипает и паникует каждый следующий писатель. Поэтому все
+// исходящие data-кадры ставятся в канал send и пишутся единственной
+// горутиной serveWSWriter. Рассылка в хабе никогда не пишет в conn напрямую
+// и не блокируется на медленных клиентах.
+type wsClient struct {
+	conn       *websocket.Conn
+	send       chan []byte
+	done       chan struct{}
+	closeOnce  sync.Once
+	unregister func() // асинхронное снятие соединения с реестра хаба
+}
+
+func newWSClient(conn *websocket.Conn, unregister func()) *wsClient {
+	// Отключаем алгоритм Нагла на серверной стороне: push-кадры маленькие,
+	// и связка Nagle с отложенными ACK TCP на мелких сегментах способна
+	// задерживать доставку на сотни миллисекунд (замечено на macOS-хостах),
+	// при том что запись через WriteMessage ошибок не возвращает.
+	if tcp, ok := conn.NetConn().(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+	}
+	return &wsClient{
+		conn:       conn,
+		send:       make(chan []byte, wsSendQueueSize),
+		done:       make(chan struct{}),
+		unregister: unregister,
+	}
+}
+
+// shutdown закрывает соединение и останавливает writer-горутину; безопасен
+// для повторного и конкурентного вызова (Close в gorilla разрешён параллельно
+// с любыми методами).
+func (c *wsClient) shutdown() {
+	c.closeOnce.Do(func() {
+		close(c.done)
+		_ = c.conn.Close()
+	})
+}
+
+// serveWSWriter — единственный писатель data-кадров соединения: читает канал
+// send, ставит дедлайн и пишет в conn. Ошибка записи = соединение мертво:
+// writer останавливается, conn закрывается, соединение асинхронно снимается
+// с реестра хаба. Вызов unregister именно через go обязателен: постановка в
+// очередь выполняется под RLock хаба, а Unregister* берёт write-lock, поэтому
+// синхронный вызов из writer-горутины при живом RLock — дедлок.
+//
+// Контрольные кадры (Pong из read-loop в internal/api) сюда НЕ заведены и в
+// этом нет нужды: gorilla/websocket явно документирует (doc.go, раздел
+// Concurrency): "The Close and WriteControl methods can be called concurrently
+// with all other methods" — в отличие от WriteMessage/SetWriteDeadline.
+// Read-loop отвечает на Ping напрямую через Conn.WriteControl, что безопасно
+// параллельно с WriteMessage этой горутины.
+func serveWSWriter(c *wsClient) {
+	for {
+		select {
+		case <-c.done:
+			return
+		case msg := <-c.send:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				slog.Debug("app_push: writer остановлен, соединение потеряно", "error", err)
+				c.shutdown()
+				go c.unregister()
+				return
+			}
+		}
+	}
+}
+
+// tryEnqueue ставит сообщение в очередь writer-горутины строго без блокировки:
+// переполнение буфера означает медленного/мёртвого клиента — соединение
+// закрывается и асинхронно снимается с реестра (go — см. комментарий к
+// serveWSWriter), а рассылка продолжает двигаться дальше, не удерживая
+// блокировку хаба дольше необходимого.
+func tryEnqueue(c *wsClient, msg []byte) bool {
+	select {
+	case c.send <- msg:
+		return true
+	default:
+		slog.Warn("app_push: буфер отправки переполнен, соединение закрывается")
+		c.shutdown()
+		go c.unregister()
+		return false
+	}
+}
+
 // AppHub управляет постоянными WebSocket и SSE соединениями авторизованных клиентских приложений и веб-консолей.
 type AppHub struct {
 	mu         sync.RWMutex
-	wsClients  map[uuid.UUID]map[*websocket.Conn]bool
+	wsClients  map[uuid.UUID]map[*websocket.Conn]*wsClient
 	sseClients map[uuid.UUID]map[chan []byte]bool
-	adminConns map[uuid.UUID]map[*websocket.Conn]bool // session_id -> websocket connections
+	adminConns map[uuid.UUID]map[*websocket.Conn]*wsClient // session_id -> websocket connections
 	upgrader   websocket.Upgrader
+}
+
+// checkWSOrigin — политика происхождения WebSocket-апгрейда:
+//   - заголовка Origin нет — разрешаем (нативные десктопные и мобильные
+//     клиенты, включая Flutter, Origin не отправляют);
+//   - Origin есть (браузер) — требуется совпадение host-части Origin с r.Host
+//     (same-origin для веб-консоли), иначе апгрейд отвергается с 403.
+func checkWSOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return normalizeWSHost(u.Host) == normalizeWSHost(r.Host)
+}
+
+// normalizeWSHost приводит host[:port] к каноническому виду: имя хоста в
+// нижнем регистре, опущенные порты по умолчанию (80/443) не различаются
+// с явно указанными.
+func normalizeWSHost(hostport string) string {
+	h, p, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return strings.ToLower(hostport)
+	}
+	if p == "80" || p == "443" {
+		return strings.ToLower(h)
+	}
+	return strings.ToLower(h) + ":" + p
 }
 
 // NewAppHub создает новый экземпляр брокера оповещений.
 func NewAppHub() *AppHub {
 	return &AppHub{
-		wsClients:  make(map[uuid.UUID]map[*websocket.Conn]bool),
+		wsClients:  make(map[uuid.UUID]map[*websocket.Conn]*wsClient),
 		sseClients: make(map[uuid.UUID]map[chan []byte]bool),
-		adminConns: make(map[uuid.UUID]map[*websocket.Conn]bool),
+		adminConns: make(map[uuid.UUID]map[*websocket.Conn]*wsClient),
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				// Разрешаем подключения от нативных десктопных, мобильных клиентов и браузерной админки
-				return true
-			},
+			CheckOrigin: checkWSOrigin,
 		},
 	}
 }
@@ -55,28 +183,41 @@ func (h *AppHub) Upgrader() *websocket.Upgrader {
 	return &h.upgrader
 }
 
-// RegisterWS регистрирует открытое WebSocket-соединение для пользователя.
+// RegisterWS регистрирует открытое WebSocket-соединение для пользователя
+// и запускает его выделенную writer-горутину.
 func (h *AppHub) RegisterWS(userID uuid.UUID, conn *websocket.Conn) {
+	c := newWSClient(conn, func() { h.UnregisterWS(userID, conn) })
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.wsClients[userID] == nil {
-		h.wsClients[userID] = make(map[*websocket.Conn]bool)
+	if _, exists := h.wsClients[userID][conn]; exists {
+		// Повторная регистрация того же conn — идемпотентность.
+		h.mu.Unlock()
+		return
 	}
-	h.wsClients[userID][conn] = true
+	if h.wsClients[userID] == nil {
+		h.wsClients[userID] = make(map[*websocket.Conn]*wsClient)
+	}
+	h.wsClients[userID][conn] = c
+	h.mu.Unlock()
+	go serveWSWriter(c)
 	slog.Debug("app_push: зарегистрирован websocket клиент", "user_id", userID)
 }
 
-// UnregisterWS удаляет WebSocket-соединение.
+// UnregisterWS удаляет WebSocket-соединение и останавливает его writer-горутину.
 func (h *AppHub) UnregisterWS(userID uuid.UUID, conn *websocket.Conn) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if conns, ok := h.wsClients[userID]; ok {
-		delete(conns, conn)
-		if len(conns) == 0 {
+	c := h.wsClients[userID][conn]
+	if c != nil {
+		delete(h.wsClients[userID], conn)
+		if len(h.wsClients[userID]) == 0 {
 			delete(h.wsClients, userID)
 		}
 	}
-	_ = conn.Close()
+	h.mu.Unlock()
+	if c != nil {
+		c.shutdown()
+	} else {
+		_ = conn.Close()
+	}
 	slog.Debug("app_push: отключен websocket клиент", "user_id", userID)
 }
 
@@ -107,7 +248,9 @@ func (h *AppHub) UnregisterSSE(userID uuid.UUID, ch chan []byte) {
 	slog.Debug("app_push: отключен sse клиент", "user_id", userID)
 }
 
-// BroadcastPrompt рассылает карточку запроса во все активные соединения пользователя.
+// BroadcastPrompt рассылает карточку запроса во все активные соединения
+// пользователя. Возвращает число соединений, в очередь которых сообщение
+// принято (доставка асинхронная, выполняется writer-горутинами).
 func (h *AppHub) BroadcastPrompt(userID uuid.UUID, prompt *AppPushPrompt) int {
 	data, err := json.Marshal(prompt)
 	if err != nil {
@@ -120,13 +263,13 @@ func (h *AppHub) BroadcastPrompt(userID uuid.UUID, prompt *AppPushPrompt) int {
 
 	sentCount := 0
 
-	// 1. Рассылка по WebSockets (Windows Desktop и активные мобильные приложения)
+	// 1. Рассылка по WebSockets (Windows Desktop и активные мобильные
+	// приложения): неблокирующаяся постановка в очередь writer-горутины,
+	// мёртвые/медленные соединения закрываются и снимаются с реестра самим
+	// enqueue, RLock хаба не удерживается дольше итерации по карте.
 	if conns, ok := h.wsClients[userID]; ok {
-		for conn := range conns {
-			_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				slog.Warn("app_push: ошибка записи в websocket", "error", err)
-			} else {
+		for _, c := range conns {
+			if tryEnqueue(c, data) {
 				sentCount++
 			}
 		}
@@ -182,28 +325,41 @@ type SupportPushPrompt struct {
 	Timestamp      time.Time `json:"timestamp"`
 }
 
-// RegisterAdminWS регистрирует WebSocket-соединение веб-консоли оператора для данной сессии.
+// RegisterAdminWS регистрирует WebSocket-соединение веб-консоли оператора для
+// данной сессии и запускает его выделенную writer-горутину.
 func (h *AppHub) RegisterAdminWS(sessionID uuid.UUID, conn *websocket.Conn) {
+	c := newWSClient(conn, func() { h.UnregisterAdminWS(sessionID, conn) })
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.adminConns[sessionID] == nil {
-		h.adminConns[sessionID] = make(map[*websocket.Conn]bool)
+	if _, exists := h.adminConns[sessionID][conn]; exists {
+		h.mu.Unlock()
+		return
 	}
-	h.adminConns[sessionID][conn] = true
+	if h.adminConns[sessionID] == nil {
+		h.adminConns[sessionID] = make(map[*websocket.Conn]*wsClient)
+	}
+	h.adminConns[sessionID][conn] = c
+	h.mu.Unlock()
+	go serveWSWriter(c)
 	slog.Debug("app_push: зарегистрирована веб-консоль оператора", "session_id", sessionID)
 }
 
-// UnregisterAdminWS удаляет WebSocket-соединение веб-консоли.
+// UnregisterAdminWS удаляет WebSocket-соединение веб-консоли оператора
+// и останавливает его writer-горутину.
 func (h *AppHub) UnregisterAdminWS(sessionID uuid.UUID, conn *websocket.Conn) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if conns, ok := h.adminConns[sessionID]; ok {
-		delete(conns, conn)
-		if len(conns) == 0 {
+	c := h.adminConns[sessionID][conn]
+	if c != nil {
+		delete(h.adminConns[sessionID], conn)
+		if len(h.adminConns[sessionID]) == 0 {
 			delete(h.adminConns, sessionID)
 		}
 	}
-	_ = conn.Close()
+	h.mu.Unlock()
+	if c != nil {
+		c.shutdown()
+	} else {
+		_ = conn.Close()
+	}
 	slog.Debug("app_push: отключена веб-консоль оператора", "session_id", sessionID)
 }
 
@@ -324,9 +480,8 @@ func (h *AppHub) broadcastToUser(userID uuid.UUID, data []byte) int {
 	defer h.mu.RUnlock()
 	count := 0
 	if conns, ok := h.wsClients[userID]; ok {
-		for conn := range conns {
-			_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-			if err := conn.WriteMessage(websocket.TextMessage, data); err == nil {
+		for _, c := range conns {
+			if tryEnqueue(c, data) {
 				count++
 			}
 		}
@@ -339,9 +494,8 @@ func (h *AppHub) broadcastToAdmin(sessionID uuid.UUID, data []byte) int {
 	defer h.mu.RUnlock()
 	count := 0
 	if conns, ok := h.adminConns[sessionID]; ok {
-		for conn := range conns {
-			_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-			if err := conn.WriteMessage(websocket.TextMessage, data); err == nil {
+		for _, c := range conns {
+			if tryEnqueue(c, data) {
 				count++
 			}
 		}
@@ -389,4 +543,3 @@ func (h *AppHub) SendSupportChatMessage(sessionID uuid.UUID, userID uuid.UUID, m
 		h.broadcastToUser(userID, b)
 	}
 }
-
