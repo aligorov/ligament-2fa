@@ -15,6 +15,7 @@
     <category name="SecurityPolicies" displayName="$(string.SecurityPolicies)" parentCategory="LigamentCategory" />
     <category name="AlertSettings" displayName="$(string.AlertSettings)" parentCategory="LigamentCategory" />
     <category name="TelemetrySettings" displayName="$(string.TelemetrySettings)" parentCategory="LigamentCategory" />
+    <category name="RdpSettings" displayName="$(string.RdpSettings)" parentCategory="LigamentCategory" />
   </categories>
   <policies>
     <!-- Server URL -->
@@ -177,6 +178,68 @@
       <supportedOn ref="windows:SUPPORTED_Windows7" />
       <elements>
         <decimal id="TelemetryInterval_Value" valueName="IntervalSeconds" required="true" minValue="30" maxValue="86400" />
+      </elements>
+    </policy>
+
+    <!-- RDP 2FA: Enable for Remote Desktop Sessions -->
+    <policy name="RDP2FA_Policy" class="Machine" displayName="$(string.RDP2FA_Policy)"
+      explainText="$(string.RDP2FA_Policy_Help)" key="Software\Policies\Ligament\2FA"
+      valueName="RDP2FAEnabled">
+      <parentCategory ref="RdpSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- RDP 2FA: Enable for Local Console Logon -->
+    <policy name="Console2FA_Policy" class="Machine" displayName="$(string.Console2FA_Policy)"
+      explainText="$(string.Console2FA_Policy_Help)" key="Software\Policies\Ligament\2FA"
+      valueName="Console2FAEnabled">
+      <parentCategory ref="RdpSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- RDP 2FA: Enable FIDO2 / YubiKey -->
+    <policy name="FIDO2_Policy" class="Machine" displayName="$(string.FIDO2_Policy)"
+      explainText="$(string.FIDO2_Policy_Help)" key="Software\Policies\Ligament\2FA"
+      valueName="FIDO2Enabled">
+      <parentCategory ref="RdpSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- RDP 2FA: Push Timeout -->
+    <policy name="PushTimeout_Policy" class="Machine" displayName="$(string.PushTimeout_Policy)"
+      explainText="$(string.PushTimeout_Policy_Help)" presentation="$(presentation.PushTimeout_Presentation)"
+      key="Software\Policies\Ligament\2FA">
+      <parentCategory ref="RdpSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <decimal id="PushTimeout_Value" valueName="PushTimeoutSeconds" required="true" minValue="10" maxValue="120" />
+      </elements>
+    </policy>
+
+    <!-- RDP 2FA: Fail-Close on Network Error -->
+    <policy name="FailClose_Policy" class="Machine" displayName="$(string.FailClose_Policy)"
+      explainText="$(string.FailClose_Policy_Help)" key="Software\Policies\Ligament\2FA"
+      valueName="FailClose">
+      <parentCategory ref="RdpSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- RDP 2FA: Bypass Accounts (Emergency Admin Whitelist) -->
+    <policy name="BypassAccounts_Policy" class="Machine" displayName="$(string.BypassAccounts_Policy)"
+      explainText="$(string.BypassAccounts_Policy_Help)" presentation="$(presentation.BypassAccounts_Presentation)"
+      key="Software\Policies\Ligament\2FA">
+      <parentCategory ref="RdpSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <elements>
+        <text id="BypassAccounts_Value" valueName="BypassAccounts" required="false" maxLength="1024" />
       </elements>
     </policy>
   </policies>

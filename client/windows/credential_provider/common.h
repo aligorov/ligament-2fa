@@ -1,0 +1,168 @@
+// common.h — Common definitions, logging, and configuration for Ligament 2FA Credential Provider
+#pragma once
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
+#include <windows.h>
+#include <credentialprovider.h>
+#include <ntsecapi.h>
+#include <winhttp.h>
+#include <webauthn.h>
+#include <shlwapi.h>
+#include <wtsapi32.h>
+
+#include <string>
+#include <vector>
+#include <memory>
+#include <sstream>
+
+#include "guid.h"
+
+#pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "secur32.lib")
+#pragma comment(lib, "credui.lib")
+#pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "wtsapi32.lib")
+
+namespace ligament {
+
+// Configuration loaded from registry (GPO: HKLM\SOFTWARE\Policies\Ligament\2FA)
+struct Config {
+    std::wstring serverUrl = L"https://twofa.corp.local";
+    bool rdp2faEnabled = true;
+    bool console2faEnabled = false;
+    bool fido2Enabled = true;
+    int pushTimeoutSec = 45;
+    bool failClose = true;
+    std::vector<std::wstring> bypassAccounts;
+
+    static Config LoadFromRegistry() {
+        Config cfg;
+        HKEY hKey = nullptr;
+        // Priority 1: GPO policy
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Ligament\\2FA", 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+            // Priority 2: Local app settings
+            RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Ligament\\2FA", 0, KEY_READ, &hKey);
+        }
+
+        if (hKey) {
+            wchar_t buf[2048] = {0};
+            DWORD dwType = 0, dwSize = sizeof(buf);
+            if (RegQueryValueExW(hKey, L"ServerURL", nullptr, &dwType, (LPBYTE)buf, &dwSize) == ERROR_SUCCESS && dwType == REG_SZ) {
+                if (wcslen(buf) > 0) cfg.serverUrl = buf;
+            }
+
+            DWORD dwVal = 0;
+            dwSize = sizeof(dwVal);
+            if (RegQueryValueExW(hKey, L"RDP2FAEnabled", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
+                cfg.rdp2faEnabled = (dwVal != 0);
+            }
+            if (RegQueryValueExW(hKey, L"Console2FAEnabled", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
+                cfg.console2faEnabled = (dwVal != 0);
+            }
+            if (RegQueryValueExW(hKey, L"FIDO2Enabled", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
+                cfg.fido2Enabled = (dwVal != 0);
+            }
+            if (RegQueryValueExW(hKey, L"PushTimeoutSeconds", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS && dwVal > 0) {
+                cfg.pushTimeoutSec = (int)dwVal;
+            }
+            if (RegQueryValueExW(hKey, L"FailClose", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
+                cfg.failClose = (dwVal != 0);
+            }
+
+            // Bypass accounts (comma separated)
+            dwSize = sizeof(buf);
+            if (RegQueryValueExW(hKey, L"BypassAccounts", nullptr, &dwType, (LPBYTE)buf, &dwSize) == ERROR_SUCCESS && dwType == REG_SZ) {
+                std::wstringstream ss(buf);
+                std::wstring item;
+                while (std::getline(ss, item, L',')) {
+                    // Trim spaces
+                    size_t first = item.find_first_not_of(L" \t");
+                    if (first != std::wstring::npos) {
+                        size_t last = item.find_last_not_of(L" \t");
+                        cfg.bypassAccounts.push_back(item.substr(first, (last - first + 1)));
+                    }
+                }
+            }
+
+            RegCloseKey(hKey);
+        }
+        return cfg;
+    }
+
+    bool IsBypassAccount(const std::wstring& username) const {
+        for (const auto& acc : bypassAccounts) {
+            if (_wcsicmp(acc.c_str(), username.c_str()) == 0) return true;
+        }
+        return false;
+    }
+};
+
+// Logging helper to DebugView / debugger
+inline void LogDebug(const wchar_t* fmt, ...) {
+    wchar_t buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    _vsnwprintf_s(buf, _countof(buf), _TRUNCATE, fmt, args);
+    va_end(args);
+    OutputDebugStringW(L"[Ligament2FA] ");
+    OutputDebugStringW(buf);
+    OutputDebugStringW(L"\n");
+}
+
+// UTF-8 <-> UTF-16 helpers
+inline std::string WideToUtf8(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+    std::string result(sizeNeeded, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), &result[0], sizeNeeded, nullptr, nullptr);
+    return result;
+}
+
+inline std::wstring Utf8ToWide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), nullptr, 0);
+    std::wstring result(sizeNeeded, 0);
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &result[0], sizeNeeded);
+    return result;
+}
+
+// Base64URL encoding/decoding for WebAuthn tokens
+inline std::string Base64UrlEncode(const unsigned char* data, size_t len) {
+    static const char lookup[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    std::string out;
+    int val = 0, valb = -6;
+    for (size_t i = 0; i < len; i++) {
+        val = (val << 8) + data[i];
+        valb += 8;
+        while (valb >= 0) {
+            out.push_back(lookup[(val >> valb) & 0x3F]);
+            valb -= 6;
+        }
+    }
+    if (valb > -6) out.push_back(lookup[((val << 8) >> (valb + 8)) & 0x3F]);
+    return out;
+}
+
+inline std::vector<unsigned char> Base64UrlDecode(const std::string& in) {
+    std::vector<unsigned char> out;
+    std::vector<int> T(256, -1);
+    for (int i = 0; i < 64; i++) {
+        T["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[i]] = i;
+    }
+    int val = 0, valb = -8;
+    for (unsigned char c : in) {
+        if (T[c] == -1) break;
+        val = (val << 6) + T[c];
+        valb += 6;
+        if (valb >= 0) {
+            out.push_back((val >> valb) & 0xFF);
+            valb -= 8;
+        }
+    }
+    return out;
+}
+
+} // namespace ligament

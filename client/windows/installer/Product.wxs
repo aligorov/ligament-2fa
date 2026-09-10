@@ -4,7 +4,7 @@
            Name="Ligament 2FA Authenticator"
            Language="1033"
            Codepage="1252"
-           Version="1.0.1"
+           Version="1.0.3"
            Manufacturer="Ligament Security"
            UpgradeCode="4B5F3776-E1E7-44E8-BAA5-7FD81CE1B732">
     <Package InstallerVersion="301" Compressed="yes" InstallScope="perMachine" Platform="x64" Description="Ligament 2FA Client Installer" />
@@ -15,6 +15,8 @@
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="ApplicationShortcut" />
       <ComponentRef Id="AutoStartupRegistry" />
+      <ComponentRef Id="CredentialProviderComponent" />
+      <ComponentRef Id="RdpWebAuthnPolicyComponent" />
     </Feature>
 
     <Icon Id="AppIcon.ico" SourceFile="windows/runner/resources/app_icon.ico" />
@@ -26,6 +28,7 @@
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="Ligament 2FA" />
       </Directory>
+      <Directory Id="System64Folder" />
       <Directory Id="ProgramMenuFolder">
         <Directory Id="ApplicationProgramsFolder" Name="Ligament 2FA" />
       </Directory>
@@ -55,6 +58,50 @@
                        Type="string"
                        Value="&quot;[INSTALLFOLDER]ligament_authenticator.exe&quot; --minimized"
                        KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="System64Folder">
+      <!-- Ligament 2FA Windows Credential Provider DLL & COM/Security Registration -->
+      <Component Id="CredentialProviderComponent" Guid="A3B7C9D1-5E2F-4A8B-9C0D-1E2F3A4B5C6D" Win64="yes">
+        <File Id="LigamentCPDll"
+              Name="LigamentCredentialProvider.dll"
+              Source="windows/credential_provider/build/Release/LigamentCredentialProvider.dll"
+              KeyPath="yes" />
+
+        <!-- COM InprocServer32 Registration -->
+        <RegistryKey Root="HKCR" Key="CLSID\{7B896B21-8B35-4E7B-A350-9E17E5E3D10A}">
+          <RegistryValue Type="string" Value="Ligament 2FA Credential Provider" />
+          <RegistryKey Key="InprocServer32">
+            <RegistryValue Type="string" Value="[System64Folder]LigamentCredentialProvider.dll" />
+            <RegistryValue Name="ThreadingModel" Type="string" Value="Apartment" />
+          </RegistryKey>
+        </RegistryKey>
+
+        <!-- Windows Credential Provider Registration -->
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{7B896B21-8B35-4E7B-A350-9E17E5E3D10A}">
+          <RegistryValue Type="string" Value="Ligament 2FA Credential Provider" />
+        </RegistryKey>
+
+        <!-- Windows Credential Provider Filter Registration -->
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Provider Filters\{7B896B21-8B35-4E7B-A350-9E17E5E3D10A}">
+          <RegistryValue Type="string" Value="Ligament 2FA Credential Provider Filter" />
+        </RegistryKey>
+
+        <!-- Local Default Settings -->
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Ligament\2FA">
+          <RegistryValue Name="RDP2FAEnabled" Type="integer" Value="1" />
+          <RegistryValue Name="FIDO2Enabled" Type="integer" Value="1" />
+          <RegistryValue Name="PushTimeoutSeconds" Type="integer" Value="45" />
+          <RegistryValue Name="FailClose" Type="integer" Value="1" />
+        </RegistryKey>
+      </Component>
+
+      <!-- Enable RDP WebAuthn Redirection for FIDO2/YubiKey -->
+      <Component Id="RdpWebAuthnPolicyComponent" Guid="B4C8D0E2-6F3A-4B9C-AD1E-2F3A4B5C6D7E" Win64="yes">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services">
+          <RegistryValue Name="fEnableWebAuthn" Type="integer" Value="1" KeyPath="yes" />
+        </RegistryKey>
       </Component>
     </DirectoryRef>
   </Fragment>

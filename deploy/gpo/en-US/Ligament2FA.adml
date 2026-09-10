@@ -49,6 +49,20 @@
 
       <string id="TelemetryInterval_Policy">Telemetry reporting interval (seconds)</string>
       <string id="TelemetryInterval_Policy_Help">Sets how often the client sends device security telemetry to the server (default: 300 seconds).</string>
+
+      <string id="RdpSettings">RDP Two-Factor Authentication (Windows Logon)</string>
+      <string id="RDP2FA_Policy">Enable 2FA for RDP (Remote Desktop)</string>
+      <string id="RDP2FA_Policy_Help">Enforces mandatory two-factor authentication for all incoming Remote Desktop sessions via Ligament Credential Provider.</string>
+      <string id="Console2FA_Policy">Enable 2FA for Local Console Logon</string>
+      <string id="Console2FA_Policy_Help">Enforces two-factor authentication for physical console logins.</string>
+      <string id="FIDO2_Policy">Enable FIDO2 / YubiKey Security Keys</string>
+      <string id="FIDO2_Policy_Help">Allows hardware FIDO2/WebAuthn tokens (YubiKey) via RDP WebAuthn Redirection.</string>
+      <string id="PushTimeout_Policy">Push Timeout (seconds)</string>
+      <string id="PushTimeout_Policy_Help">Specifies the timeout in seconds waiting for push approval in Telegram or Ligament Authenticator (default: 45s).</string>
+      <string id="FailClose_Policy">Block logon on network error (Fail-Close)</string>
+      <string id="FailClose_Policy_Help">When enabled (Fail-Close), logon is denied if the Ligament server is unreachable. When disabled, emergency local admin access is permitted.</string>
+      <string id="BypassAccounts_Policy">Bypass Accounts (Emergency Whitelist)</string>
+      <string id="BypassAccounts_Policy_Help">Comma-separated list of usernames exempt from 2FA (e.g. Administrator,admin) for emergency break-glass recovery.</string>
     </stringTable>
     <presentationTable>
       <presentation id="ServerURL_Presentation">
@@ -58,6 +72,14 @@
       </presentation>
       <presentation id="TelemetryInterval_Presentation">
         <decimalTextBox refId="TelemetryInterval_Value" defaultValue="300">Interval (seconds):</decimalTextBox>
+      </presentation>
+      <presentation id="PushTimeout_Presentation">
+        <decimalTextBox refId="PushTimeout_Value" defaultValue="45">Timeout (seconds):</decimalTextBox>
+      </presentation>
+      <presentation id="BypassAccounts_Presentation">
+        <textBox refId="BypassAccounts_Value">
+          <label>Accounts (comma-separated):</label>
+        </textBox>
       </presentation>
     </presentationTable>
   </resources>

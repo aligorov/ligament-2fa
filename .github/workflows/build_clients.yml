@@ -39,6 +39,12 @@ jobs:
           name: Ligament-2FA-Windows-MSI
           path: client/dist/Ligament-2FA-Windows-x64.msi
 
+      - name: Upload Windows RDP Credential Provider Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ligament-2FA-Windows-RDP-Zip
+          path: client/dist/Ligament-2FA-RDP-CredentialProvider-x64.zip
+
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest
@@ -145,7 +151,7 @@ jobs:
       - name: Organize release assets and compute checksums
         run: |
           mkdir -p release_assets
-          find artifacts -type f \( -name "*.msi" -o -name "*.apk" -o -name "*.dmg" -o -name "*.ipa" \) -exec cp {} release_assets/ \;
+          find artifacts -type f \( -name "*.msi" -o -name "*.apk" -o -name "*.dmg" -o -name "*.ipa" -o -name "*.zip" \) -exec cp {} release_assets/ \;
           cd release_assets
           sha256sum * > SHA256SUMS.txt
           ls -la

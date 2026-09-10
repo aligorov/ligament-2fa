@@ -1,0 +1,57 @@
+# Ligament 2FA Windows Credential Provider
+
+Нативный модуль Windows Credential Provider (C++ DLL) для двухфакторной аутентификации RDP и локального входа Windows с поддержкой **FIDO2 / YubiKey (через Win32 WebAuthn API и RDP WebAuthn Redirection)**, **Telegram Push**, **десктопного приложения Ligament** и **TOTP**.
+
+## Возможности
+
+1. **RDP WebAuthn Redirection для FIDO2 / YubiKey:**
+   - Поддерживает физические ключи YubiKey 5 Series, Security Key NFC, Feitian, SoloKeys.
+   - Запрос на подтверждение пробрасывается на монитор клиента через виртуальный канал RDP (`redirectwebauthn:i:1`).
+   - Ключ начинает мигать на локальном компьютере сотрудника до физического касания пальцем.
+2. **Out-of-band Push (Telegram / Ligament Authenticator):**
+   - Фоновая отправка Push-запроса через `/api/v1/auth/start` и автоматический polling через `/api/v1/auth/poll`.
+   - Вход подтверждается кнопкой «Подтвердить» в Telegram или приложении Ligament на смартфоне/ноутбуке.
+3. **Резервные коды и OTP:**
+   - Ввод 6-значных кодов TOTP (Google Authenticator) или прямое касание YubiKey в режиме YubiKey OTP (Modhex 44 символа).
+4. **Аварийный обход (Break-Glass Accounts):**
+   - Белый список локальных администраторов (`BypassAccounts`), освобожденных от 2FA на случай аварии.
+   - Политика Fail-Close / Fail-Open при сетевых сбоях.
+
+## Сборка (Windows, Visual Studio 2022)
+
+```cmd
+cd client\windows\credential_provider
+mkdir build && cd build
+cmake -G "Visual Studio 17 2022" -A x64 ..
+cmake --build . --config Release
+```
+
+Готовая библиотека: `build\Release\LigamentCredentialProvider.dll`.
+
+## Ручная регистрация и тестирование
+
+Для регистрации в тестовой системе (от имени Администратора):
+
+```cmd
+regsvr32.exe build\Release\LigamentCredentialProvider.dll
+```
+
+Для удаления регистрации:
+
+```cmd
+regsvr32.exe /u build\Release\LigamentCredentialProvider.dll
+```
+
+## Конфигурация в реестре
+
+Модуль читает настройки из ветки GPO `HKLM\SOFTWARE\Policies\Ligament\2FA` (или локальной `HKLM\SOFTWARE\Ligament\2FA`):
+
+| Параметр | Тип | По умолчанию | Описание |
+|---|---|---|---|
+| `ServerURL` | `REG_SZ` | `https://twofa.corp.local` | Базовый URL сервера Ligament |
+| `RDP2FAEnabled` | `REG_DWORD` | `1` | Включить 2FA для RDP-подключений |
+| `Console2FAEnabled` | `REG_DWORD` | `0` | Включить 2FA для локального входа (Console) |
+| `FIDO2Enabled` | `REG_DWORD` | `1` | Разрешить вход по аппаратным ключам FIDO2/YubiKey |
+| `PushTimeoutSeconds` | `REG_DWORD` | `45` | Таймаут ожидания Push в секундах |
+| `FailClose` | `REG_DWORD` | `1` | 1 = Блокировать при сетевой ошибке, 0 = Пропускать админов |
+| `BypassAccounts` | `REG_SZ` | `""` | Список логинов через запятую (например: `Administrator,admin`) |

@@ -49,6 +49,20 @@
 
       <string id="TelemetryInterval_Policy">Интервал отправки телеметрии (в секундах)</string>
       <string id="TelemetryInterval_Policy_Help">Задает периодичность передачи снимка телеметрии на сервер Ligament (по умолчанию 300 секунд).</string>
+
+      <string id="RdpSettings">Двухфакторная аутентификация RDP (Windows Logon)</string>
+      <string id="RDP2FA_Policy">Включить 2FA для RDP (удаленный рабочий стол)</string>
+      <string id="RDP2FA_Policy_Help">Включает обязательную двухфакторную аутентификацию для всех входящих подключений по протоколу RDP через Ligament Credential Provider.</string>
+      <string id="Console2FA_Policy">Включить 2FA для локального входа (Console)</string>
+      <string id="Console2FA_Policy_Help">Требовать подтверждение вторым фактором при физическом входе за локальной консолью сервера.</string>
+      <string id="FIDO2_Policy">Разрешить аппаратные ключи FIDO2 / YubiKey</string>
+      <string id="FIDO2_Policy_Help">Разрешает использование аппаратных ключей FIDO2 / WebAuthn (YubiKey) через RDP WebAuthn Redirection.</string>
+      <string id="PushTimeout_Policy">Таймаут ожидания Push-подтверждения (сек)</string>
+      <string id="PushTimeout_Policy_Help">Задает время ожидания подтверждения в Telegram или приложении Ligament до разрыва сессии (по умолчанию 45 секунд).</string>
+      <string id="FailClose_Policy">Блокировать вход при недоступности сервера (Fail-Close)</string>
+      <string id="FailClose_Policy_Help">Если включено (Fail-Close), при отсутствии сетевой связи с сервером Ligament вход блокируется. Если отключено, разрешается вход для аварийного восстановления.</string>
+      <string id="BypassAccounts_Policy">Список учетных записей-исключений (Bypass Whitelist)</string>
+      <string id="BypassAccounts_Policy_Help">Задает список логинов через запятую (например: Administrator,admin), для которых 2FA не запрашивается (аварийный доступ break-glass).</string>
     </stringTable>
     <presentationTable>
       <presentation id="ServerURL_Presentation">
@@ -58,6 +72,14 @@
       </presentation>
       <presentation id="TelemetryInterval_Presentation">
         <decimalTextBox refId="TelemetryInterval_Value" defaultValue="300">Интервал (сек):</decimalTextBox>
+      </presentation>
+      <presentation id="PushTimeout_Presentation">
+        <decimalTextBox refId="PushTimeout_Value" defaultValue="45">Таймаут (сек):</decimalTextBox>
+      </presentation>
+      <presentation id="BypassAccounts_Presentation">
+        <textBox refId="BypassAccounts_Value">
+          <label>Логины через запятую:</label>
+        </textBox>
       </presentation>
     </presentationTable>
   </resources>
