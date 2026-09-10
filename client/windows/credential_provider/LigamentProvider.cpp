@@ -10,10 +10,12 @@ static const GUID CLSID_PasswordProvider =
 extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[];
 
 LigamentProvider::LigamentProvider() {
+    InterlockedIncrement(&g_cRefDll);
     m_config = Config::LoadFromRegistry();
 }
 
 LigamentProvider::~LigamentProvider() {
+    InterlockedDecrement(&g_cRefDll);
     if (m_pCredential) {
         m_pCredential->Release();
         m_pCredential = nullptr;
@@ -65,6 +67,11 @@ HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
     m_isRemoteSession = CheckIfRemoteSession();
     m_config = Config::LoadFromRegistry();
 
+    // Recompute for every scenario: an enforce flag left over from a
+    // previous scenario (e.g. LOGON -> CHANGE_PASSWORD) must not survive,
+    // otherwise non-logon dialogs would be left without any usable tile.
+    m_shouldEnforce2FA = false;
+
     // Check if 2FA applies to this scenario
     if (cpus == CPUS_LOGON || cpus == CPUS_UNLOCK_WORKSTATION) {
         if (m_isRemoteSession && m_config.rdp2faEnabled) {
@@ -74,8 +81,9 @@ HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
         }
     }
 
-    LogDebug(L"SetUsageScenario: cpus=%d, remote=%d, enforce2fa=%d, server=%s",
-        cpus, m_isRemoteSession ? 1 : 0, m_shouldEnforce2FA ? 1 : 0, m_config.serverUrl.c_str());
+    // Do not log infrastructure details (server URL) from the winlogon context
+    LogDebug(L"SetUsageScenario: cpus=%d, remote=%d, enforce2fa=%d",
+        cpus, m_isRemoteSession ? 1 : 0, m_shouldEnforce2FA ? 1 : 0);
 
     if (m_shouldEnforce2FA && !m_pCredential) {
         m_pCredential = new LigamentCredential();
@@ -165,10 +173,20 @@ HRESULT LigamentProvider::Filter(
     BOOL* rgbAllow,
     DWORD cProviders)
 {
+    UNREFERENCED_PARAMETER(dwFlags);
+
     bool isRemote = CheckIfRemoteSession();
     Config cfg = Config::LoadFromRegistry();
 
-    bool enforce = (isRemote && cfg.rdp2faEnabled) || (!isRemote && cfg.console2faEnabled);
+    // Suppress the stock password tile only in interactive logon scenarios
+    // where Ligament 2FA is actually enforced. Other usage scenarios
+    // (CPUS_CHANGE_PASSWORD, CPUS_CREDUI, CPUS_CRED_PICKER, ...) must keep
+    // the standard providers working, otherwise password change and
+    // credential dialogs become unusable.
+    bool enforce = false;
+    if (cpus == CPUS_LOGON || cpus == CPUS_UNLOCK_WORKSTATION) {
+        enforce = (isRemote && cfg.rdp2faEnabled) || (!isRemote && cfg.console2faEnabled);
+    }
 
     if (enforce) {
         for (DWORD i = 0; i < cProviders; ++i) {

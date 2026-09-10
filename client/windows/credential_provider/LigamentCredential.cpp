@@ -17,20 +17,23 @@ extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[] = {
 };
 
 LigamentCredential::LigamentCredential() {
+    InterlockedIncrement(&g_cRefDll);
+    InitializeCriticalSection(&m_csPoll);
     m_statusText = L"Подтвердите вход вторым фактором";
 }
 
 LigamentCredential::~LigamentCredential() {
-    m_stopPolling = true;
-    if (m_hPollThread) {
-        WaitForSingleObject(m_hPollThread, 1000);
-        CloseHandle(m_hPollThread);
-        m_hPollThread = nullptr;
-    }
+    StopPollThread();
+    DeleteCriticalSection(&m_csPoll);
     if (!m_password.empty()) {
         SecureZeroMemory(&m_password[0], m_password.size() * sizeof(wchar_t));
         m_password.clear();
     }
+    if (!m_otpCode.empty()) {
+        SecureZeroMemory(&m_otpCode[0], m_otpCode.size() * sizeof(wchar_t));
+        m_otpCode.clear();
+    }
+    InterlockedDecrement(&g_cRefDll);
 }
 
 void LigamentCredential::Initialize(const Config& cfg, bool isRemote) {
@@ -50,9 +53,11 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote) {
 
 // IUnknown
 HRESULT LigamentCredential::QueryInterface(REFIID riid, void** ppv) {
+    // Note: only ICredentialProviderCredential is implemented; the tile does
+    // not implement ICredentialProviderCredential2 (GetUserSid), so it must
+    // not be advertised in the QITAB.
     static const QITAB qit[] = {
         QITABENT(LigamentCredential, ICredentialProviderCredential),
-        QITABENT(LigamentCredential, ICredentialProviderCredential2),
         { 0 },
     };
     return QISearch(this, qit, riid, ppv);
@@ -90,6 +95,8 @@ HRESULT LigamentCredential::SetSelected(BOOL* pbAutoLogon) {
 }
 
 HRESULT LigamentCredential::SetDeselected() {
+    // Leaving the tile voids any 2FA result and pending push polling.
+    ResetAuthState();
     return S_OK;
 }
 
@@ -190,12 +197,24 @@ HRESULT LigamentCredential::SetStringValue(DWORD dwFieldID, PCWSTR psz) {
     if (!psz) psz = L"";
     switch (dwFieldID) {
     case FID_USERNAME: {
-        m_username = psz;
-        // Split DOMAIN\user if present
-        size_t slash = m_username.find(L'\\');
+        std::wstring raw = psz;
+        // Reconstruct the previously stored name (DOMAIN\user or plain user)
+        // to detect an actual change: switching users must void the previous
+        // 2FA result, otherwise the next logon skips the second factor.
+        std::wstring prevRaw = m_domain.empty()
+            ? m_username
+            : m_domain + L"\\" + m_username;
+        if (_wcsicmp(raw.c_str(), prevRaw.c_str()) != 0) {
+            ResetAuthState();
+        }
+        // Split DOMAIN\user if present; a plain name clears any stale domain
+        size_t slash = raw.find(L'\\');
         if (slash != std::wstring::npos) {
-            m_domain = m_username.substr(0, slash);
-            m_username = m_username.substr(slash + 1);
+            m_domain = raw.substr(0, slash);
+            m_username = raw.substr(slash + 1);
+        } else {
+            m_domain.clear();
+            m_username = raw;
         }
         break;
     }
@@ -325,32 +344,100 @@ void LigamentCredential::TriggerFIDO2Auth() {
     }
 }
 
-// Background thread for push polling
+// Background thread for push polling: thin wrapper over RunPushPolling.
 DWORD WINAPI LigamentCredential::PushPollThreadProc(LPVOID lpParam) {
     auto* self = reinterpret_cast<LigamentCredential*>(lpParam);
-    // Background polling runs in RunPushPolling
+    self->RunPushPolling();
     return 0;
 }
 
-void LigamentCredential::RunPushPolling(const std::wstring& challengeId) {
-    int maxPolls = m_config.pushTimeoutSec;
-    for (int i = 0; i < maxPolls && !m_stopPolling; ++i) {
-        Sleep(1000);
+void LigamentCredential::RunPushPolling() {
+    // Copy everything the worker needs up front. The worker must never touch
+    // COM interfaces (m_pEvents) or LogonUI state: it communicates only
+    // through m_pollState under m_csPoll and uses its own HttpApiClient.
+    std::wstring challengeId;
+    {
+        EnterCriticalSection(&m_csPoll);
+        challengeId = m_pollChallengeId;
+        LeaveCriticalSection(&m_csPoll);
+    }
+    Config cfg = m_config; // stable after Initialize; read-only here
+
+    HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned);
+
+    int maxPolls = cfg.pushTimeoutSec;
+    for (int i = 0; i < maxPolls; ++i) {
+        // Wait one second between polls, in slices so that a stop request
+        // is honored promptly.
+        for (int slice = 0; slice < 4; ++slice) {
+            EnterCriticalSection(&m_csPoll);
+            bool stop = m_pollState.stop;
+            LeaveCriticalSection(&m_csPoll);
+            if (stop) return;
+            Sleep(250);
+        }
+
         std::wstring status;
         std::string err;
-        if (m_apiClient->PollStatus(challengeId, status, err)) {
-            if (status == L"approved") {
-                m_authenticated = true;
-                m_statusText = L"Вход подтвержден в Telegram!";
-                NotifyFieldChanged(FID_STATUS_TEXT);
-                break;
-            } else if (status == L"rejected") {
-                m_statusText = L"Вход отклонен пользователем в Telegram";
-                NotifyFieldChanged(FID_STATUS_TEXT);
-                break;
+        // Server statuses: "approved" | "denied" | "pending" | "expired".
+        // Network errors are tolerated until the overall timeout.
+        if (client.PollStatus(challengeId, status, err)) {
+            if (status == L"approved" || status == L"denied" || status == L"expired") {
+                EnterCriticalSection(&m_csPoll);
+                if (!m_pollState.stop) {
+                    m_pollState.status = status;
+                    m_pollState.done = true;
+                }
+                LeaveCriticalSection(&m_csPoll);
+                return;
             }
+            // "pending" and unknown statuses: keep polling
         }
+
+        EnterCriticalSection(&m_csPoll);
+        bool stop = m_pollState.stop;
+        LeaveCriticalSection(&m_csPoll);
+        if (stop) return;
     }
+
+    EnterCriticalSection(&m_csPoll);
+    if (!m_pollState.stop) {
+        m_pollState.status = L"timeout";
+        m_pollState.done = true;
+    }
+    LeaveCriticalSection(&m_csPoll);
+}
+
+void LigamentCredential::StopPollThread() {
+    EnterCriticalSection(&m_csPoll);
+    m_pollState.stop = true;
+    LeaveCriticalSection(&m_csPoll);
+    JoinPollThread();
+}
+
+void LigamentCredential::JoinPollThread() {
+    if (m_hPollThread) {
+        // The worker exits quickly on the stop flag; the bounded wait only
+        // guards against a request already in flight.
+        WaitForSingleObject(m_hPollThread, 5000);
+        CloseHandle(m_hPollThread);
+        m_hPollThread = nullptr;
+    }
+    EnterCriticalSection(&m_csPoll);
+    m_pollState.status.clear();
+    m_pollState.done = false;
+    LeaveCriticalSection(&m_csPoll);
+}
+
+void LigamentCredential::ResetAuthState() {
+    // A previously confirmed second factor must not survive a failed logon,
+    // tile deselection or a switch to another user name.
+    m_authenticated = false;
+    if (!m_otpCode.empty()) {
+        SecureZeroMemory(&m_otpCode[0], m_otpCode.size() * sizeof(wchar_t));
+        m_otpCode.clear();
+    }
+    StopPollThread();
 }
 
 HRESULT LigamentCredential::GetSerialization(
@@ -371,7 +458,8 @@ HRESULT LigamentCredential::GetSerialization(
 
     // 1. Check bypass accounts (Emergency / Break-Glass)
     if (m_config.IsBypassAccount(m_username)) {
-        LogDebug(L"Account %s is in bypass whitelist, skipping 2FA", m_username.c_str());
+        // Do not log the user name: this DLL runs in winlogon/LogonUI context
+        LogDebug(L"Account is in bypass whitelist, skipping 2FA");
         KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
         *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
         return S_OK;
@@ -405,36 +493,37 @@ HRESULT LigamentCredential::GetSerialization(
         }
     }
 
-    // 4. Mode: Push (Telegram / Ligament App)
+    // 4. Mode: Push (Telegram / Ligament App). Polling runs on a worker
+    //    thread; GetSerialization never blocks the LogonUI thread — it starts
+    //    the push once, then only checks the shared result and asks LogonUI
+    //    to call again (CPGSR_NO_CREDENTIAL_NOT_FINISHED).
     if (m_currentMode == MODE_PUSH) {
-        std::wstring challengeId;
-        std::string err;
-        if (m_apiClient->StartPush(m_username, L"telegram", challengeId, err)) {
-            m_statusText = L"Push отправлен! Подтвердите вход в Telegram...";
-            NotifyFieldChanged(FID_STATUS_TEXT);
+        bool done = false;
+        std::wstring status;
+        if (!m_hPollThread) {
+            // No worker running: send a fresh push challenge.
+            std::wstring challengeId;
+            std::string err;
+            if (m_apiClient->StartPush(m_username, m_password, challengeId, err)) {
+                m_statusText = L"Push отправлен! Подтвердите вход в Telegram...";
+                NotifyFieldChanged(FID_STATUS_TEXT);
 
-            // Poll synchronously or in thread
-            for (int i = 0; i < m_config.pushTimeoutSec; ++i) {
-                Sleep(1000);
-                std::wstring status;
-                if (m_apiClient->PollStatus(challengeId, status, err)) {
-                    if (status == L"approved") {
-                        m_authenticated = true;
-                        KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
-                        *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-                        return S_OK;
-                    } else if (status == L"rejected") {
-                        SHStrDupW(L"Вход отклонен в Telegram", ppszOptionalStatusText);
-                        *pcpsiOptionalStatusIcon = CPSI_ERROR;
-                        return S_OK;
-                    }
+                EnterCriticalSection(&m_csPoll);
+                m_pollState = PollState();
+                m_pollChallengeId = challengeId;
+                LeaveCriticalSection(&m_csPoll);
+
+                m_hPollThread = CreateThread(nullptr, 0, PushPollThreadProc, this, 0, nullptr);
+                if (!m_hPollThread) {
+                    // Cannot wait non-blockingly without the worker thread.
+                    SHStrDupW(L"Не удалось запустить ожидание Push, попробуйте еще раз", ppszOptionalStatusText);
+                    *pcpsiOptionalStatusIcon = CPSI_ERROR;
                 }
+                *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
+                return S_OK;
             }
-            SHStrDupW(L"Время ожидания подтверждения истекло", ppszOptionalStatusText);
-            *pcpsiOptionalStatusIcon = CPSI_WARNING;
-            return S_OK;
-        } else {
-            // Check fail-close policy
+
+            // StartPush failed — check fail-close policy
             if (!m_config.failClose && err == "network_error") {
                 LogDebug(L"Fail-Open allowed due to network error and policy");
                 KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
@@ -446,6 +535,48 @@ HRESULT LigamentCredential::GetSerialization(
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
             return S_OK;
         }
+
+        // Worker is running (or has just finished): check the shared result.
+        EnterCriticalSection(&m_csPoll);
+        done = m_pollState.done;
+        status = m_pollState.status;
+        LeaveCriticalSection(&m_csPoll);
+
+        if (!done) {
+            *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
+            return S_OK;
+        }
+
+        if (status == L"approved") {
+            JoinPollThread();
+            m_authenticated = true;
+            KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
+            *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+            return S_OK;
+        }
+
+        // denied / expired / timeout — show the reason on the tile (legal
+        // here: we are on the LogonUI thread) and let the user submit again,
+        // which starts a fresh push challenge.
+        std::wstring msg;
+        if (status == L"denied") {
+            msg = L"Вход отклонен пользователем";
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+        } else if (status == L"expired") {
+            msg = L"Срок действия подтверждения истек, попробуйте еще раз";
+            *pcpsiOptionalStatusIcon = CPSI_WARNING;
+        } else {
+            msg = L"Время ожидания подтверждения истекло";
+            *pcpsiOptionalStatusIcon = CPSI_WARNING;
+        }
+        JoinPollThread();
+        m_statusText = msg;
+        if (m_pEvents) {
+            m_pEvents->SetFieldString(this, FID_STATUS_TEXT, msg.c_str());
+        }
+        SHStrDupW(msg.c_str(), ppszOptionalStatusText);
+        *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
+        return S_OK;
     }
 
     // 5. Mode: FIDO2 trigger on submit if button was not clicked
@@ -467,6 +598,7 @@ HRESULT LigamentCredential::ReportResult(
     PWSTR* ppszOptionalStatusText,
     CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon)
 {
+    UNREFERENCED_PARAMETER(ntsSubstatus);
     *ppszOptionalStatusText = nullptr;
     *pcpsiOptionalStatusIcon = CPSI_NONE;
 
@@ -474,12 +606,18 @@ HRESULT LigamentCredential::ReportResult(
         SecureZeroMemory(&m_password[0], m_password.size() * sizeof(wchar_t));
         m_password.clear();
     }
+    if (!m_otpCode.empty()) {
+        SecureZeroMemory(&m_otpCode[0], m_otpCode.size() * sizeof(wchar_t));
+        m_otpCode.clear();
+    }
+    if (ntsStatus != 0) {
+        // LSASS rejected the logon (expired password, domain issues, clock
+        // skew, ...): the confirmed second factor is void and must not open
+        // the door for the next attempt — possibly under another user name.
+        m_authenticated = false;
+        StopPollThread();
+    }
     return S_OK;
-}
-
-HRESULT LigamentCredential::GetUserSid(PWSTR* ppszSid) {
-    *ppszSid = nullptr;
-    return E_NOTIMPL;
 }
 
 #ifndef NEGOSSP_NAME_A

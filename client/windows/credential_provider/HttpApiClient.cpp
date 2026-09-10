@@ -82,10 +82,11 @@ bool HttpApiClient::SendRequest(
     }
 
     if (m_isHttps && m_allowSelfSigned) {
-        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
-                           SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
-                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
-                           SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        // Self-signed but otherwise valid certificate: only the unknown CA
+        // is ignored. Certificate name (CN/SAN) and validity period are
+        // still enforced, so the connection cannot be hijacked by a
+        // mismatched or expired certificate.
+        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA;
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
     }
 
@@ -137,14 +138,16 @@ bool HttpApiClient::SendRequest(
 
 bool HttpApiClient::StartPush(
     const std::wstring& username,
-    const std::wstring& channel,
+    const std::wstring& password,
     std::wstring& outChallengeId,
     std::string& outError)
 {
-    std::string u8User = WideToUtf8(username);
-    std::string u8Chan = WideToUtf8(channel);
+    // Server contract: {"username":"...","password":"..."} — the password is
+    // verified first and the push channel is selected server-side.
+    std::string u8User = EscapeJson(WideToUtf8(username));
+    std::string u8Pass = EscapeJson(WideToUtf8(password));
 
-    std::string body = "{\"username\":\"" + u8User + "\",\"channel\":\"" + u8Chan + "\"}";
+    std::string body = "{\"username\":\"" + u8User + "\",\"password\":\"" + u8Pass + "\"}";
 
     int statusCode = 0;
     std::string response;
@@ -199,9 +202,9 @@ bool HttpApiClient::VerifyCombined(
     const std::wstring& code,
     std::string& outError)
 {
-    std::string u8User = WideToUtf8(username);
-    std::string u8Pass = WideToUtf8(password);
-    std::string u8Code = WideToUtf8(code);
+    std::string u8User = EscapeJson(WideToUtf8(username));
+    std::string u8Pass = EscapeJson(WideToUtf8(password));
+    std::string u8Code = EscapeJson(WideToUtf8(code));
 
     std::string body = "{\"username\":\"" + u8User + "\",\"password\":\"" + u8Pass + "\",\"code\":\"" + u8Code + "\"}";
 
@@ -226,8 +229,8 @@ WebAuthnBeginResult HttpApiClient::WebAuthnBegin(
     const std::wstring& password)
 {
     WebAuthnBeginResult res;
-    std::string u8User = WideToUtf8(username);
-    std::string u8Pass = WideToUtf8(password);
+    std::string u8User = EscapeJson(WideToUtf8(username));
+    std::string u8Pass = EscapeJson(WideToUtf8(password));
 
     std::string body = "{\"username\":\"" + u8User + "\",\"password\":\"" + u8Pass + "\"}";
 

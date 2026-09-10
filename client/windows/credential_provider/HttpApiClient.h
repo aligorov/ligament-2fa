@@ -20,8 +20,9 @@ public:
     HttpApiClient(const std::wstring& serverUrl, bool allowSelfSigned = false);
     ~HttpApiClient();
 
-    // 1. Push authentication
-    bool StartPush(const std::wstring& username, const std::wstring& channel, std::wstring& outChallengeId, std::string& outError);
+    // 1. Push authentication (server /api/v1/auth/start requires
+    //    {username, password}; the channel is chosen server-side)
+    bool StartPush(const std::wstring& username, const std::wstring& password, std::wstring& outChallengeId, std::string& outError);
     bool PollStatus(const std::wstring& challengeId, std::wstring& outStatus, std::string& outError);
 
     // 2. Combined password + OTP authentication

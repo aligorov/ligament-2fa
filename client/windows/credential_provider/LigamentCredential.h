@@ -1,4 +1,4 @@
-// LigamentCredential.h — ICredentialProviderCredential2 implementation
+// LigamentCredential.h — ICredentialProviderCredential implementation
 #pragma once
 
 #include "common.h"
@@ -28,7 +28,7 @@ enum AUTH_FACTOR_MODE {
 
 extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[];
 
-class LigamentCredential : public ICredentialProviderCredential2 {
+class LigamentCredential : public ICredentialProviderCredential {
 public:
     LigamentCredential();
     virtual ~LigamentCredential();
@@ -67,9 +67,6 @@ public:
         CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon
     );
 
-    // ICredentialProviderCredential2
-    IFACEMETHODIMP GetUserSid(PWSTR* ppszSid);
-
     void Initialize(const Config& cfg, bool isRemote);
 
 private:
@@ -89,11 +86,24 @@ private:
     std::unique_ptr<HttpApiClient> m_apiClient;
     std::unique_ptr<WebAuthnClient> m_webAuthn;
 
-    // Background push polling thread
+    // Background push polling. GetSerialization starts the worker thread and
+    // returns CPGSR_NO_CREDENTIAL_NOT_FINISHED; the worker never touches COM
+    // interfaces (m_pEvents) or other LogonUI state — it only updates
+    // m_pollState under m_csPoll through a thread-local HttpApiClient.
     HANDLE m_hPollThread = nullptr;
-    bool m_stopPolling = false;
+    CRITICAL_SECTION m_csPoll;
+    struct PollState {
+        std::wstring status;   // empty, "approved", "denied", "expired", "timeout"
+        bool done = false;
+        bool stop = false;
+    } m_pollState;
+    std::wstring m_pollChallengeId;
+
     static DWORD WINAPI PushPollThreadProc(LPVOID lpParam);
-    void RunPushPolling(const std::wstring& challengeId);
+    void RunPushPolling();
+    void StopPollThread();
+    void JoinPollThread();
+    void ResetAuthState();
 
     void TriggerFIDO2Auth();
     void SwitchToNextMode();

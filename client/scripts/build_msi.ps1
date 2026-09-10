@@ -69,6 +69,12 @@ copy /Y "%~dp0LigamentCredentialProvider.dll" "%SystemRoot%\System32\LigamentCre
 regsvr32.exe /s "%SystemRoot%\System32\LigamentCredentialProvider.dll"
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v fEnableWebAuthn /t REG_DWORD /d 1 /f
 echo [OK] Ligament Credential Provider installed and registered.
+echo.
+echo [!] IMPORTANT: the 2FA server URL is NOT configured yet. Set it before using RDP logon:
+echo     reg add "HKLM\SOFTWARE\Policies\Ligament\2FA" /v ServerURL /t REG_SZ /d "https://your-2fa-server" /f
+echo     With the default FailClose=1 and no reachable ServerURL, RDP logon will be BLOCKED
+echo     (fail-open is off; the default https://twofa.corp.local does not exist).
+echo.
 "@
     Set-Content -Path "$RdpDistDir\install.bat" -Value $installBat -Encoding Ascii
 

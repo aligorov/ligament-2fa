@@ -99,8 +99,14 @@ struct Config {
     }
 
     bool IsBypassAccount(const std::wstring& username) const {
+        // A UPN input (user@corp.local) is additionally matched by its
+        // local part, so "administrator@corp.local" hits the SAM-name
+        // whitelist entry "administrator".
+        size_t at = username.find(L'@');
         for (const auto& acc : bypassAccounts) {
             if (_wcsicmp(acc.c_str(), username.c_str()) == 0) return true;
+            if (at != std::wstring::npos &&
+                _wcsicmp(acc.c_str(), username.substr(0, at).c_str()) == 0) return true;
         }
         return false;
     }
@@ -133,6 +139,37 @@ inline std::wstring Utf8ToWide(const std::string& str) {
     std::wstring result(sizeNeeded, 0);
     MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &result[0], sizeNeeded);
     return result;
+}
+
+// Escapes a UTF-8 string for embedding inside a JSON string literal:
+// '"' and '\' are backslash-escaped, control characters < 0x20 become
+// \u00XX. Prevents both malformed requests (passwords with quotes) and
+// field injection via concatenated key duplication.
+inline std::string EscapeJson(const std::string& str) {
+    static const char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(str.size());
+    for (char c : str) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\b': out += "\\b"; break;
+        case '\f': out += "\\f"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if ((unsigned char)c < 0x20) {
+                out += "\\u00";
+                out += hex[(unsigned char)c >> 4];
+                out += hex[(unsigned char)c & 0x0F];
+            } else {
+                out += c;
+            }
+            break;
+        }
+    }
+    return out;
 }
 
 // Base64URL encoding/decoding for WebAuthn tokens
