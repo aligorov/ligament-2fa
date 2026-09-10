@@ -159,6 +159,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Выбор участников локальных групп по группам Active Directory / LDAP
   initGroupsMemberSelector();
+
+  // Панель настроек удаленной поддержки (категории и пороги телеметрии)
+  initSupportSettingsPanel();
 });
 
 function initGroupRadiusBuilder() {
@@ -915,8 +918,10 @@ function initGroupsMemberSelector() {
     updateCounter();
     syncAdButtons();
   });
+}
 
-  // Панель настроек удаленной поддержки (категории и пороги телеметрии)
+// Панель настроек удаленной поддержки (категории и пороги телеметрии)
+function initSupportSettingsPanel() {
   const supportPanel = document.getElementById("support-settings-panel");
   const btnToggleSupport = document.getElementById("btn-toggle-support-settings");
   const btnCloseSupport = document.getElementById("btn-close-support-settings");
@@ -966,7 +971,7 @@ function initGroupsMemberSelector() {
       }
     });
   }
-});
+}
 
 
 

@@ -38,11 +38,11 @@
       <button type="button" id="users-search-clear" class="search-clear" style="display: none;" title="Очистить">&times;</button>
     </div>
     <div class="users-filter-pills" id="users-filter-pills">
-      <button type="button" class="users-pill active" data-filter="all">Все <span class="count" id="count-all">0</span></button>
-      <button type="button" class="users-pill" data-filter="ldap">🏢 LDAP <span class="count" id="count-ldap">0</span></button>
-      <button type="button" class="users-pill" data-filter="local">🔑 Локальные <span class="count" id="count-local">0</span></button>
-      <button type="button" class="users-pill" data-filter="admin">🛡️ Админы <span class="count" id="count-admin">0</span></button>
-      <button type="button" class="users-pill" data-filter="disabled">⚠️ Отключённые <span class="count" id="count-disabled">0</span></button>
+      <button type="button" class="users-pill active" data-filter="all">Все <span class="count" id="count-all">{{.CountAll}}</span></button>
+      <button type="button" class="users-pill" data-filter="ldap">🏢 LDAP <span class="count" id="count-ldap">{{.CountLDAP}}</span></button>
+      <button type="button" class="users-pill" data-filter="local">🔑 Локальные <span class="count" id="count-local">{{.CountLocal}}</span></button>
+      <button type="button" class="users-pill" data-filter="admin">🛡️ Админы <span class="count" id="count-admin">{{.CountAdmin}}</span></button>
+      <button type="button" class="users-pill" data-filter="disabled">⚠️ Отключённые <span class="count" id="count-disabled">{{.CountDisabled}}</span></button>
     </div>
   </div>
 

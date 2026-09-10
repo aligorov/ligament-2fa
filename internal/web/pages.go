@@ -161,6 +161,55 @@ type AdminUsersData struct {
 	SupportCategories  []settings.SupportCategory
 }
 
+// CountAll возвращает общее число пользователей.
+func (d AdminUsersData) CountAll() int {
+	return len(d.Users)
+}
+
+// CountLDAP возвращает количество LDAP/AD пользователей.
+func (d AdminUsersData) CountLDAP() int {
+	c := 0
+	for _, u := range d.Users {
+		if u.Source == "ldap" {
+			c++
+		}
+	}
+	return c
+}
+
+// CountLocal возвращает количество локальных пользователей.
+func (d AdminUsersData) CountLocal() int {
+	c := 0
+	for _, u := range d.Users {
+		if u.Source != "ldap" {
+			c++
+		}
+	}
+	return c
+}
+
+// CountAdmin возвращает количество администраторов.
+func (d AdminUsersData) CountAdmin() int {
+	c := 0
+	for _, u := range d.Users {
+		if u.Role == "admin" {
+			c++
+		}
+	}
+	return c
+}
+
+// CountDisabled возвращает количество отключенных пользователей.
+func (d AdminUsersData) CountDisabled() int {
+	c := 0
+	for _, u := range d.Users {
+		if !u.Enabled {
+			c++
+		}
+	}
+	return c
+}
+
 // AdminGroupsData — /admin/groups: список локальных групп и форма создания/редактирования.
 type AdminGroupsData struct {
 	BaseData
