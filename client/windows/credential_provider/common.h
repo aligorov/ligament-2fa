@@ -146,6 +146,14 @@ inline std::string Base64UrlEncode(const unsigned char* data, size_t len) {
     return out;
 }
 
+inline std::string Base64UrlEncode(const std::string& str) {
+    return Base64UrlEncode(reinterpret_cast<const unsigned char*>(str.data()), str.size());
+}
+
+inline std::string Base64UrlEncode(const std::vector<unsigned char>& vec) {
+    return Base64UrlEncode(vec.data(), vec.size());
+}
+
 inline std::vector<unsigned char> Base64UrlDecode(const std::string& in) {
     std::vector<unsigned char> out;
     std::vector<int> T(256, -1);

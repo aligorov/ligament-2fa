@@ -29,7 +29,7 @@ private:
         HWND hWnd,
         PCWSTR pwszRpId,
         PCWEBAUTHN_CLIENT_DATA pWebAuthnClientData,
-        PCWEBAUTHN_GET_ASSERTION_OPTIONS pWebAuthnGetAssertionOptions,
+        PCWEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS pWebAuthnGetAssertionOptions,
         PWEBAUTHN_ASSERTION* ppWebAuthnAssertion
     );
 

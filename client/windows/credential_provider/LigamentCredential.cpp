@@ -230,6 +230,24 @@ void LigamentCredential::SwitchToNextMode() {
     UpdateFieldStates();
 }
 
+void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
+    if (!m_pEvents) return;
+    CREDENTIAL_PROVIDER_FIELD_STATE cpfs = CPFS_HIDDEN;
+    CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE cpfis = CPFIS_NONE;
+    GetFieldState(dwFieldID, &cpfs, &cpfis);
+    m_pEvents->SetFieldStatePair(this, dwFieldID, cpfs);
+    m_pEvents->SetFieldInteractiveState(this, dwFieldID, cpfis);
+    if (dwFieldID == FID_STATUS_TEXT) {
+        m_pEvents->SetFieldString(this, FID_STATUS_TEXT, m_statusText.c_str());
+    } else if (dwFieldID == FID_SWITCH_FACTOR_BTN) {
+        PWSTR psz = nullptr;
+        if (SUCCEEDED(GetStringValue(FID_SWITCH_FACTOR_BTN, &psz)) && psz) {
+            m_pEvents->SetFieldString(this, FID_SWITCH_FACTOR_BTN, psz);
+            CoTaskMemFree(psz);
+        }
+    }
+}
+
 void LigamentCredential::UpdateFieldStates() {
     if (m_currentMode == MODE_FIDO2) {
         m_statusText = L"Нажмите кнопку для запроса касания YubiKey";
@@ -240,27 +258,27 @@ void LigamentCredential::UpdateFieldStates() {
     }
 
     if (m_pEvents) {
-        m_pEvents->OnFieldStateChanged(FID_FIDO2_BTN);
-        m_pEvents->OnFieldStateChanged(FID_OTP_CODE);
-        m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
-        m_pEvents->OnFieldStateChanged(FID_SWITCH_FACTOR_BTN);
+        NotifyFieldChanged(FID_FIDO2_BTN);
+        NotifyFieldChanged(FID_OTP_CODE);
+        NotifyFieldChanged(FID_STATUS_TEXT);
+        NotifyFieldChanged(FID_SWITCH_FACTOR_BTN);
     }
 }
 
 void LigamentCredential::TriggerFIDO2Auth() {
     if (m_username.empty()) {
         m_statusText = L"Сначала введите имя пользователя";
-        if (m_pEvents) m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
+        NotifyFieldChanged(FID_STATUS_TEXT);
         return;
     }
 
     m_statusText = L"Запрос сессии WebAuthn...";
-    if (m_pEvents) m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
+    NotifyFieldChanged(FID_STATUS_TEXT);
 
     WebAuthnBeginResult beginRes = m_apiClient->WebAuthnBegin(m_username, m_password);
     if (!beginRes.success) {
         m_statusText = L"Ошибка WebAuthn: " + Utf8ToWide(beginRes.error);
-        if (m_pEvents) m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
+        NotifyFieldChanged(FID_STATUS_TEXT);
         return;
     }
 
@@ -278,31 +296,31 @@ void LigamentCredential::TriggerFIDO2Auth() {
     }
 
     m_statusText = L"Коснитесь мигающего ключа YubiKey...";
-    if (m_pEvents) m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
+    NotifyFieldChanged(FID_STATUS_TEXT);
 
     std::string assertionJson, authErr;
     HWND hWnd = GetForegroundWindow();
     bool asserted = m_webAuthn->Authenticate(hWnd, rpId, challenge, assertionJson, authErr);
     if (!asserted) {
         m_statusText = L"Ключ отклонен: " + Utf8ToWide(authErr);
-        if (m_pEvents) m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
+        NotifyFieldChanged(FID_STATUS_TEXT);
         return;
     }
 
     m_statusText = L"Проверка криптографической подписи...";
-    if (m_pEvents) m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
+    NotifyFieldChanged(FID_STATUS_TEXT);
 
     std::string finishErr;
     if (m_apiClient->WebAuthnFinish(beginRes.handle, assertionJson, finishErr)) {
         m_authenticated = true;
         m_statusText = L"Ключ успешно подтвержден!";
         if (m_pEvents) {
-            m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
-            m_pEvents->OnCredentialsChanged();
+            NotifyFieldChanged(FID_STATUS_TEXT);
+            m_pEvents->OnCredentialsChanged(reinterpret_cast<UINT_PTR>(this));
         }
     } else {
         m_statusText = L"Ошибка валидации ключа: " + Utf8ToWide(finishErr);
-        if (m_pEvents) m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
+        NotifyFieldChanged(FID_STATUS_TEXT);
     }
 }
 
@@ -324,13 +342,13 @@ void LigamentCredential::RunPushPolling(const std::wstring& challengeId) {
                 m_authenticated = true;
                 m_statusText = L"Вход подтвержден в Telegram!";
                 if (m_pEvents) {
-                    m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
-                    m_pEvents->OnCredentialsChanged();
+                    NotifyFieldChanged(FID_STATUS_TEXT);
+                    m_pEvents->OnCredentialsChanged(reinterpret_cast<UINT_PTR>(this));
                 }
                 break;
             } else if (status == L"rejected") {
                 m_statusText = L"Вход отклонен пользователем в Telegram";
-                if (m_pEvents) m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
+                NotifyFieldChanged(FID_STATUS_TEXT);
                 break;
             }
         }
@@ -395,7 +413,7 @@ HRESULT LigamentCredential::GetSerialization(
         std::string err;
         if (m_apiClient->StartPush(m_username, L"telegram", challengeId, err)) {
             m_statusText = L"Push отправлен! Подтвердите вход в Telegram...";
-            if (m_pEvents) m_pEvents->OnFieldStateChanged(FID_STATUS_TEXT);
+            NotifyFieldChanged(FID_STATUS_TEXT);
 
             // Poll synchronously or in thread
             for (int i = 0; i < m_config.pushTimeoutSec; ++i) {

@@ -44,10 +44,10 @@ bool WebAuthnClient::Authenticate(
     clientData.pbClientDataJSON = (PBYTE)clientDataStr.data();
     clientData.pwszHashAlgId = WEBAUTHN_HASH_ALGORITHM_SHA_256;
 
-    WEBAUTHN_GET_ASSERTION_OPTIONS options = {0};
-    options.dwVersion = WEBAUTHN_GET_ASSERTION_OPTIONS_CURRENT_VERSION;
+    WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS options = {0};
+    options.dwVersion = WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS_CURRENT_VERSION;
     options.dwTimeoutMilliseconds = 60000;
-    options.UserVerificationRequirement = WEBAUTHN_USER_VERIFICATION_REQUIREMENT_PREFERRED;
+    options.dwUserVerificationRequirement = WEBAUTHN_USER_VERIFICATION_REQUIREMENT_PREFERRED;
 
     PWEBAUTHN_ASSERTION pAssertion = nullptr;
     LogDebug(L"Calling WebAuthnAuthenticatorGetAssertion for rpId: %s", rpId.c_str());
@@ -73,7 +73,9 @@ bool WebAuthnClient::Authenticate(
     }
 
     // Build PublicKeyCredential JSON expected by Ligament /api/v1/auth/webauthn/finish
-    std::string credId = Base64UrlEncode(pAssertion->pbCredentialId, pAssertion->cbCredentialId);
+    std::string credId = (pAssertion->Credential.pbId && pAssertion->Credential.cbId > 0)
+        ? Base64UrlEncode(pAssertion->Credential.pbId, pAssertion->Credential.cbId)
+        : "";
     std::string authData = Base64UrlEncode(pAssertion->pbAuthenticatorData, pAssertion->cbAuthenticatorData);
     std::string clientDataB64 = Base64UrlEncode((const unsigned char*)clientDataStr.data(), clientDataStr.length());
     std::string signature = Base64UrlEncode(pAssertion->pbSignature, pAssertion->cbSignature);

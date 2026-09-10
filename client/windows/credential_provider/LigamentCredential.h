@@ -96,6 +96,7 @@ private:
     void TriggerFIDO2Auth();
     void SwitchToNextMode();
     void UpdateFieldStates();
+    void NotifyFieldChanged(DWORD dwFieldID);
     HRESULT KerbInteractiveLogonPack(
         const std::wstring& domain,
         const std::wstring& user,
