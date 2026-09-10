@@ -11,8 +11,21 @@
   фактор — код из приложения, сообщение или Passkey.{{end}}</p>
   <div id="login-flash"></div>
   {{with .Err}}<div class="flash err"><span class="flash-icon">⚠️</span>{{.}}</div>{{end}}
-  {{if .NeedCode}}<div class="flash ok"><span class="flash-icon">🔐</span>Введите код второго фактора.{{if .Info}} {{.Info}}{{end}}</div>{{end}}
+  {{if .NeedCode}}
+    {{if .NumberMatch}}
+    <div class="number-match-card" id="number-match-box" data-challenge-id="{{.ChallengeID}}">
+      <div class="number-match-label">Число для подтверждения входа:</div>
+      <div class="number-match-badge">{{.NumberMatch}}</div>
+      <p class="number-match-help">Откройте приложение <strong>Ligament 2FA</strong> и выберите это число на экране для мгновенного входа.</p>
+      <div class="number-match-status"><span class="number-match-spinner"></span> Ожидание подтверждения в приложении...</div>
+    </div>
+    {{else}}
+    <div class="flash ok"><span class="flash-icon">🔐</span>Введите код второго фактора.{{if .Info}} {{.Info}}{{end}}</div>
+    {{end}}
+  {{end}}
   <form action="/login" method="post" class="form" id="login-form">
+    <input type="hidden" name="action" id="login-action" value="">
+    {{if .ChallengeID}}<input type="hidden" name="challenge_id" id="login-challenge-id" value="{{.ChallengeID}}">{{end}}
     {{if .Next}}<input type="hidden" name="next" value="{{.Next}}">{{end}}
     <label class="field">
       <span class="field-label">Имя пользователя</span>
@@ -20,12 +33,12 @@
     </label>
     <label class="field">
       <span class="field-label">Пароль</span>
-      <input class="input" type="password" name="password" required autocomplete="current-password">
+      <input class="input" type="password" name="password" {{if not .NeedCode}}required{{end}} autocomplete="current-password">
     </label>
     <label class="field">
       <span class="field-label">Код 2FA (если включён)</span>
       <input class="input code-input" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="например, 123456">
-      <span class="help">Шестизначный код из приложения или оставьте пустым для входа по Passkey.</span>
+      <span class="help">Шестизначный код из приложения или оставьте пустым при подтверждении на экране.</span>
     </label>
     <label class="check">
       <input type="checkbox" name="remember" value="1">

@@ -443,10 +443,12 @@ func maskPhone(phone string) string {
 }
 
 type loginOpts struct {
-	Info       string
-	CanEmail   bool
-	CanSMS     bool
-	CanPasskey bool
+	Info        string
+	CanEmail    bool
+	CanSMS      bool
+	CanPasskey  bool
+	NumberMatch string
+	ChallengeID string
 }
 
 // renderLoginErr — рендер формы входа с ошибкой (401) либо подсказкой
@@ -455,6 +457,7 @@ type loginOpts struct {
 func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status int, prefill, msg string, needCode bool, next string, opt ...any) {
 	var inf string
 	var canEmail, canSMS, canPasskey bool
+	var numberMatch, challengeID string
 	for _, o := range opt {
 		switch v := o.(type) {
 		case string:
@@ -464,18 +467,22 @@ func (p *PagesAPI) renderLoginErr(w http.ResponseWriter, r *http.Request, status
 			canEmail = v.CanEmail
 			canSMS = v.CanSMS
 			canPasskey = v.CanPasskey
+			numberMatch = v.NumberMatch
+			challengeID = v.ChallengeID
 		}
 	}
 	p.render(w, status, "login", web.LoginData{
-		BaseData:   p.baseData(r, "Вход", ""),
-		Err:        msg,
-		Prefill:    prefill,
-		NeedCode:   needCode,
-		Next:       next,
-		Info:       inf,
-		CanEmail:   canEmail,
-		CanSMS:     canSMS,
-		CanPasskey: canPasskey,
+		BaseData:    p.baseData(r, "Вход", ""),
+		Err:         msg,
+		Prefill:     prefill,
+		NeedCode:    needCode,
+		Next:        next,
+		Info:        inf,
+		CanEmail:    canEmail,
+		CanSMS:      canSMS,
+		CanPasskey:  canPasskey,
+		NumberMatch: numberMatch,
+		ChallengeID: challengeID,
 	})
 }
 
@@ -507,6 +514,31 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 
 	if !p.sess.allowReq(r, username) {
 		fail(http.StatusTooManyRequests, "rate_limited")
+		return
+	}
+
+	// Авторизация по push-подтверждению из приложения (Number Matching)
+	if action == "push_claim" {
+		chIDStr := r.PostFormValue("challenge_id")
+		chID, err := uuid.Parse(chIDStr)
+		if err != nil {
+			fail(http.StatusBadRequest, "bad_credentials")
+			return
+		}
+		user, err := p.st.UserByUsername(ctx, username)
+		if err != nil || !user.Enabled {
+			fail(http.StatusUnauthorized, "bad_credentials")
+			return
+		}
+		if p.core != nil && p.core.FailLocked(ctx, user.ID) {
+			fail(http.StatusLocked, "locked")
+			return
+		}
+		if !p.sess.consumePushApproved(ctx, user, chID) {
+			fail(http.StatusUnauthorized, "bad_code")
+			return
+		}
+		p.loginDone(w, r, user, remember, next, "push_match")
 		return
 	}
 
@@ -604,15 +636,21 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			var info string
+			var numberMatch, challengeID string
 			if p.core != nil {
 				// Приоритет каналов доставки:
-				// 1. Telegram (если привязан и бот настроен)
-				// 2. Email (если указан и SMTP настроен)
-				// 3. TOTP (приложение-аутентификатор)
+				// 1. AppPush (если есть мобильное/десктопное приложение)
+				// 2. Telegram (если привязан и бот настроен)
+				// 3. Email (если указан и SMTP настроен)
+				// 4. TOTP (приложение-аутентификатор)
 				// SMS — только по явной кнопке пользователя («чтоб не тратить пакет»).
-				autoChannels := []channel.Channel{channel.Telegram, channel.Email, channel.TOTP}
+				autoChannels := []channel.Channel{channel.AppPush, channel.Telegram, channel.Email, channel.TOTP}
 				slim := *user
-				slim.PreferChannels = autoChannels
+				if len(user.PreferChannels) > 0 {
+					slim.PreferChannels = user.PreferChannels
+				} else {
+					slim.PreferChannels = autoChannels
+				}
 
 				ch, err := p.core.StartWithMeta(ctx, &slim, purposeAPI, clientIP(r), r.UserAgent())
 				if err != nil {
@@ -637,7 +675,15 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				} else if ch != nil {
+					challengeID = ch.ID.String()
 					switch ch.Channel {
+					case channel.AppPush:
+						if nm, ok := ch.Metadata["number_match"].(string); ok && nm != "" {
+							numberMatch = nm
+							info = fmt.Sprintf("Подтвердите вход в приложении Ligament 2FA, выбрав число %s.", nm)
+						} else {
+							info = "Подтвердите вход в приложении Ligament 2FA."
+						}
 					case channel.TOTP:
 						info = "Код из приложения-аутентификатора (TOTP)."
 					case channel.Telegram:
@@ -652,7 +698,14 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			p.renderLoginErr(w, r, http.StatusOK, username, "", true, next, loginOpts{Info: info, CanEmail: canEmail, CanSMS: canSMS, CanPasskey: canPasskey})
+			p.renderLoginErr(w, r, http.StatusOK, username, "", true, next, loginOpts{
+				Info:        info,
+				CanEmail:    canEmail,
+				CanSMS:      canSMS,
+				CanPasskey:  canPasskey,
+				NumberMatch: numberMatch,
+				ChallengeID: challengeID,
+			})
 			return
 		}
 		p.loginDone(w, r, user, remember, next, "password_only")

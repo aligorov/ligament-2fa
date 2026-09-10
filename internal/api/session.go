@@ -503,6 +503,25 @@ func (s *SessionAPI) HasWebauthnPending(ctx context.Context, userID uuid.UUID) b
 	return exists
 }
 
+// consumePushApproved атомарно проверяет и погашает approved push-челлендж (app_push / telegram_push).
+func (s *SessionAPI) consumePushApproved(ctx context.Context, user *store.User, challengeID uuid.UUID) bool {
+	var id uuid.UUID
+	err := s.st.Pool().QueryRow(ctx, `
+		SELECT id FROM challenges
+		WHERE id = $1 AND user_id = $2 
+		  AND channel IN ('app_push', 'telegram_push')
+		  AND push_state = 'approved'
+		  AND used_at IS NULL 
+		  AND expires_at > now()`, challengeID, user.ID).Scan(&id)
+	if err != nil {
+		return false
+	}
+	if err := s.st.ChallengeMarkUsed(ctx, id); err != nil {
+		return false
+	}
+	return true
+}
+
 // ---- POST /api/v1/logout ----
 
 // handleLogout удаляет текущую сессию и чистит cookie (требует сессию и

@@ -169,6 +169,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Панель настроек удаленной поддержки (категории и пороги телеметрии)
   initSupportSettingsPanel();
+
+  // Polling статуса Number Match push-челленджа на странице логина
+  initNumberMatchPolling();
 });
 
 function initGroupRadiusBuilder() {
@@ -980,5 +983,41 @@ function initSupportSettingsPanel() {
   }
 }
 
+// Polling статуса Number Match push-челленджа на странице логина
+function initNumberMatchPolling() {
+  const matchCard = document.getElementById("number-match-box");
+  if (!matchCard || !matchCard.dataset.challengeId) return;
 
-
+  const chId = matchCard.dataset.challengeId;
+  const pollInterval = 1500;
+  const pollTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/v1/auth/challenge/${encodeURIComponent(chId)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.status === "approved") {
+        clearInterval(pollTimer);
+        const statusEl = matchCard.querySelector(".number-match-status");
+        if (statusEl) {
+          statusEl.innerHTML = "✅ Подтверждено в приложении! Вход...";
+          statusEl.style.color = "#10b981";
+        }
+        const actionInput = document.getElementById("login-action");
+        const loginForm = document.getElementById("login-form");
+        if (actionInput && loginForm) {
+          actionInput.value = "push_claim";
+          loginForm.submit();
+        }
+      } else if (data && (data.status === "denied" || data.status === "expired")) {
+        clearInterval(pollTimer);
+        const statusEl = matchCard.querySelector(".number-match-status");
+        if (statusEl) {
+          statusEl.innerHTML = data.status === "denied" ? "❌ Отклонено в приложении" : "⌛ Время ожидания истекло";
+          statusEl.style.color = "#ef4444";
+        }
+      }
+    } catch (_) {
+      // сетевой retry
+    }
+  }, pollInterval);
+}

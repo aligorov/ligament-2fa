@@ -2921,4 +2921,74 @@ button.select-chip.partial .ad-group-count {
   gap: 10px;
 }
 
+/* Number Match UI на странице логина */
+.number-match-card {
+  margin: 14px 0 18px 0;
+  padding: 16px;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.95));
+  border: 2px solid #0284c7;
+  border-radius: 14px;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(2, 132, 199, 0.18);
+  animation: pulse-border 2.5s infinite alternate;
+}
+
+@keyframes pulse-border {
+  from { border-color: #0284c7; box-shadow: 0 4px 16px rgba(2, 132, 199, 0.2); }
+  to { border-color: #38bdf8; box-shadow: 0 8px 28px rgba(56, 189, 248, 0.35); }
+}
+
+.number-match-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.number-match-badge {
+  display: inline-block;
+  font-size: 3rem;
+  font-weight: 800;
+  letter-spacing: 4px;
+  color: #38bdf8;
+  line-height: 1;
+  padding: 8px 24px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 12px;
+  margin: 6px 0 10px 0;
+  user-select: all;
+  text-shadow: 0 0 18px rgba(56, 189, 248, 0.5);
+}
+
+.number-match-help {
+  font-size: 0.85rem;
+  color: #cbd5e1;
+  margin: 0 0 10px 0;
+  line-height: 1.4;
+}
+
+.number-match-status {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #38bdf8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.number-match-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(56, 189, 248, 0.3);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  display: inline-block;
+}
+
+
 
