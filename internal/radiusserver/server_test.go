@@ -228,11 +228,15 @@ func startServers(t *testing.T, ctx context.Context, srv *Server) (authAddr, acc
 	return authAddr, acctAddr
 }
 
-// accessRequest — клиентский пакет Access-Request (PAP).
+// accessRequest — клиентский пакет Access-Request (PAP). Message-
+// Authenticator подписывается всегда: radius.require_message_authenticator
+// по умолчанию true — сервер отбрасывает Access-Request без валидного M-A
+// (RFC 3579 / BlastRADIUS); реальный патченый NAS подписывает так же.
 func accessRequest(secret []byte, username, password string) *radius.Packet {
 	p := radius.New(radius.CodeAccessRequest, secret)
 	rfc2865.UserName_SetString(p, username)
 	rfc2865.UserPassword_SetString(p, password)
+	signRequestMA(p)
 	return p
 }
 

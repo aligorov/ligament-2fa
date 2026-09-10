@@ -5,10 +5,12 @@
 // держатся по RADIUS State (eapsession.go), серверный сертификат
 // self-signed (cert.go). Reply-атрибуты Access-Accept: сначала per-user
 // users.radius_reply, иначе глобальные radius.reply_attributes (MikroTik VSA
-// и стандартные атрибуты, см. attrs.go). Ответ на запрос с
-// Message-Authenticator подписывается (RFC 3579, митигация BlastRADIUS,
-// см. messageauth.go); ответы EAP-обмена несут Message-Authenticator всегда.
-// Неизвестные коды пакетов игнорируются без ответа.
+// и стандартные атрибуты, см. attrs.go). Message-Authenticator (RFC 3579,
+// митигация BlastRADIUS, см. messageauth.go): неверный MA — discard;
+// EAP-Message без MA — discard (§3.2 MUST); PAP без MA — discard при
+// radius.require_message_authenticator (дефолт); ВСЕ ответы auth-порта
+// подписываются MA всегда. Неизвестные коды пакетов игнорируются без
+// ответа. Первый гейт — per-NAS token bucket (ratelimit.go, анти-DoS).
 package radiusserver
 
 import (
@@ -54,6 +56,10 @@ type Server struct {
 	m    *settings.M
 	fw   *firewall.Guard // nil — фильтрации по IP нет
 
+	// limiter — per-NAS token bucket: первый гейт auth/acct-пакетов до
+	// любой тяжёлой работы (анти-DoS перед argon2, см. ratelimit.go).
+	limiter *rateLimiter
+
 	// EAP-TTLS (802.1X): сессии по RADIUS State и серверный сертификат
 	// (self-signed, см. cert.go; nil при его отсутствии — EAP отключён).
 	eapSessions *eapSessionStore
@@ -67,7 +73,13 @@ type Server struct {
 // сертификат EAP-TTLS — EnsureEAPCert (main) или лениво при первом
 // EAP-запросе.
 func New(core *auth.Core, st *store.Store, m *settings.M) *Server {
-	return &Server{core: core, st: st, m: m, eapSessions: newEAPSessionStore()}
+	return &Server{
+		core:        core,
+		st:          st,
+		m:           m,
+		limiter:     newRateLimiter(),
+		eapSessions: newEAPSessionStore(),
+	}
 }
 
 // SetFirewall подключает fail2ban-guard: Access-Request с чёрного/
@@ -224,10 +236,12 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 	if r.Code != radius.CodeAccessRequest {
 		return // неизвестные коды игнорируются без ответа
 	}
-	if !verifyMessageAuthenticator(r.Packet) {
-		// BlastRADIUS: подделанный Message-Authenticator — молчаливый drop.
-		slog.Warn("radius: неверный Message-Authenticator (проверьте совпадение RADIUS Secret на NAS и в настройках сервера) — пакет отброшен",
-			"remote", r.RemoteAddr.String())
+	// DoS-гейт ПЕРВЫМ — до MA-проверки, файрвола, БД и argon2: флуд с
+	// одного источника молчаливо дропается (rate.limit_pps, см. ratelimit.go).
+	if !s.limiter.allow(hostOnly(r.RemoteAddr), s.m.Get().Radius.RateLimitPPS, time.Now()) {
+		return
+	}
+	if !s.checkRequestMessageAuthenticator(r) {
 		return
 	}
 
@@ -239,6 +253,7 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 				"remote", hostOnly(r.RemoteAddr))
 			resp := r.Response(radius.CodeAccessReject)
 			rfc2865.ReplyMessage_SetString(resp, "rejected")
+			signResponseMessageAuthenticator(r.Packet, resp)
 			_ = w.Write(resp)
 			return
 		}
@@ -328,26 +343,96 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 	}
 }
 
-// handleAcct — Accounting-Request: событие в лог и аудит, ВСЕГДА
+// checkRequestMessageAuthenticator — политика Message-Authenticator для
+// Access-Request (RFC 3579 §3.2, митигация BlastRADIUS/downgrade):
+//  1. неверный MA — discard всегда (подделка/несовпадение секрета);
+//  2. запрос с EAP-Message БЕЗ MA — discard всегда (RFC 3579 §3.2 MUST:
+//     внешний EAP-обмен без MA тамперится MITM-ом);
+//  3. прочие Access-Request (PAP) без MA — discard при включённом
+//     radius.require_message_authenticator (дефолт true).
+//
+// Каждый discard пишется в аудит radius_ma_missing (fail) — событие НЕ
+// входит в fail-фильтр Guard, чтобы отброшенный флуд не крутил автобан.
+func (s *Server) checkRequestMessageAuthenticator(r *radius.Request) bool {
+	srcIP := hostOnly(r.RemoteAddr)
+	if hasMessageAuthenticator(r.Packet) {
+		if verifyMessageAuthenticator(r.Packet) {
+			return true
+		}
+		slog.Warn("radius: неверный Message-Authenticator (проверьте совпадение RADIUS Secret на NAS и в настройках сервера) — пакет отброшен",
+			"remote", srcIP)
+		s.auditMAMissing(r, "invalid")
+		return false
+	}
+	_, errEAP := rfc2869.EAPMessage_Lookup(r.Packet)
+	reason := ""
+	switch {
+	case errEAP == nil: // EAP-Message присутствует
+		reason = "missing_eap"
+	case s.m.Get().Radius.RequireMessageAuthenticator:
+		reason = "missing"
+	default:
+		return true // MA нет, но политика разрешает (легаси-NAS)
+	}
+	slog.Warn("radius: Access-Request без Message-Authenticator — пакет отброшен (RFC 3579 §3.2)",
+		"remote", srcIP, "reason", reason)
+	s.auditMAMissing(r, reason)
+	return false
+}
+
+// auditMAMissing фиксирует discard по Message-Authenticator в audit_log
+// (контекст без отмены — аудит переживает обработку пакета).
+func (s *Server) auditMAMissing(r *radius.Request, reason string) {
+	username, _ := rfc2865.UserName_LookupString(r.Packet)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
+	defer cancel()
+	if err := s.st.Audit(ctx, username, "radius_ma_missing",
+		map[string]any{"reason": reason}, hostOnly(r.RemoteAddr), "fail"); err != nil {
+		slog.Warn("radius: radius_ma_missing не записан в аудит", "error", err)
+	}
+}
+
+// handleAcct — Accounting-Request: файрвол-гейт, событие в лог и аудит
+// (только Start/Stop — Interim-Update не шумит в audit_log), ВСЕГДА
 // Accounting-Response (иначе NAS ретрансмитит).
 func (s *Server) handleAcct(w radius.ResponseWriter, r *radius.Request) {
 	if r.Code != radius.CodeAccountingRequest {
 		return
 	}
+	// DoS-гейт тем же bucket-ом, что и auth-порт (acct тоже бьётся флудом).
+	if !s.limiter.allow(hostOnly(r.RemoteAddr), s.m.Get().Radius.RateLimitPPS, time.Now()) {
+		return
+	}
+	// Файрвол (документация SetFirewall): accounting с чёрного/
+	// забаненного IP отбрасывается молча (SetFirewall: «accounting с
+	// такого IP отбрасывается»).
+	if s.fw != nil {
+		switch s.fw.Check(r.Context(), hostOnly(r.RemoteAddr)) {
+		case firewall.Denied, firewall.Banned:
+			slog.Warn("radius: Accounting-Request отброшен файрволом",
+				"remote", hostOnly(r.RemoteAddr))
+			return
+		}
+	}
 	username, _ := rfc2865.UserName_LookupString(r.Packet)
 	session, _ := rfc2866.AcctSessionID_LookupString(r.Packet)
-	status := rfc2866.AcctStatusType_Get(r.Packet).String()
+	status := rfc2866.AcctStatusType_Get(r.Packet)
 	srcIP := hostOnly(r.RemoteAddr)
 
 	slog.Info("radius: accounting", "user", username, "session_id", session,
-		"status", status, "src_ip", srcIP)
-	// Дублируем в audit_log (событие survive-ит процесс; ошибки записи
-	// не должны ломать ответ NAS).
-	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if err := s.st.Audit(auditCtx, username, "radius_acct",
-		map[string]any{"session_id": session, "status": status}, srcIP, "ok"); err != nil {
-		slog.Warn("radius: accounting не записан в аудит", "user", username, "error", err)
+		"status", status.String(), "src_ip", srcIP)
+
+	// В audit_log — только начало/конец сессии: Interim-Update ходит
+	// каждые пару минут на каждую сессию и без фильтра забивает аудит
+	// (retention-шум, АГЕНТ 5). Ошибки записи не ломают ответ NAS.
+	switch status {
+	case rfc2866.AcctStatusType_Value_Start, rfc2866.AcctStatusType_Value_Stop:
+		auditCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		defer cancel()
+		if err := s.st.Audit(auditCtx, username, "radius_acct",
+			map[string]any{"session_id": session, "status": status.String()}, srcIP, "ok"); err != nil {
+			slog.Warn("radius: accounting не записан в аудит", "user", username, "error", err)
+		}
 	}
 
 	if err := w.Write(r.Response(radius.CodeAccountingResponse)); err != nil {

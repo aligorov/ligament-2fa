@@ -29,6 +29,14 @@ var defaults = map[string]json.RawMessage{
 	"radius.max_fail_per_user": json.RawMessage(`10`),
 	"radius.fail_window":       json.RawMessage(`"5m"`),
 	"radius.push_wait":         json.RawMessage(`"20s"`),
+	// radius.require_message_authenticator — Access-Request без валидного
+	// Message-Authenticator отбрасывается (RFC 3579 / митигация BlastRADIUS,
+	// CVE-2024-3596). true — строгий режим по умолчанию; NAS без поддержки
+	// MA (очень старые) придётся разрешать явным false.
+	"radius.require_message_authenticator": json.RawMessage(`true`),
+	// radius.rate_limit_pps — per-NAS token bucket RADIUS-пакетов в секунду
+	// (гейт перед argon2/БД, анти-DoS). 0 — лимит выключен.
+	"radius.rate_limit_pps":    json.RawMessage(`20`),
 	"radius.reply_attributes":  json.RawMessage(`{}`),
 	"radius.vlan_profiles":     json.RawMessage(`{}`),
 	"radius.nas_inventory":     json.RawMessage(`{}`),

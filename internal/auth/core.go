@@ -24,6 +24,11 @@ import (
 // pushTick — интервал опроса push-челленджа в удержании RADIUS-запроса.
 const pushTick = time.Second
 
+// pushGetRetries — допуск подряд ошибок чтения состояния push-челленджа
+// в удержании (БД моргнула): после третьей ошибки подряд — Reject
+// push_timeout.
+const pushGetRetries = 3
+
 // Core — ядро аутентификации: выдча челленджей по предпочтительным
 // каналам, проверка кодов всех типов, fail-счётчик и RADIUS-флоу
 // (сплиты «пароль+код», push_wait).
@@ -622,6 +627,11 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		// платит полную argon2-цену — как VPN-клиент с неверным паролем.
 		BurnDummyVerify(papString)
 		audit("no_user", false)
+		// Брут несуществующих имён должен кормить fail2ban (Guard.Fail) и
+		// fail-счётчик — как bad_credentials; раньше radius_auth/no_user
+		// не входил в фильтр событий (см. audit → switch event).
+		c.audit(ctx, username, "radius_fail",
+			map[string]any{"reason": "no_user"}, srcIP, "fail")
 		return false, "no_user"
 	}
 	if !user.Enabled {
@@ -688,19 +698,34 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 	}
 
 	// Push-fatigue: не чаще push_cooldown и не более push_per_hour в час.
+	// Исключение: повторный Access-Request в cooldown при ЖИВОМ pending
+	// push-челлендже (ретрансмит NAS после завершения первого хендлера,
+	// повтор клиента после короткого push_wait — UniFi ~5с) — возобновляем
+	// ожидание ЕГО вместо мгновенного Reject push_cooldown: пользователь
+	// мог уже нажать «одобрить», а первый ответ ушёл до нажатия.
+	var pushCh *store.Challenge
+	resumed := false
 	if last, err := c.st.LastPushAt(ctx, user.ID); err != nil {
 		audit("push_send_fail", false)
 		return false, "push_send_fail"
 	} else if !last.IsZero() && time.Since(last) < pol.PushCooldown {
-		audit("push_cooldown", false)
-		return false, "push_cooldown"
+		if live := c.livePendingPush(ctx, user.ID); live != nil {
+			pushCh, resumed = live, true
+			slog.Info("auth: push в cooldown — возобновлено ожидание живого челленджа",
+				"user", username, "challenge_id", live.ID.String())
+		} else {
+			audit("push_cooldown", false)
+			return false, "push_cooldown"
+		}
 	}
-	if n, err := c.st.PushCountSince(ctx, user.ID, time.Now().Add(-time.Hour)); err != nil {
-		audit("push_send_fail", false)
-		return false, "push_send_fail"
-	} else if n >= pol.PushPerHour {
-		audit("push_limit", false)
-		return false, "push_limit"
+	if !resumed {
+		if n, err := c.st.PushCountSince(ctx, user.ID, time.Now().Add(-time.Hour)); err != nil {
+			audit("push_send_fail", false)
+			return false, "push_send_fail"
+		} else if n >= pol.PushPerHour {
+			audit("push_limit", false)
+			return false, "push_limit"
+		}
 	}
 
 	svc := "Корпоративный Wi-Fi / Сеть"
@@ -713,71 +738,78 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 	}
 
 	// Push-челлендж (pending) и отправка в приложение или Telegram.
-	var pushCh *store.Challenge
-	if useAppPush {
-		// Для RADIUS (Wi-Fi 802.1X / VPN) клиент подключается через сетевой стек ОС,
-		// где невозможно показать проверочный номер на экране.
-		// Поэтому подтверждение выполняется в один клик (Принять / Отклонить) без Number Match.
-		meta := map[string]any{
-			"ip":       srcIP,
-			"purpose":  svc,
-			"device":   clientDesc,
-			"username": username,
-		}
-		pushCh = &store.Challenge{
-			UserID:       user.ID,
-			Channel:      channel.AppPush,
-			PushState:    ptrString("pending"),
-			ExpiresAt:    time.Now().Add(pol.CodeTTL),
-			AttemptsLeft: 1,
-			Purpose:      svc,
-			Metadata:     meta,
-		}
-		if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
-			audit("push_send_fail", false)
-			return false, "push_send_fail"
-		}
-		expiresSecs := int(time.Until(pushCh.ExpiresAt).Seconds())
-		if err := appPush.SendAppPush(ctx, user.ID, username, srcIP, clientDesc, svc, "", pushCh.ID, expiresSecs); err != nil {
-			if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
-				`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
-				slog.Warn("auth: удаление app_push челленджа после ошибки доставки",
-					"id", pushCh.ID, "error", derr)
+	// При возобновлении живого челленджа — не создаём и не шлём заново.
+	if !resumed {
+		if useAppPush {
+			// Для RADIUS (Wi-Fi 802.1X / VPN) клиент подключается через сетевой стек ОС,
+			// где невозможно показать проверочный номер на экране.
+			// Поэтому подтверждение выполняется в один клик (Принять / Отклонить) без Number Match.
+			meta := map[string]any{
+				"ip":       srcIP,
+				"purpose":  svc,
+				"device":   clientDesc,
+				"username": username,
 			}
-			audit("push_send_fail", false)
-			return false, "push_send_fail"
-		}
-	} else {
-		pushCh = &store.Challenge{
-			UserID:       user.ID,
-			Channel:      channel.TelegramPush,
-			PushState:    ptrString("pending"),
-			ExpiresAt:    time.Now().Add(pol.CodeTTL),
-			AttemptsLeft: 1,
-			Purpose:      "radius",
-		}
-		if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
-			audit("push_send_fail", false)
-			return false, "push_send_fail"
-		}
-		if err := push.SendPush(ctx, *user.TelegramChatID, username, srcIP, "", pushCh.ID); err != nil {
-			// Осиротевший челлендж держал бы cooldown следующего push —
-			// удаляем (WithoutCancel: доставка могла упасть из-за отмены ctx).
-			if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
-				`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
-				slog.Warn("auth: удаление push-челленджа после ошибки доставки",
-					"id", pushCh.ID, "error", derr)
+			pushCh = &store.Challenge{
+				UserID:       user.ID,
+				Channel:      channel.AppPush,
+				PushState:    ptrString("pending"),
+				ExpiresAt:    time.Now().Add(pol.CodeTTL),
+				AttemptsLeft: 1,
+				Purpose:      svc,
+				Metadata:     meta,
 			}
-			audit("push_send_fail", false)
-			return false, "push_send_fail"
+			if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
+				audit("push_send_fail", false)
+				return false, "push_send_fail"
+			}
+			expiresSecs := int(time.Until(pushCh.ExpiresAt).Seconds())
+			if err := appPush.SendAppPush(ctx, user.ID, username, srcIP, clientDesc, svc, "", pushCh.ID, expiresSecs); err != nil {
+				if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
+					`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
+					slog.Warn("auth: удаление app_push челленджа после ошибки доставки",
+						"id", pushCh.ID, "error", derr)
+				}
+				audit("push_send_fail", false)
+				return false, "push_send_fail"
+			}
+		} else {
+			pushCh = &store.Challenge{
+				UserID:       user.ID,
+				Channel:      channel.TelegramPush,
+				PushState:    ptrString("pending"),
+				ExpiresAt:    time.Now().Add(pol.CodeTTL),
+				AttemptsLeft: 1,
+				Purpose:      "radius",
+			}
+			if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
+				audit("push_send_fail", false)
+				return false, "push_send_fail"
+			}
+			if err := push.SendPush(ctx, *user.TelegramChatID, username, srcIP, "", pushCh.ID); err != nil {
+				// Осиротевший челлендж держал бы cooldown следующего push —
+				// удаляем (WithoutCancel: доставка могла упасть из-за отмены ctx).
+				if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
+					`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
+					slog.Warn("auth: удаление push-челленджа после ошибки доставки",
+						"id", pushCh.ID, "error", derr)
+				}
+				audit("push_send_fail", false)
+				return false, "push_send_fail"
+			}
 		}
 	}
 
 	// Удержание Access-Request: опрос состояния 1 раз в секунду до
 	// radius.push_wait («Один запрос клиента — один ответ», §3.1).
+	// Разовая ошибка чтения состояния (БД моргнула) НЕ завершает
+	// удержание: допускается до pushGetRetries подряд ошибок (следующий
+	// тик — повтор), после — Reject push_timeout. consumed/expired
+	// обрабатываются как раньше — немедленный push_timeout.
 	deadline := time.Now().Add(c.set.Get().Radius.PushWait)
 	ticker := time.NewTicker(pushTick)
 	defer ticker.Stop()
+	var getFails int
 	for {
 		select {
 		case <-ctx.Done():
@@ -792,7 +824,21 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 				return false, "push_timeout"
 			}
 			cur, err := c.st.ChallengeGet(ctx, pushCh.ID)
-			if err != nil || cur.UsedAt != nil || !time.Now().Before(cur.ExpiresAt) {
+			if err != nil {
+				getFails++
+				if getFails >= pushGetRetries {
+					slog.Warn("radius: push-удержание — ошибки опроса состояния",
+						"user", username, "challenge_id", pushCh.ID.String(),
+						"errors", getFails, "error", err)
+					audit("push_timeout", false)
+					return false, "push_timeout"
+				}
+				slog.Warn("radius: push-удержание — повтор после ошибки опроса состояния",
+					"user", username, "error", err)
+				continue
+			}
+			getFails = 0
+			if cur.UsedAt != nil || !time.Now().Before(cur.ExpiresAt) {
 				audit("push_timeout", false)
 				return false, "push_timeout"
 			}
@@ -807,6 +853,31 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 			}
 		}
 	}
+}
+
+// livePendingPush возвращает живой push-челлендж пользователя (не истёк,
+// не использован, push_state=pending; каналы telegram_push/app_push) —
+// кандидат на возобновление ожидания при повторном RADIUS-запросе в
+// push_cooldown. nil — живого челленджа нет.
+func (c *Core) livePendingPush(ctx context.Context, userID uuid.UUID) *store.Challenge {
+	var id uuid.UUID
+	err := c.st.Pool().QueryRow(ctx, `
+		SELECT id FROM challenges
+		WHERE user_id = $1
+		  AND channel IN ('telegram_push','app_push')
+		  AND push_state = 'pending'
+		  AND used_at IS NULL
+		  AND expires_at > now()
+		ORDER BY created_at DESC
+		LIMIT 1`, userID).Scan(&id)
+	if err != nil {
+		return nil
+	}
+	ch, err := c.st.ChallengeGet(ctx, id)
+	if err != nil {
+		return nil
+	}
+	return ch
 }
 
 // NotifyLoginSuccess асинхронно отправляет пользователю уведомление о входе

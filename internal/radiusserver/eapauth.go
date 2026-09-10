@@ -91,6 +91,12 @@ func (s *Server) handleEAPAuth(w radius.ResponseWriter, r *radius.Request, eapRa
 		// Дефолт для нативного входа iOS, Windows, macOS, Android без профилей: PEAPv0 (Type 25).
 		// Клиенты, явно сконфигурированные под EAP-TTLS, ответят Nak, и мы переключимся.
 		sess = s.eapSessions.create(cert, eapProtoPEAP)
+		if sess == nil {
+			// Кап сессий и все активны — новую не создаём (см. create).
+			slog.Warn("radius: EAP-сессия не создана (кап) — Reject", "remote", srcIP)
+			s.rejectEAP(w, r, pkt.ID)
+			return
+		}
 		sess.reqID = pkt.ID + 1
 		sess.outerIdentity = string(pkt.IdentityData())
 		sess.lastReqEAP = append([]byte(nil), eapRaw...)
@@ -629,6 +635,8 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 			isClean   bool
 		}
 		var matched *candidate
+		// matchedTimestep — окно TOTP совпавшего кода (для CAS-потребления).
+		var matchedTimestep int64 = -1
 
 		testCandidate := func(pwd string, isClean bool) bool {
 			ntHash := eap.NTHash(pwd)
@@ -666,6 +674,7 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 						}
 						if code, err := hotp.GenerateCodeCustom(string(secret), uint64(cnt), hotpOpts); err == nil {
 							if testCandidate(string(rawPwd)+code, false) {
+								matchedTimestep = cnt
 								break
 							}
 						}
@@ -686,11 +695,29 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 		// Если это чистый пароль без 2FA-кода:
 		// - при user.RadiusPush || group.RadiusPush && Telegram: запускаем Telegram push-удержание через RADIUSAuth.
 		// - иначе: пользователь аутентифицируется по чистому паролю (нативный вход Wi-Fi).
-		if matched.isClean && !s.st.UserEffectiveRadiusPush(ctx, user) {
+		//
+		// Код TOTP (не-чистый кандидат): окно потребляем ТУТ тем же CAS-механизмом,
+		// что и PAP-путь (auth.verifyTOTP → store.TOTPSetTimestep «строго больше»).
+		// Проигранный CAS — окно уже потрачено, код переиспользован (replay) — отказ.
+		// После потребления код в RADIUSAuth больше не проверяем (verifyTOTP
+		// счёл бы его replay-ем): второй фактор уже подтверждён, фиксируем
+		// успех напрямую — эквивалент ветки code_ok ядра.
+		if !matched.isClean {
+			advanced, cerr := s.st.TOTPSetTimestep(ctx, user.ID, matchedTimestep)
+			if cerr != nil || !advanced {
+				slog.Info("radius: TOTP-код PEAP переиспользован — окно уже потрачено",
+					"user", username, "remote", srcIP, "timestep", matchedTimestep)
+				_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "totp_replay"}, srcIP, "fail")
+				_ = s.st.Audit(ctx, username, "radius_fail", map[string]any{"reason": "totp_replay"}, srcIP, "fail")
+				s.failMSCHAPv2(w, r, sess, resp.ID, "bad_credentials")
+				return
+			}
+			_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "code_ok"}, srcIP, "ok")
+		} else if !s.st.UserEffectiveRadiusPush(ctx, user) {
 			// Прямой вход по логину/паролю без 2FA-кода
 			_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "password_ok"}, srcIP, "ok")
 		} else {
-			// Пропускаем через конвейер s.core.RADIUSAuth (проверка TOTP-кода или Telegram push-удержание)
+			// Пропускаем через конвейер s.core.RADIUSAuth (Telegram/app push-удержание)
 			accept, reason := s.core.RADIUSAuth(ctx, username, matched.pwdString, srcIP)
 			if !accept {
 				slog.Info("radius: RADIUSAuth отклонил запрос", "user", username, "reason", reason, "remote", srcIP)

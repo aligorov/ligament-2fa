@@ -23,6 +23,12 @@ const (
 // Access-Challenge, клиент подтверждает пустым EAP-Response/TTLS.
 const MaxFragment = 1000
 
+// MaxReassembly — потолок буфера сборки ВХОДЯЩИХ фрагментов (анти-DoS,
+// АГЕНТ 5 аудита): цепочка с флагом M и без конца не должна копить память
+// бесконечно (1024 сессии × неограниченный буфер = memory exhaustion).
+// Легитимному TLS-handshake и phase-2 AVP 64 KiB хватает с запасом.
+const MaxReassembly = 64 * 1024
+
 // TTLS — разобранные TTLS-данные EAP-пакета: [21, flags, (len4)?, payload].
 type TTLS struct {
 	Flags       byte
@@ -118,8 +124,15 @@ type Assembler struct {
 // когда цепочка завершена (фрагмент без M). Флаг S начинает новую цепочку
 // (незавершённая теряется — ретрансмит старта или resumption); phase-2
 // данные приходят БЕЗ S и тоже начинают цепочку (RFC 5281: S только в
-// первом сообщении handshake-фазы). Ошибка — порванная заявленная длина.
+// первом сообщении handshake-фазы). Ошибки: порванная заявленная длина и
+// превышение MaxReassembly (буфер сбрасывается, сессию пусть прибьёт
+// вызывающий код по ошибке).
 func (a *Assembler) Add(t *TTLS) ([]byte, bool, error) {
+	// Заявленная длина сверх капа — отказ сразу, не копим заведомый мусор.
+	if t.DeclaredLen > MaxReassembly {
+		return nil, false, fmt.Errorf("eap: TTLS: заявленная длина %d превышает лимит сборки %d",
+			t.DeclaredLen, MaxReassembly)
+	}
 	if t.Start() {
 		a.buf = nil
 		a.declared = t.DeclaredLen
@@ -136,6 +149,11 @@ func (a *Assembler) Add(t *TTLS) ([]byte, bool, error) {
 		a.declared = t.DeclaredLen
 	}
 	a.buf = append(a.buf, t.Payload...)
+	if len(a.buf) > MaxReassembly {
+		// DoS-гейт: бесконечная цепочка M-фрагментов — сброс сборщика.
+		a.buf, a.declared, a.inFlight = nil, -1, false
+		return nil, false, fmt.Errorf("eap: TTLS: буфер сборки превысил %d байт", MaxReassembly)
+	}
 	if t.More() {
 		return nil, false, nil
 	}

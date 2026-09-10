@@ -170,6 +170,55 @@ func TestAssemblerErrors(t *testing.T) {
 	}
 }
 
+// TestAssemblerCap: буфер сборки входящих фрагментов ограничен
+// MaxReassembly (анти-DoS: цепочка с M и без конца не копит память).
+func TestAssemblerCap(t *testing.T) {
+	// Заявленная длина сверх капа — отказ сразу, до копирования.
+	var asm Assembler
+	if _, _, err := asm.Add(&TTLS{
+		Flags: TTLSFlagStart | TTLSFlagLength | TTLSFlagMore,
+		DeclaredLen: MaxReassembly + 1, Payload: make([]byte, 4),
+	}); err == nil {
+		t.Fatal("заявленная длина сверх MaxReassembly не поймана")
+	}
+
+	// Бесконечная цепочка M-фрагментов: после превышения капа — ошибка и
+	// сброс сборщика (InFlight=false), сессию прибьёт вызывающий код.
+	var asm2 Assembler
+	chunk := make([]byte, MaxFragment)
+	_, _, err := asm2.Add(&TTLS{Flags: TTLSFlagStart | TTLSFlagLength | TTLSFlagMore,
+		DeclaredLen: -1, Payload: chunk})
+	if err != nil {
+		t.Fatalf("стартовый фрагмент: %v", err)
+	}
+	for i := 0; i < MaxReassembly/MaxFragment+2; i++ {
+		_, _, err = asm2.Add(&TTLS{Flags: TTLSFlagMore, Payload: chunk})
+		if err != nil {
+			break
+		}
+	}
+	if err == nil {
+		t.Fatal("цепочка фрагментов сверх MaxReassembly не поймана")
+	}
+	if asm2.InFlight() {
+		t.Fatal("после ошибки сборщик должен сброситься (InFlight=false)")
+	}
+
+	// Легитимное сообщение ровно по краю капа собирается без ошибки.
+	var asm3 Assembler
+	frag1 := make([]byte, MaxReassembly-MaxFragment)
+	msg := append([]byte(nil), frag1...)
+	msg = append(msg, make([]byte, MaxFragment)...)
+	if _, _, err := asm3.Add(&TTLS{Flags: TTLSFlagStart | TTLSFlagLength | TTLSFlagMore,
+		DeclaredLen: len(msg), Payload: frag1}); err != nil {
+		t.Fatalf("первый фрагмент: %v", err)
+	}
+	full, done, err := asm3.Add(&TTLS{Flags: 0, Payload: msg[len(frag1):]})
+	if err != nil || !done || len(full) != MaxReassembly {
+		t.Fatalf("сообщение на границе капа: len=%d done=%v err=%v", len(full), done, err)
+	}
+}
+
 func TestAVPRoundtrip(t *testing.T) {
 	// Чужие AVP вперемешку с User-Name/User-Password.
 	block := BuildAVP(79, []byte("charge-uri\x00http://x")) // EAP-URI-Id? нет — просто неизвестный

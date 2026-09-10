@@ -553,6 +553,63 @@ func TestEAPPEAPFullExchange(t *testing.T) {
 	waitAudit(t, ctx, st, user.Username, "radius_eap", "ok")
 }
 
+// TestEAPPEAPTOTPReplay: код TOTP в PEAP одноразовый — как в PAP-пути.
+// Первый вход «пароль+код» — Accept (окно потреблено CAS-ом
+// TOTPSetTimestep); повтор ТОГО ЖЕ кода в том же окне — MS-CHAPv2 сойдётся,
+// но CAS проиграет — Reject с причиной totp_replay в аудите.
+func TestEAPPEAPTOTPReplay(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+
+	core := newCore(st, set, box, nil, nil)
+	srv := New(core, st, set)
+	srvCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	authAddr, _ := startServers(t, srvCtx, srv)
+	secret := []byte(set.Get().RadiusSecret)
+
+	if err := srv.EnsureEAPCert(ctx); err != nil {
+		t.Fatalf("EnsureEAPCert: %v", err)
+	}
+
+	user := mkUser(t, ctx, st, "peaptotp", func(u *store.User) {
+		u.PasswordEnc = box.EncryptAAD(u.Username, []byte(testPassword))
+	})
+	totpSecret := enrollEAPTOTP(t, ctx, st, box, user)
+	code, err := totp.GenerateCode(totpSecret, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateCode: %v", err)
+	}
+
+	// Первый вход: пароль+код — Accept, окно TOTP потрачено.
+	supp := newPEAPSupplicant(t, authAddr, secret)
+	resp := supp.authenticate(user.Username, testPassword+code)
+	if resp.Code != radius.CodeAccessAccept {
+		t.Fatalf("первый вход: код %v, хочу Access-Accept", resp.Code)
+	}
+
+	// Replay того же кода (то же 30-секундное окно) — Reject.
+	supp2 := newPEAPSupplicant(t, authAddr, secret)
+	resp2 := supp2.authenticate(user.Username, testPassword+code)
+	if resp2.Code != radius.CodeAccessReject {
+		t.Fatalf("replay того же TOTP-кода: код %v, хочу Access-Reject", resp2.Code)
+	}
+
+	// Аудит фиксирует причину отказа.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		events, aerr := st.AuditList(ctx, store.AuditFilter{Username: user.Username, Event: "radius_auth"})
+		if aerr == nil && len(events) > 0 && events[0].Detail["reason"] == "totp_replay" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("radius_auth reason=totp_replay не найден: rows=%d err=%v detail=%v",
+				len(events), aerr, events)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // peapSupplicant — клиент PEAPv0 + MS-CHAPv2.
 type peapSupplicant struct {
 	t       *testing.T
@@ -791,6 +848,18 @@ func (s *peapSupplicant) authenticate(username, password string) *radius.Packet 
 				innerACK := []byte{byte(eap.TypeMSCHAPv2)}
 				if _, err := s.tlsConn.Write(innerACK); err != nil {
 					s.t.Fatalf("tlsConn.Write innerACK: %v", err)
+				}
+				out := s.conn.takeOutput()
+				pkt := eap.BuildPEAP(eap.CodeResponse, s.eapReqID, 0, -1, out)
+				s.lastRespEAP = pkt
+				resp = s.request(pkt)
+
+			case eap.MSCHAPv2OpFailure:
+				// Внутренний отказ (неверный пароль/код): ACK-аем Failure
+				// ([MS-CHAPv2]), сервер отвечает внешним EAP-Failure.
+				failACK := []byte{byte(eap.TypeMSCHAPv2), eap.MSCHAPv2OpFailure, innerReq.Data[2]}
+				if _, err := s.tlsConn.Write(failACK); err != nil {
+					s.t.Fatalf("tlsConn.Write failACK: %v", err)
 				}
 				out := s.conn.takeOutput()
 				pkt := eap.BuildPEAP(eap.CodeResponse, s.eapReqID, 0, -1, out)

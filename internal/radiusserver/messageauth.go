@@ -28,9 +28,11 @@ func hasMessageAuthenticator(p *radius.Packet) bool {
 
 // verifyMessageAuthenticator проверяет Message-Authenticator запроса
 // (RFC 3579 §3.2): HMAC-MD5 секрета по всему пакету с обнулённым значением
-// атрибута. Запрос без Message-Authenticator считается корректным — обычная
-// Библиотека MD5-проверку Access-Request не делает; реальный fallback:
-// неверный секрет даёт мусор при расшифровке PAP и пароль не сойдётся.
+// атрибута. Сам факт «запрос без Message-Authenticator» этой функцией НЕ
+// карается (она отвечает только за корректность присутствующего атрибута);
+// обязанность запроса нести MA — политика вызывающего кода (см.
+// Server.checkRequestMessageAuthenticator: RFC 3579 §3.2 MUST для
+// EAP-Message и radius.require_message_authenticator для остальных).
 func verifyMessageAuthenticator(p *radius.Packet) bool {
 	attr, ok := p.Attributes.Lookup(messageAuthenticatorType)
 	if !ok {
@@ -58,16 +60,16 @@ func verifyMessageAuthenticator(p *radius.Packet) bool {
 }
 
 // signResponseMessageAuthenticator добавляет в ответ вычисленный
-// Message-Authenticator, если запрос его содержал (RFC 3579: ответ на пакет
-// с Message-Authenticator обязан включать корректный Message-Authenticator,
-// иначе строгие NAS, патченые от BlastRADIUS, отбросят ответ). Значение —
-// HMAC-MD5 секрета по ответу с нулевым атрибутом и Request Authenticator в
-// поле Authenticator (r.Response копирует его из запроса, MarshalBinary
-// записывает как есть). Вызывается последним, после всех reply-атрибутов.
+// Message-Authenticator ВСЕГДА, независимо от наличия атрибута в запросе:
+// это митигация downgrade BlastRADIUS (CVE-2024-3596) — даже если запрос
+// MITM подменил и убрал Message-Authenticator, ответ, подписанный MA,
+// строгими NAS принимается, а нестификованный перехваченный ответ (без MA)
+// патченые NAS отбрасывают. Значение — HMAC-MD5 секрета по ответу с нулевым
+// атрибутом и Request Authenticator в поле Authenticator (r.Response копирует
+// его из запроса, MarshalBinary записывает как есть). Вызывается последним,
+// после всех reply-атрибутов.
 func signResponseMessageAuthenticator(req, resp *radius.Packet) {
-	if !hasMessageAuthenticator(req) {
-		return
-	}
+	_ = req
 	forceResponseMessageAuthenticator(resp)
 }
 

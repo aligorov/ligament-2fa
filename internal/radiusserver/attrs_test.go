@@ -213,12 +213,18 @@ func TestMessageAuthenticatorResponseSignature(t *testing.T) {
 		t.Fatal("поле Authenticator ответа должно остаться Request Authenticator до Encode")
 	}
 
-	// Запрос без M-A → ответ без M-A.
+	// BlastRADIUS-mitigation: ответ подписывается ДАЖЕ на запрос без
+	// Message-Authenticator — строгие NAS требуют MA всегда, а сигнал
+	// «сервер умеет MA» не даёт себя даунгрейднуть MITM-ом, убравшим
+	// атрибут из запроса.
 	plainReq := radius.New(radius.CodeAccessRequest, []byte("topsecret"))
 	plainResp := plainReq.Response(radius.CodeAccessReject)
 	signResponseMessageAuthenticator(plainReq, plainResp)
-	if hasMessageAuthenticator(plainResp) {
-		t.Fatal("ответ на запрос без Message-Authenticator не должен содержать атрибут")
+	if !hasMessageAuthenticator(plainResp) {
+		t.Fatal("ответ на запрос без Message-Authenticator обязан быть подписан (mitigation downgrade)")
+	}
+	if !verifyResponseMA(plainReq, plainResp) {
+		t.Fatal("подпись ответа на запрос без M-A не проходит проверку RFC 3579")
 	}
 }
 

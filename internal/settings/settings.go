@@ -123,6 +123,12 @@ type T struct {
 		ReplyAttributes map[string]string
 		VLANProfiles    map[string]string
 		NASInventory    map[string]string
+		// RequireMessageAuthenticator — Access-Request без валидного
+		// Message-Authenticator отбрасывается (RFC 3579, BlastRADIUS).
+		RequireMessageAuthenticator bool
+		// RateLimitPPS — per-NAS token bucket пакетов в секунду перед
+		// любой тяжёлой работой (argon2/БД); 0 — выключено.
+		RateLimitPPS int
 		// EAPCert — сырой JSON ключа radius.eap_cert: self-signed пара
 		// сертификата EAP-TTLS {"cert_pem","key_pem"}. Генерируется
 		// RADIUS-сервером при первом старте; nil — ещё не создан.
@@ -346,6 +352,8 @@ func defaultT() *T {
 	t.Radius.MaxFailPerUser = 10
 	t.Radius.FailWindow = 5 * time.Minute
 	t.Radius.PushWait = 20 * time.Second
+	t.Radius.RequireMessageAuthenticator = true
+	t.Radius.RateLimitPPS = 20
 	t.Radius.ReplyAttributes = map[string]string{}
 	t.Radius.VLANProfiles = map[string]string{}
 	t.Radius.NASInventory = map[string]string{}
@@ -710,6 +718,8 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Radius.MaxFailPerUser = parseInt(raw["radius.max_fail_per_user"], def.Radius.MaxFailPerUser)
 	t.Radius.FailWindow = parseDur(raw["radius.fail_window"], def.Radius.FailWindow)
 	t.Radius.PushWait = parseDur(raw["radius.push_wait"], def.Radius.PushWait)
+	t.Radius.RequireMessageAuthenticator = parseBool(raw["radius.require_message_authenticator"], def.Radius.RequireMessageAuthenticator)
+	t.Radius.RateLimitPPS = parseInt(raw["radius.rate_limit_pps"], def.Radius.RateLimitPPS)
 	t.Radius.ReplyAttributes = parseStringMap(raw["radius.reply_attributes"], def.Radius.ReplyAttributes)
 	t.Radius.VLANProfiles = parseStringMap(raw["radius.vlan_profiles"], def.Radius.VLANProfiles)
 	t.Radius.NASInventory = parseStringMap(raw["radius.nas_inventory"], def.Radius.NASInventory)
@@ -1192,16 +1202,18 @@ func (t *T) masked() map[string]any {
 		"master_key":  secretMask(t.MasterKeyB64),
 		"admin_token": secretMask(t.AdminToken),
 		"radius": map[string]any{
-			"secret":            secretMask(t.RadiusSecret),
-			"code_lengths":      t.Radius.CodeLengths,
-			"max_fail_per_user": t.Radius.MaxFailPerUser,
-			"fail_window":       t.Radius.FailWindow.String(),
-			"push_wait":         t.Radius.PushWait.String(),
-			"reply_attributes":  t.Radius.ReplyAttributes,
-			"vlan_profiles":     t.Radius.VLANProfiles,
-			"nas_inventory":     t.Radius.NASInventory,
-			"cert_file":         t.Radius.CertFile,
-			"key_file":          secretMask(t.Radius.KeyFile),
+			"secret":                         secretMask(t.RadiusSecret),
+			"code_lengths":                   t.Radius.CodeLengths,
+			"max_fail_per_user":              t.Radius.MaxFailPerUser,
+			"fail_window":                    t.Radius.FailWindow.String(),
+			"push_wait":                      t.Radius.PushWait.String(),
+			"require_message_authenticator":  t.Radius.RequireMessageAuthenticator,
+			"rate_limit_pps":                 t.Radius.RateLimitPPS,
+			"reply_attributes":               t.Radius.ReplyAttributes,
+			"vlan_profiles":                  t.Radius.VLANProfiles,
+			"nas_inventory":                  t.Radius.NASInventory,
+			"cert_file":                      t.Radius.CertFile,
+			"key_file":                       secretMask(t.Radius.KeyFile),
 			// eap_cert — секрет: приватный ключ TLS-сертификата.
 			"eap_cert": maskForValue(t.Radius.EAPCert),
 		},

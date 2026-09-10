@@ -31,6 +31,8 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,6 +55,7 @@ import (
 
 	"layeh.com/radius"
 	"layeh.com/radius/rfc2865"
+	"layeh.com/radius/rfc2869"
 
 	"github.com/aligorov/twofa/internal/api"
 	"github.com/aligorov/twofa/internal/auth"
@@ -445,11 +448,14 @@ func freshTOTPCode(t *testing.T, ctx context.Context, e *env, username string) s
 }
 
 // radiusExchange — Access-Request (PAP) с таймаутом сверх radius.push_wait.
+// Message-Authenticator подписывается всегда: сервер требует валидный M-A
+// (radius.require_message_authenticator, RFC 3579 / BlastRADIUS).
 func radiusExchange(t *testing.T, addr string, secret []byte, username, password string) *radius.Packet {
 	t.Helper()
 	p := radius.New(radius.CodeAccessRequest, secret)
 	rfc2865.UserName_SetString(p, username)
 	rfc2865.UserPassword_SetString(p, password)
+	signRequestMA(t, p, secret)
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	resp, err := radius.Exchange(ctx, p, addr)
@@ -457,6 +463,30 @@ func radiusExchange(t *testing.T, addr string, secret []byte, username, password
 		t.Fatalf("radius.Exchange(%s): %v", username, err)
 	}
 	return resp
+}
+
+// signRequestMA — клиентская подпись Message-Authenticator (RFC 3579 §3.2).
+func signRequestMA(t *testing.T, p *radius.Packet, secret []byte) {
+	t.Helper()
+	if err := rfc2869.MessageAuthenticator_Set(p, make([]byte, 16)); err != nil {
+		t.Fatalf("MessageAuthenticator_Set: %v", err)
+	}
+	for _, avp := range p.Attributes {
+		if avp.Type != rfc2869.MessageAuthenticator_Type {
+			continue
+		}
+		orig := avp.Attribute
+		avp.Attribute = make(radius.Attribute, 16)
+		b, err := p.MarshalBinary()
+		if err != nil {
+			t.Fatalf("MarshalBinary: %v", err)
+		}
+		avp.Attribute = orig
+		mac := hmac.New(md5.New, secret)
+		mac.Write(b)
+		copy(orig, mac.Sum(nil))
+		return
+	}
 }
 
 // ---- сценарий ----

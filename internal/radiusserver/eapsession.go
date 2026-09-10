@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -29,8 +30,16 @@ const (
 	eapSessionTTL = 90 * time.Second
 
 	// eapSessionCap — потолок одновременных сессий (анти-flood): при
-	// переполнении выметаются просроченные, затем самые старые.
+	// переполнении выметаются просроченные, затем простаивающие (см.
+	// create); активные handshake-ы не трогаются.
 	eapSessionCap = 1024
+
+	// eapEvictIdle — порог простоя для выметания при переполнении cap:
+	// сессия, к которой не обращались дольше этого, считается брошенной
+	// (реальный обмен укладывается в секунды). Активные handshake-ы
+	// (обращение свежее) НЕ выметаются — churn-DoS не должен рвать
+	// легитимные 802.1X; если простаивающих нет, новая сессия отклоняется.
+	eapEvictIdle = 30 * time.Second
 
 	// eapStepTimeout — потолок ожидания одного шага TLS-моста внутри
 	// обработки одного RADIUS-пакета.
@@ -231,10 +240,13 @@ type eapSession struct {
 // newEAPSession собирает сессию (stateKey = hex(raw)) и стартует TLS-воркер.
 func newEAPSession(raw []byte, stateKey string, cert *tls.Certificate, proto eapProtocol) *eapSession {
 	conn := newEAPConn()
-	// EAP-TTLS и PEAPv0 определены на TLS 1.0–1.2: 1.3 не используется.
+	// EAP-TTLS и PEAPv0 работают на TLS 1.2 (MaxVersion 1.3 не
+	// используется); MinVersion 1.2 отсекает RSA-CBC-наборы TLS 1.0/1.1
+	// без PFS (аудит АГЕНТ 5, P3) — современные суппликанты (iOS/Windows/
+	// Android/macOS, wpa_supplicant) умеют 1.2 давно.
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{*cert},
-		MinVersion:   tls.VersionTLS10,
+		MinVersion:   tls.VersionTLS12,
 		MaxVersion:   tls.VersionTLS12,
 	}
 	sess := &eapSession{
@@ -510,21 +522,32 @@ func (st *eapSessionStore) get(state string) *eapSession {
 
 // create делает новую сессию со свежим State (crypto/rand 16 байт),
 // заданным протоколом (PEAP или TTLS) и стартует TLS-воркер. При
-// переполнении капы выметаются просроченные, затем самые старые.
+// переполнении капы выметаются просроченные, затем простаивающие дольше
+// eapEvictIdle; если простаивающих нет (все активны) — новая сессия НЕ
+// создаётся (nil): churn-DoS не должен выметать живые handshake-ы.
 func (st *eapSessionStore) create(cert *tls.Certificate, proto eapProtocol) *eapSession {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.cleanupLocked()
-	for len(st.sessions) >= eapSessionCap {
-		var oldest string
-		var oldestT time.Time
+	if len(st.sessions) >= eapSessionCap {
+		cutoff := time.Now().Add(-eapEvictIdle)
+		var victim string
+		var victimT time.Time
 		for k, v := range st.sessions {
-			if oldest == "" || v.lastUsed.Before(oldestT) {
-				oldest, oldestT = k, v.lastUsed
+			if v.lastUsed.After(cutoff) {
+				continue // активная сессия — не трогаем
+			}
+			if victim == "" || v.lastUsed.Before(victimT) {
+				victim, victimT = k, v.lastUsed
 			}
 		}
-		st.sessions[oldest].conn.Close()
-		delete(st.sessions, oldest)
+		if victim == "" {
+			slog.Warn("radius: EAP: достигнут кап сессий и нет простаивающих — новая сессия отклонена",
+				"cap", eapSessionCap, "active", len(st.sessions))
+			return nil
+		}
+		st.sessions[victim].conn.Close()
+		delete(st.sessions, victim)
 	}
 	for {
 		b := make([]byte, 16)
