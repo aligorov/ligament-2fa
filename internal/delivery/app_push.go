@@ -265,6 +265,19 @@ func (h *AppHub) BroadcastSupportRequest(userIDs []uuid.UUID, session any) int {
 		"type":    "support_incoming_request",
 		"session": session,
 	}
+	if b, err := json.Marshal(session); err == nil {
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err == nil {
+			for k, v := range m {
+				if k != "type" {
+					payload[k] = v
+				}
+			}
+			if sid, ok := m["id"]; ok && payload["session_id"] == nil {
+				payload["session_id"] = sid
+			}
+		}
+	}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return 0

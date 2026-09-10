@@ -322,9 +322,13 @@ class ApiClient {
       headers: _headers(),
     );
     if (res.statusCode == 200) {
-      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-      final list = data['queue'] as List<dynamic>? ?? [];
-      return list.cast<Map<String, dynamic>>();
+      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+      if (decoded is List) {
+        return decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      } else if (decoded is Map) {
+        final list = (decoded['queue'] ?? decoded['sessions']) as List<dynamic>? ?? [];
+        return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      }
     }
     return [];
   }

@@ -979,7 +979,10 @@ func (a *AppAPI) handleSupportQueue(w http.ResponseWriter, r *http.Request) {
 	if sessions == nil {
 		sessions = []store.SupportSession{}
 	}
-	writeJSON(w, http.StatusOK, sessions)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"queue":    sessions,
+		"sessions": sessions,
+	})
 }
 
 // handleSupportConnect инициирует подключение инженера к сессии из приложения.

@@ -222,13 +222,23 @@ func (s *Store) SupportSessionList(ctx context.Context, f SupportFilter) ([]Supp
 		args = append(args, strings.ToLower(strings.TrimSpace(f.Category)))
 		argIdx++
 	} else if len(f.Categories) > 0 {
-		cats := make([]string, len(f.Categories))
-		for i, c := range f.Categories {
-			cats[i] = strings.ToLower(strings.TrimSpace(c))
+		hasAll := false
+		cats := make([]string, 0, len(f.Categories))
+		for _, c := range f.Categories {
+			clean := strings.ToLower(strings.TrimSpace(c))
+			if clean == "all" || clean == "*" {
+				hasAll = true
+				break
+			}
+			if clean != "" {
+				cats = append(cats, clean)
+			}
 		}
-		query += fmt.Sprintf(" AND LOWER(s.category) = ANY($%d)", argIdx)
-		args = append(args, cats)
-		argIdx++
+		if !hasAll && len(cats) > 0 {
+			query += fmt.Sprintf(" AND LOWER(s.category) = ANY($%d)", argIdx)
+			args = append(args, cats)
+			argIdx++
+		}
 	}
 	if f.ActiveOnly {
 		query += " AND s.status IN ('requested', 'connecting', 'authorizing', 'approved', 'active', 'transferred')"

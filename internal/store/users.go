@@ -343,8 +343,16 @@ func (s *Store) AllUsersBrief(ctx context.Context) ([]BriefUser, error) {
 
 // UserIDsBySupportRole возвращает список ID пользователей, у которых назначена данная роль поддержки или роль admin.
 func (s *Store) UserIDsBySupportRole(ctx context.Context, role string) ([]uuid.UUID, error) {
-	query := `SELECT id FROM users WHERE enabled = true AND (role = 'admin' OR $1 = ANY(support_roles))`
-	rows, err := s.Pool().Query(ctx, query, strings.ToLower(strings.TrimSpace(role)))
+	r := strings.ToLower(strings.TrimSpace(role))
+	query := `SELECT id FROM users 
+		WHERE enabled = true 
+		  AND (LOWER(role) = 'admin' 
+		       OR $1 = ANY(support_roles) 
+		       OR 'all' = ANY(support_roles) 
+		       OR EXISTS (
+		           SELECT 1 FROM unnest(support_roles) sr WHERE LOWER(sr) = $1 OR LOWER(sr) = 'all'
+		       ))`
+	rows, err := s.Pool().Query(ctx, query, r)
 	if err != nil {
 		return nil, fmt.Errorf("store: UserIDsBySupportRole: %w", err)
 	}

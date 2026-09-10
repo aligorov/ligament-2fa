@@ -72,3 +72,18 @@ func TestAppAuthMiddlewareMissingToken(t *testing.T) {
 		t.Fatalf("ожидался 401 при отсутствии токена, получен %d", rec.Code)
 	}
 }
+
+func TestAppSupportQueueUnauthorized(t *testing.T) {
+	api := NewAppAPI(nil, nil, nil, nil, nil, nil)
+	r := chi.NewRouter()
+	api.Register(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/app/support/queue", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("ожидался 401 при отсутствии токена, получен %d", rec.Code)
+	}
+}
+

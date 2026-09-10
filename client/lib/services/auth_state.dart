@@ -166,11 +166,15 @@ class AuthState extends ChangeNotifier {
     ws.onSupportIncoming = (msg) {
       if (isEngineer) {
         loadSupportQueue();
-        final clientName = msg['display_name'] ?? msg['employee_name'] ?? msg['username'] ?? 'Пользователь';
+        final session = (msg['session'] is Map) ? Map<String, dynamic>.from(msg['session'] as Map) : msg;
+        final clientName = session['display_name'] ?? session['employee_name'] ?? session['username'] ?? msg['display_name'] ?? 'Пользователь';
+        final category = session['category'] ?? msg['category'];
+        final problemSummary = session['problem_summary'] ?? msg['problem_summary'] ?? '';
+        final sessionId = session['id'] ?? session['session_id'] ?? msg['session_id'];
         alert.triggerAlert(
-          title: 'Новое SOS-обращение: ${msg['category'] == '1c' ? '1С' : 'IT'}',
-          body: '$clientName: ${msg['problem_summary'] ?? ''}',
-          challengeId: msg['session_id']?.toString(),
+          title: 'Новое SOS-обращение: ${category == '1c' ? '1С' : 'IT'}',
+          body: '$clientName: $problemSummary',
+          challengeId: sessionId?.toString(),
         );
       }
     };
