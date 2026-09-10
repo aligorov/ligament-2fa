@@ -1,7 +1,7 @@
 name: ligament_authenticator
 description: "Cross-platform enterprise 2FA client for Windows, iOS, and Android with GPO support, Number Matching, and Security Posture Telemetry."
 publish_to: 'none'
-version: 1.0.1+5
+version: 1.0.1+6
 
 environment:
   sdk: '>=3.2.0 <4.0.0'

@@ -498,8 +498,11 @@ class _HomeScreenState extends State<HomeScreen> {
               width: double.infinity,
               child: ElevatedButton.icon(
                 onPressed: _connectingToSession ? null : () => _connectAsOperator(auth, sess),
-                icon: const Icon(Icons.desktop_windows, size: 16),
-                label: const Text('Подключиться к экрану', style: TextStyle(fontWeight: FontWeight.bold)),
+                icon: Icon(fullControl ? Icons.sports_esports : Icons.desktop_windows, size: 18),
+                label: Text(
+                  fullControl ? '🎮 Подключиться и управлять' : '👁 Подключиться (просмотр)',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: is1C ? const Color(0xFFF59E0B) : const Color(0xFF0284C7),
                   foregroundColor: Colors.white,

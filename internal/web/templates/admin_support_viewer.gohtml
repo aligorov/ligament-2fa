@@ -1,104 +1,120 @@
-{{define "layout"}}{{template "layout_app" .}}{{end}}
-{{define "content"}}
-<div id="support-viewer" class="viewer-layout" data-session-id="{{.Session.ID}}" data-ws-endpoint="{{.WSEndpoint}}" data-transfer-token="{{.TransferToken}}" data-operator-name="{{.BaseData.Username}}">
-  <!-- Header Bar -->
-  <div class="card viewer-head">
-    <div class="viewer-user">
-      <a class="btn ghost sm" href="/admin/support">← В очередь</a>
-      <div>
-        <div class="support-title-row">
-          <strong class="viewer-user-name">{{if .Session.DisplayName}}{{.Session.DisplayName}}{{else}}{{.Session.Username}}{{end}}</strong>
-          {{if eq .Session.Category "1c"}}
-            <span class="badge warn">📊 1С-поддержка</span>
-          {{else}}
-            <span class="badge info">🖥 IT-поддержка</span>
-          {{end}}
-          <span id="session-status-badge" class="badge ok">{{.Session.Status}}</span>
-        </div>
-        <div class="viewer-user-meta">
-          <span>ПК: {{if .Session.DeviceName}}{{.Session.DeviceName}}{{else}}{{.Session.Platform}}{{end}}</span>
-          <span class="dot-sep">•</span>
-          <span>IP: {{.Session.LastIP}}</span>
-          <span class="dot-sep">•</span>
-          <span>Режим: <b id="viewer-access-mode">{{if eq .Session.AccessMode "full_control"}}Полное управление{{else}}Только просмотр{{end}}</b></span>
+{{define "layout"}}
+<div id="support-viewer" class="support-console-root" data-session-id="{{.Session.ID}}" data-ws-endpoint="{{.WSEndpoint}}" data-transfer-token="{{.TransferToken}}" data-operator-name="{{.BaseData.Username}}" data-access-mode="{{.Session.AccessMode}}">
+  <form id="support-csrf-form" style="display:none;">{{csrf .CSRF}}</form>
+  <!-- Slim Floating / Docked Top HUD Bar (44px) -->
+  <header class="support-console-hud" id="support-hud">
+    <!-- Left Section: Back, User Info, Problem Popover -->
+    <div class="hud-section hud-left">
+      <a class="hud-btn hud-btn-back" href="/admin/support" title="Вернуться к очереди SOS">
+        ← В очередь
+      </a>
+      <div class="hud-user-pill">
+        <span class="hud-user-name">{{if .Session.DisplayName}}{{.Session.DisplayName}}{{else}}{{.Session.Username}}{{end}}</span>
+        <span class="hud-badge {{if eq .Session.Category "1c"}}badge-1c{{else}}badge-it{{end}}">
+          {{if eq .Session.Category "1c"}}1С-поддержка{{else}}IT-поддержка{{end}}
+        </span>
+        <span id="session-status-badge" class="hud-status-badge">{{.Session.Status}}</span>
+      </div>
+      <div class="hud-popover-wrap">
+        <button type="button" class="hud-btn hud-btn-info" id="btn-problem-toggle" title="Показать суть проблемы">
+          ℹ️ Описание
+        </button>
+        <div class="hud-popover" id="hud-problem-popover">
+          <div class="hud-popover-title">Ошибка 1С при формировании отчета:</div>
+          <div class="hud-popover-text">"{{.Session.ProblemSummary}}"</div>
+          <div class="hud-popover-meta">ПК: {{if .Session.DeviceName}}{{.Session.DeviceName}}{{else}}{{.Session.Platform}}{{end}} ({{.Session.Platform}}) • IP: {{.Session.LastIP}}</div>
         </div>
       </div>
     </div>
 
-    <!-- Telemetry status indicator -->
-    <div id="viewer-telemetry-badges" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-      <span id="tel-cpu-badge" class="badge neutral" title="Загрузка CPU">⚡ CPU: --%</span>
-      <span id="tel-disk-badge" class="badge neutral" title="Дисковое пространство">💾 Диск: --</span>
-    </div>
-  </div>
+    <!-- Center Section: Screens, Scale, Hotkeys, Telemetry -->
+    <div class="hud-section hud-center">
+      <!-- Мониторы (динамические плашки) -->
+      <div id="viewer-screen-pills" class="hud-screen-pills">
+        <button type="button" class="hud-pill active" data-screen-id="default" title="Основной монитор">🖥 1</button>
+      </div>
+      <!-- Скрытый select для совместимости -->
+      <select id="viewer-screen-select" style="display: none;">
+        <option value="default">Основной монитор</option>
+      </select>
 
-  <!-- Remote Desktop Toolbar -->
-  <div class="card" style="padding: 10px 16px; display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; background: var(--surface);">
-    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-      <!-- Выбор монитора -->
-      <label style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; margin: 0;">
-        <span class="muted">🖥 Монитор:</span>
-        <select id="viewer-screen-select" class="select sm" style="width: auto; min-width: 150px;">
-          <option value="default">Основной монитор</option>
-        </select>
-      </label>
+      <div class="hud-divider"></div>
 
       <!-- Масштаб -->
-      <div style="display: flex; align-items: center; gap: 2px;">
-        <span class="muted" style="font-size: 0.85rem; margin-right: 4px;">🔍 Масштаб:</span>
-        <button id="btn-scale-fit" type="button" class="btn primary sm" style="padding: 3px 8px; font-size: 0.8rem;" title="Вписать в окно">Вписать</button>
-        <button id="btn-scale-orig" type="button" class="btn ghost sm" style="padding: 3px 8px; font-size: 0.8rem;" title="Оригинал 1:1">1:1</button>
-        <button id="btn-scale-in" type="button" class="btn ghost sm" style="padding: 3px 8px; font-size: 0.8rem;" title="Увеличить">+</button>
-        <button id="btn-scale-out" type="button" class="btn ghost sm" style="padding: 3px 8px; font-size: 0.8rem;" title="Уменьшить">-</button>
+      <div class="hud-btn-group">
+        <button id="btn-scale-fit" type="button" class="hud-btn active" title="Вписать экран в окно">⤢ Вписать</button>
+        <button id="btn-scale-orig" type="button" class="hud-btn" title="Оригинальный размер 1:1">1:1</button>
+        <button id="btn-scale-in" type="button" class="hud-btn hud-btn-icon" title="Увеличить">+</button>
+        <button id="btn-scale-out" type="button" class="hud-btn hud-btn-icon" title="Уменьшить">-</button>
       </div>
 
-      <!-- Горячие клавиши -->
-      <label style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; margin: 0;">
-        <select id="viewer-hotkey-select" class="select sm" style="width: auto;">
-          <option value="">⚡ Горячие клавиши...</option>
-          <option value="ctrl_alt_del">Ctrl + Alt + Del</option>
-          <option value="win_key">Win (Пуск)</option>
-          <option value="win_r">Win + R (Выполнить)</option>
-          <option value="win_d">Win + D (Рабочий стол)</option>
-          <option value="task_mgr">Ctrl + Shift + Esc (Диспетчер задач)</option>
+      <div class="hud-divider"></div>
+
+      <!-- Быстрые горячие клавиши -->
+      <div class="hud-btn-group">
+        <button type="button" class="hud-btn hud-hotkey-btn" data-hotkey="ctrl_alt_del" title="Ctrl + Alt + Del">🔒 Ctrl+Alt+Del</button>
+        <button type="button" class="hud-btn hud-hotkey-btn" data-hotkey="win_key" title="Клавиша Win">🪟 Win</button>
+        <button type="button" class="hud-btn hud-hotkey-btn" data-hotkey="win_r" title="Win + R (Выполнить)">Win+R</button>
+        <button type="button" class="hud-btn hud-hotkey-btn" data-hotkey="task_mgr" title="Диспетчер задач">⚡ Диспетчер</button>
+        <select id="viewer-hotkey-select" class="hud-select" title="Другие комбинации клавиш">
+          <option value="">▾ Еще...</option>
           <option value="alt_tab">Alt + Tab (Окна)</option>
-          <option value="alt_f4">Alt + F4 (Закрыть)</option>
+          <option value="win_d">Win + D (Рабочий стол)</option>
+          <option value="alt_f4">Alt + F4 (Закрыть окно)</option>
           <option value="esc">Esc</option>
         </select>
-      </label>
+      </div>
 
-      <!-- Блокировка ввода у пользователя -->
-      <button id="btn-block-input" type="button" class="btn secondary sm" title="Заблокировать локальную клавиатуру и мышь у клиента">
+      <div class="hud-divider"></div>
+
+      <!-- Блокировка ввода и буфер обмена -->
+      <button id="btn-block-input" type="button" class="hud-btn" title="Заблокировать локальную клавиатуру и мышь у клиента">
         🔒 Блок ввода клиента
       </button>
 
-      <!-- Буфер обмена -->
-      <button id="btn-clipboard-toggle" type="button" class="btn secondary sm" title="Синхронизация буфера обмена">
+      <button id="btn-clipboard-toggle" type="button" class="hud-btn" title="Синхронизация буфера обмена">
         📋 Буфер обмена
       </button>
+
+      <!-- Телеметрия ПК -->
+      <div class="hud-telemetry">
+        <span id="tel-cpu-badge" class="hud-tel-badge" title="Загрузка CPU">⚡ CPU: --%</span>
+        <span id="tel-disk-badge" class="hud-tel-badge" title="Дисковое пространство">💾 Диск: --</span>
+      </div>
     </div>
 
-    <div class="viewer-actions">
-      <button id="btn-toggle-control" class="btn secondary sm" data-action="toggle-control">
+    <!-- Right Section: Control Mode, Fullscreen, Transfer, End -->
+    <div class="hud-section hud-right">
+      <button id="btn-toggle-control" class="hud-btn hud-btn-control" data-action="toggle-control">
         🎮 Включить управление
       </button>
-      <button id="btn-transfer" class="btn info sm" data-action="open-transfer">
+
+      <button id="btn-fullscreen" class="hud-btn hud-btn-icon" title="На весь экран (F11)">
+        ⛶
+      </button>
+
+      <button id="btn-transfer" class="hud-btn" data-action="open-transfer" title="Переадресовать сессию коллеге">
         🔄 Переадресовать сессию
       </button>
-      <button id="btn-end-session" class="btn err sm" data-action="end-session">
+
+      <button id="btn-end-session" class="hud-btn hud-btn-danger" data-action="end-session" title="Завершить сеанс">
         ⏹ Завершить сеанс
       </button>
-    </div>
-  </div>
 
-  <!-- Clipboard Drawer -->
-  <div id="viewer-clipboard-drawer" class="card" style="display: none; padding: 14px 18px; background: var(--bg); border: 1px dashed var(--primary);">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-      <strong>📋 Синхронизация буфера обмена с удаленным ПК</strong>
-      <button type="button" class="btn ghost sm" id="btn-clipboard-close">✕</button>
+      <button id="btn-hud-pin" class="hud-btn hud-btn-icon hud-pin-btn" title="Закрепить/скрывать панель">
+        📌
+      </button>
     </div>
-    <div style="display: flex; gap: 8px; align-items: center;">
-      <input type="text" id="clipboard-send-text" class="input sm" placeholder="Введите текст для отправки в буфер обмена удаленного ПК..." style="flex: 1;">
+  </header>
+
+  <!-- Выпадающая панель буфера обмена -->
+  <div id="viewer-clipboard-drawer" class="hud-drawer">
+    <div class="hud-drawer-head">
+      <strong>📋 Синхронизация буфера обмена с удаленным ПК</strong>
+      <button type="button" class="hud-btn hud-btn-icon" id="btn-clipboard-close">✕</button>
+    </div>
+    <div class="hud-drawer-body">
+      <input type="text" id="clipboard-send-text" class="input sm" placeholder="Введите текст для отправки на ПК клиента..." style="flex: 1;">
       <button type="button" id="btn-clipboard-send" class="btn primary sm">Отправить в буфер клиента 📤</button>
       <button type="button" id="btn-clipboard-read" class="btn secondary sm">Прочитать с клиента 📥</button>
     </div>
@@ -107,45 +123,34 @@
     </div>
   </div>
 
-  <!-- Problem summary banner -->
-  <div class="card viewer-problem-banner">
-    <div class="viewer-problem-title">
-      Суть проблемы:
-    </div>
-    <div class="viewer-problem-text">
-      "{{.Session.ProblemSummary}}"
-    </div>
-  </div>
-
-  <!-- 2FA Number Match Notice -->
-  <div id="number-match-card" class="card number-match-card{{if and (eq .Session.Status "connecting") .Session.NumberMatch}} visible{{else}} hidden{{end}}">
-    <div class="number-match-title">
-      🔒 <strong>Безопасное Zero-Trust подключение</strong>
-    </div>
-    <p class="number-match-subtitle">
-      Сообщите сотруднику контрольное число для подтверждения на его экране:
-    </p>
-    <div id="number-match-digits" class="number-match-digits">
-      {{if .Session.NumberMatch}}{{.Session.NumberMatch}}{{else}}--{{end}}
-    </div>
-    <div class="number-match-hint">
-      Ожидание выбора верного числа в приложении Ligament 2FA...
+  <!-- Центрированный оверлей Zero-Trust 2FA (для connecting) -->
+  <div id="number-match-card" class="number-match-overlay{{if and (eq .Session.Status "connecting") .Session.NumberMatch}} visible{{else}} hidden{{end}}">
+    <div class="number-match-dialog">
+      <div class="number-match-icon">🔒</div>
+      <h3 class="number-match-title">Безопасное Zero-Trust подключение</h3>
+      <p class="number-match-subtitle">Сообщите сотруднику контрольное число для подтверждения на его экране:</p>
+      <div id="number-match-digits" class="number-match-digits">
+        {{if .Session.NumberMatch}}{{.Session.NumberMatch}}{{else}}--{{end}}
+      </div>
+      <div class="number-match-hint">
+        <span class="pulse-dot"></span> Ожидание выбора верного числа в приложении Ligament 2FA...
+      </div>
     </div>
   </div>
 
-  <!-- Remote Screen Viewport -->
-  <div class="card viewer-screen-card" id="viewer-screen-container" tabindex="0" style="outline: none;">
-    <video id="remote-video" class="viewer-video" autoplay playsinline muted></video>
-    
+  <!-- Основной холст удаленного рабочего стола (100% пространства) -->
+  <main class="support-screen-canvas" id="viewer-screen-container" tabindex="0">
+    <video id="remote-video" class="support-remote-video" autoplay playsinline muted></video>
+
     <div id="video-placeholder" class="viewer-placeholder">
       <div class="viewer-spinner"></div>
-      <div id="connection-status-text" class="viewer-status-text">Инициализация соединения...</div>
-      <p class="viewer-status-sub">Устанавливается защищенный P2P WebRTC канал</p>
+      <div id="connection-status-text" class="viewer-status-text">Инициализация защищенного WebRTC соединения...</div>
+      <p class="viewer-status-sub">P2P канал с шифрованием DTLS/SRTP</p>
     </div>
-  </div>
+  </main>
 </div>
 
-<!-- Modal: Transfer Session -->
+<!-- Модальное окно: Переадресация сессии -->
 <div id="transfer-modal" class="viewer-modal-backdrop">
   <div class="card viewer-modal-card">
     <h3>🔄 Переадресация удаленного доступа</h3>

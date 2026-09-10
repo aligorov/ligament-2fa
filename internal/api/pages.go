@@ -3063,21 +3063,37 @@ func (p *PagesAPI) handleAdminSupport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	supSettings := p.m.Get().Support
+
+	allSessions, _ := p.st.SupportSessionList(r.Context(), store.SupportFilter{})
+	waitingCount := 0
+	connectingCount := 0
 	activeCount := 0
-	for _, s := range sessions {
-		if s.Status == "requested" || s.Status == "connecting" || s.Status == "active" || s.Status == "transferred" {
+	closedCount := 0
+	for _, s := range allSessions {
+		switch s.Status {
+		case "requested":
+			waitingCount++
+		case "connecting":
+			connectingCount++
+		case "active", "transferred":
 			activeCount++
+		case "completed", "ended_by_admin", "rejected", "cancelled":
+			closedCount++
 		}
 	}
 
 	data := web.AdminSupportData{
-		BaseData:       p.baseData(r, "Удаленная помощь (SOS)", "admin-support"),
-		CategoryFilter: category,
-		StatusFilter:   status,
-		Sessions:       sessions,
-		Categories:     supSettings.Categories,
-		Settings:       supSettings,
-		ActiveCount:    activeCount,
+		BaseData:        p.baseData(r, "Удаленная помощь (SOS)", "admin-support"),
+		CategoryFilter:  category,
+		StatusFilter:    status,
+		Sessions:        sessions,
+		Categories:      supSettings.Categories,
+		Settings:        supSettings,
+		ActiveCount:     activeCount,
+		WaitingCount:    waitingCount,
+		ConnectingCount: connectingCount,
+		ClosedCount:     closedCount,
+		TotalCount:      len(allSessions),
 	}
 	p.render(w, http.StatusOK, "admin_support", data)
 }

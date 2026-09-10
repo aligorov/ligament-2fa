@@ -15,6 +15,11 @@ enum OperatorZoomMode {
   zoomIn,
 }
 
+enum MouseClickMode {
+  left,
+  right,
+}
+
 class SupportOperatorScreen extends StatefulWidget {
   final String sessionId;
   final String? numberMatch;
@@ -41,6 +46,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   String _connectionStatus = 'Инициализация...';
   bool _isConnected = false;
   bool _isInputBlocked = false;
+  bool _isControlEnabled = true;
+  MouseClickMode _mouseClickMode = MouseClickMode.left;
 
   List<Map<String, dynamic>> _screens = [];
   String? _selectedScreenId;
@@ -59,6 +66,8 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   @override
   void initState() {
     super.initState();
+    final accessMode = widget.sessionData['access_mode']?.toString();
+    _isControlEnabled = accessMode != 'view_only';
     _initRendererAndWebRTC();
   }
 
@@ -304,6 +313,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendPointerEvent(String action, PointerEvent event, int button) {
+    if (!_isControlEnabled) return;
     final renderBox = _videoKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
 
@@ -311,8 +321,35 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     final size = renderBox.size;
     if (size.width <= 0 || size.height <= 0) return;
 
-    final normX = (localPos.dx / size.width).clamp(0.0, 1.0);
-    final normY = (localPos.dy / size.height).clamp(0.0, 1.0);
+    double videoW = _remoteRenderer.videoWidth.toDouble();
+    double videoH = _remoteRenderer.videoHeight.toDouble();
+    if (videoW <= 0) videoW = 1920;
+    if (videoH <= 0) videoH = 1080;
+
+    final containerW = size.width;
+    final containerH = size.height;
+    final videoAspect = videoW / videoH;
+    final containerAspect = containerW / containerH;
+
+    double renderW = containerW;
+    double renderH = containerH;
+    double offsetX = 0.0;
+    double offsetY = 0.0;
+
+    if (_zoomMode == OperatorZoomMode.fit) {
+      if (containerAspect > videoAspect) {
+        // Черные полосы по бокам (left / right)
+        renderW = containerH * videoAspect;
+        offsetX = (containerW - renderW) / 2.0;
+      } else {
+        // Черные полосы сверху / снизу (top / bottom)
+        renderH = containerW / videoAspect;
+        offsetY = (containerH - renderH) / 2.0;
+      }
+    }
+
+    final normX = ((localPos.dx - offsetX) / renderW).clamp(0.0, 1.0);
+    final normY = ((localPos.dy - offsetY) / renderH).clamp(0.0, 1.0);
 
     if (action == 'move') {
       _sendDataMessage({'type': 'mouse_move', 'x': normX, 'y': normY});
@@ -324,6 +361,126 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         'y': normY,
       });
     }
+  }
+
+  void _showTextInputDialog() {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Row(
+          children: [
+            Icon(Icons.keyboard_alt_outlined, color: Color(0xFF38BDF8), size: 20),
+            SizedBox(width: 8),
+            Text('Ввод текста на ПК клиента', style: TextStyle(color: Colors.white, fontSize: 16)),
+          ],
+        ),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Введите текст или команду для отправки на компьютер клиента:',
+                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'Текст, пароль или команда...',
+                  hintStyle: const TextStyle(color: Color(0xFF64748B)),
+                  filled: true,
+                  fillColor: const Color(0xFF0F172A),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                onSubmitted: (val) {
+                  Navigator.of(ctx).pop();
+                  _sendTextToRemote(val);
+                },
+              ),
+              const SizedBox(height: 14),
+              const Text('Быстрые клавиши:', style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11)),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  _buildQuickKeyButton('Enter ↵', () => _sendSpecialKey('Enter')),
+                  _buildQuickKeyButton('Tab ⇥', () => _sendSpecialKey('Tab')),
+                  _buildQuickKeyButton('Esc ⎋', () => _sendSpecialKey('Escape')),
+                  _buildQuickKeyButton('Backspace ⌫', () => _sendSpecialKey('Backspace')),
+                  _buildQuickKeyButton('Win+R ⊞', () => _sendHotkey('win_r')),
+                  _buildQuickKeyButton('Ctrl+Alt+Del 🔒', () => _sendHotkey('ctrl_alt_del')),
+                  _buildQuickKeyButton('Диспетчер ⚡', () => _sendHotkey('task_mgr')),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Отмена'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              final text = controller.text;
+              Navigator.of(ctx).pop();
+              _sendTextToRemote(text);
+            },
+            icon: const Icon(Icons.send, size: 14),
+            label: const Text('Отправить'),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0284C7)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuickKeyButton(String label, VoidCallback onPressed) {
+    return InkWell(
+      onTap: onPressed,
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F172A),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: const Color(0xFF475569)),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold),
+        ),
+      ),
+    );
+  }
+
+  void _sendSpecialKey(String key) {
+    _sendDataMessage({'type': 'key_down', 'key': key});
+    _sendDataMessage({'type': 'key_up', 'key': key});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Отправлена клавиша $key'),
+        duration: const Duration(milliseconds: 600),
+      ),
+    );
+  }
+
+  void _sendTextToRemote(String text) {
+    if (text.isEmpty) return;
+    _sendDataMessage({'type': 'clipboard_set', 'text': text});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Текст отправлен в буфер ПК клиента: "$text"'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   void _toggleBlockInput() {
@@ -710,6 +867,53 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       ],
                     ),
 
+                  // Переключатель управления / просмотра
+                  IconButton(
+                    icon: Icon(
+                      _isControlEnabled ? Icons.sports_esports : Icons.visibility,
+                      color: _isControlEnabled ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
+                      size: 20,
+                    ),
+                    tooltip: _isControlEnabled ? 'Управление активно (кликните для паузы)' : 'Только просмотр (кликните для включения)',
+                    onPressed: () {
+                      setState(() => _isControlEnabled = !_isControlEnabled);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(_isControlEnabled ? '🎮 Управление включено' : '👁 Режим только просмотра'),
+                          duration: const Duration(milliseconds: 800),
+                        ),
+                      );
+                    },
+                  ),
+
+                  // Ввод текста на удаленный ПК
+                  IconButton(
+                    icon: const Icon(Icons.keyboard_alt_outlined, color: Color(0xFF38BDF8), size: 20),
+                    tooltip: 'Ввести текст/команду на ПК клиента',
+                    onPressed: _showTextInputDialog,
+                  ),
+
+                  // Режим клика мыши (ЛКМ / ПКМ)
+                  IconButton(
+                    icon: Icon(
+                      _mouseClickMode == MouseClickMode.right ? Icons.mouse : Icons.touch_app,
+                      color: _mouseClickMode == MouseClickMode.right ? const Color(0xFFF59E0B) : const Color(0xFF94A3B8),
+                      size: 18,
+                    ),
+                    tooltip: _mouseClickMode == MouseClickMode.right ? 'Режим: Правый клик (ПКМ)' : 'Режим: Левый клик (ЛКМ)',
+                    onPressed: () {
+                      setState(() {
+                        _mouseClickMode = _mouseClickMode == MouseClickMode.left ? MouseClickMode.right : MouseClickMode.left;
+                      });
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(_mouseClickMode == MouseClickMode.right ? '🖱 Следующий клик: Правая кнопка (ПКМ)' : '🖱 Режим: Левая кнопка (ЛКМ)'),
+                          duration: const Duration(milliseconds: 800),
+                        ),
+                      );
+                    },
+                  ),
+
                   // Кнопка завершения сеанса
                   ElevatedButton.icon(
                     onPressed: _endSession,
@@ -776,32 +980,44 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               focusNode: _keyboardFocus,
               autofocus: true,
               onKeyEvent: (node, event) {
-                if (!_isConnected) return KeyEventResult.ignored;
+                if (!_isConnected || !_isControlEnabled) return KeyEventResult.ignored;
                 final isDown = event is KeyDownEvent || event is KeyRepeatEvent;
                 final keyLabel = event.logicalKey.keyLabel;
                 _sendDataMessage({
                   'type': isDown ? 'key_down' : 'key_up',
                   'key': keyLabel,
-                  'keyCode': event.physicalKey.usbHidUsage,
                 });
                 return KeyEventResult.handled;
               },
               child: Listener(
+                onPointerHover: (ev) => _sendPointerEvent('move', ev, 0),
                 onPointerMove: (ev) => _sendPointerEvent('move', ev, 0),
                 onPointerDown: (ev) {
+                  if (!_isControlEnabled) return;
                   _keyboardFocus.requestFocus();
                   int btn = 0;
-                  if (ev.buttons == 2) btn = 2; // Right
-                  if (ev.buttons == 4) btn = 1; // Middle
+                  if (ev.buttons == 2 || _mouseClickMode == MouseClickMode.right) {
+                    btn = 2; // Right
+                  } else if (ev.buttons == 4) {
+                    btn = 1; // Middle
+                  }
                   _sendPointerEvent('mouse_down', ev, btn);
                 },
                 onPointerUp: (ev) {
+                  if (!_isControlEnabled) return;
                   int btn = 0;
-                  if (ev.buttons == 2) btn = 2;
-                  if (ev.buttons == 4) btn = 1;
+                  if (ev.buttons == 2 || _mouseClickMode == MouseClickMode.right) {
+                    btn = 2;
+                  } else if (ev.buttons == 4) {
+                    btn = 1;
+                  }
                   _sendPointerEvent('mouse_up', ev, btn);
+                  if (_mouseClickMode == MouseClickMode.right) {
+                    setState(() => _mouseClickMode = MouseClickMode.left);
+                  }
                 },
                 onPointerSignal: (signal) {
+                  if (!_isControlEnabled) return;
                   if (signal is PointerScrollEvent) {
                     _sendDataMessage({'type': 'wheel', 'deltaY': signal.scrollDelta.dy});
                   }
@@ -837,6 +1053,65 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
               ),
             ),
           ),
+
+          // Быстрая панель действий для оператора (скролл, режим клика, ввод текста)
+          if (_isConnected)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1E293B),
+                border: Border(top: BorderSide(color: Color(0xFF334155))),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    TextButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _mouseClickMode = _mouseClickMode == MouseClickMode.left ? MouseClickMode.right : MouseClickMode.left;
+                        });
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(_mouseClickMode == MouseClickMode.right ? '🖱 Следующий клик: Правая кнопка (ПКМ)' : '🖱 Режим: Обычный клик (ЛКМ)'),
+                            duration: const Duration(milliseconds: 700),
+                          ),
+                        );
+                      },
+                      icon: Icon(
+                        _mouseClickMode == MouseClickMode.right ? Icons.mouse : Icons.touch_app,
+                        size: 16,
+                        color: _mouseClickMode == MouseClickMode.right ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8),
+                      ),
+                      label: Text(
+                        _mouseClickMode == MouseClickMode.right ? 'Режим: ПКМ' : 'Режим: ЛКМ',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: _mouseClickMode == MouseClickMode.right ? const Color(0xFFF59E0B) : Colors.white,
+                        ),
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: () => _sendDataMessage({'type': 'wheel', 'deltaY': -180}),
+                      icon: const Icon(Icons.arrow_upward, size: 14, color: Color(0xFF38BDF8)),
+                      label: const Text('Скролл ▲', style: TextStyle(fontSize: 12, color: Colors.white)),
+                    ),
+                    TextButton.icon(
+                      onPressed: () => _sendDataMessage({'type': 'wheel', 'deltaY': 180}),
+                      icon: const Icon(Icons.arrow_downward, size: 14, color: Color(0xFF38BDF8)),
+                      label: const Text('Скролл ▼', style: TextStyle(fontSize: 12, color: Colors.white)),
+                    ),
+                    TextButton.icon(
+                      onPressed: _showTextInputDialog,
+                      icon: const Icon(Icons.keyboard_alt_outlined, size: 16, color: Color(0xFF38BDF8)),
+                      label: const Text('Ввод текста', style: TextStyle(fontSize: 12, color: Colors.white)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );

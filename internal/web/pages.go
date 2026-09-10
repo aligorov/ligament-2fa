@@ -248,12 +248,16 @@ type AdminChallengesData struct {
 // AdminSupportData — /admin/support: панель заявок на удаленную помощь (SOS).
 type AdminSupportData struct {
 	BaseData
-	CategoryFilter string
-	StatusFilter   string
-	Sessions       []store.SupportSession
-	Categories     []settings.SupportCategory
-	Settings       settings.SupportSettings
-	ActiveCount    int
+	CategoryFilter  string
+	StatusFilter    string
+	Sessions        []store.SupportSession
+	Categories      []settings.SupportCategory
+	Settings        settings.SupportSettings
+	ActiveCount     int
+	WaitingCount    int
+	ConnectingCount int
+	ClosedCount     int
+	TotalCount      int
 }
 
 // AdminSupportViewerData — /admin/support/{id}/viewer: веб-консоль удаленного доступа к ПК.
