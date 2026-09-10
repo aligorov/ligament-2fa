@@ -177,7 +177,7 @@ func (s *Store) SupportSessionActiveByUser(ctx context.Context, userID uuid.UUID
 		FROM support_sessions s
 		LEFT JOIN users u ON u.id = s.user_id
 		LEFT JOIN app_devices d ON d.id = s.device_id
-		WHERE s.user_id = $1 AND s.status IN ('requested', 'authorizing', 'approved', 'active', 'transferred')
+		WHERE s.user_id = $1 AND s.status IN ('requested', 'connecting', 'authorizing', 'approved', 'active', 'transferred')
 		ORDER BY s.created_at DESC LIMIT 1`, userID)
 
 	var ss SupportSession

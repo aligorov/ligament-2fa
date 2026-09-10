@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +9,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../services/auth_state.dart';
 import '../services/support_service.dart';
@@ -72,9 +75,34 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   final List<SupportChatMessage> _chatMessages = [];
   int _unreadChatCount = 0;
 
+  Size? _previousWindowSize;
+
+  Future<void> _expandWindowForOperator() async {
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        _previousWindowSize = await windowManager.getSize();
+        await windowManager.setMinimumSize(const Size(800, 600));
+        await windowManager.setSize(const Size(1280, 820));
+        await windowManager.setResizable(true);
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _restoreWindowSize() async {
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      try {
+        if (_previousWindowSize != null) {
+          await windowManager.setMinimumSize(const Size(380, 600));
+          await windowManager.setSize(_previousWindowSize!);
+        }
+      } catch (_) {}
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    _expandWindowForOperator();
     _isChatOnly = widget.isChatOnly;
     _currentNumberMatch = widget.numberMatch;
     final accessMode = widget.sessionData['access_mode']?.toString();
@@ -859,7 +887,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
     try {
       _remoteRenderer.srcObject = null;
-      _remoteRenderer.dispose();
     } catch (_) {}
 
     final dc = _dataChannel;
@@ -881,7 +908,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         pc.onTrack = null;
         pc.onDataChannel = null;
         pc.close();
-        pc.dispose();
       } catch (_) {}
     }
 
@@ -889,6 +915,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
       _wsChannel?.sink.close();
       _wsChannel = null;
     } catch (_) {}
+
+    // Отложенное освобождение нативных DirectX текстур рендерера и WebRTC соединения,
+    // чтобы анимация закрытия окна (route pop) завершилась абсолютно гладко без зависаний
+    Future.delayed(const Duration(milliseconds: 350), () {
+      try {
+        _remoteRenderer.dispose();
+      } catch (_) {}
+      try {
+        pc?.dispose();
+      } catch (_) {}
+    });
   }
 
   void _endSession() async {
@@ -931,6 +968,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   @override
   void dispose() {
     _keyboardFocus.dispose();
+    _restoreWindowSize();
     _cleanupResources();
     super.dispose();
   }

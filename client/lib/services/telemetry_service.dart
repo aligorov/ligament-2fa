@@ -1,6 +1,7 @@
 import 'dart:async';
-import 'dart:convert';
+import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:local_auth/local_auth.dart';
 import 'gpo_service.dart';
@@ -13,6 +14,67 @@ class TelemetryService {
 
   Timer? _timer;
   int _consecutiveHighCpuCount = 0;
+
+  // Кеширование профиля безопасности
+  Map<String, dynamic>? _cachedPosture;
+  DateTime? _lastPostureCheck;
+
+  // Windows Kernel32 FFI дескрипторы для мгновенного сбора метрик без запуска процессов
+  ffi.DynamicLibrary? _kernel32Lib;
+  int Function(
+    ffi.Pointer<Utf16> lpDirectoryName,
+    ffi.Pointer<ffi.Uint64> lpFreeBytesAvailableToCaller,
+    ffi.Pointer<ffi.Uint64> lpTotalNumberOfBytes,
+    ffi.Pointer<ffi.Uint64> lpTotalNumberOfFreeBytes,
+  )? _winGetDiskFreeSpaceExW;
+
+  int Function(
+    ffi.Pointer<ffi.Uint64> lpIdleTime,
+    ffi.Pointer<ffi.Uint64> lpKernelTime,
+    ffi.Pointer<ffi.Uint64> lpUserTime,
+  )? _winGetSystemTimes;
+
+  int _winPrevIdleTime = 0;
+  int _winPrevKernelTime = 0;
+  int _winPrevUserTime = 0;
+
+  TelemetryService() {
+    _initWinKernel32();
+  }
+
+  void _initWinKernel32() {
+    if (kIsWeb || !Platform.isWindows) return;
+    try {
+      _kernel32Lib = ffi.DynamicLibrary.open('kernel32.dll');
+      _winGetDiskFreeSpaceExW = _kernel32Lib!.lookupFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<Utf16>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+          ),
+          int Function(
+            ffi.Pointer<Utf16>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+          )>('GetDiskFreeSpaceExW');
+
+      _winGetSystemTimes = _kernel32Lib!.lookupFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+          ),
+          int Function(
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+          )>('GetSystemTimes');
+    } catch (e) {
+      debugPrint('telemetry_service: ошибка загрузки kernel32.dll: $e');
+    }
+  }
 
   /// Запуск периодического сбора и отправки снимка телеметрии
   void startReporting(ApiClient api) {
@@ -30,10 +92,27 @@ class TelemetryService {
   }
 
   /// Сбор текущего профиля безопасности устройства и телеметрии ресурсов
-  Future<Map<String, dynamic>> collectPosture() async {
+  Future<Map<String, dynamic>> collectPosture({bool forceRefresh = false}) async {
+    final now = DateTime.now();
+    // Кешируем тяжелые системные проверки безопасности (BitLocker, Defender, Firewall) на 5 минут
+    if (!forceRefresh &&
+        _cachedPosture != null &&
+        _lastPostureCheck != null &&
+        now.difference(_lastPostureCheck!).inMinutes < 5) {
+      final posture = Map<String, dynamic>.from(_cachedPosture!);
+      posture['timestamp'] = now.toUtc().toIso8601String();
+      if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+        final disk = await collectDiskMetrics();
+        posture.addAll(disk);
+        final cpu = await collectCpuMetrics();
+        posture.addAll(cpu);
+      }
+      return posture;
+    }
+
     final posture = <String, dynamic>{
       'platform': _platformName(),
-      'timestamp': DateTime.now().toUtc().toIso8601String(),
+      'timestamp': now.toUtc().toIso8601String(),
     };
 
     // 1. Биометрия
@@ -114,6 +193,8 @@ class TelemetryService {
     }
 
     posture['is_compliant'] = compliant;
+    _cachedPosture = Map<String, dynamic>.from(posture);
+    _lastPostureCheck = now;
     return posture;
   }
 
@@ -133,7 +214,7 @@ class TelemetryService {
     }
   }
 
-  /// Сбор метрик дискового пространства
+  /// Сбор метрик дискового пространства (Win32 FFI без накладных расходов)
   Future<Map<String, dynamic>> collectDiskMetrics() async {
     final metrics = <String, dynamic>{
       'disk_percent': 0,
@@ -145,7 +226,10 @@ class TelemetryService {
 
     try {
       if (Platform.isMacOS || Platform.isLinux) {
-        final res = await Process.run('df', ['-k', '/']);
+        final res = await Process.run('df', ['-k', '/']).timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => ProcessResult(0, -1, '', 'timeout'),
+        );
         if (res.exitCode == 0) {
           final lines = res.stdout.toString().trim().split('\n');
           if (lines.length >= 2) {
@@ -168,28 +252,34 @@ class TelemetryService {
           }
         }
       } else if (Platform.isWindows) {
-        final res = await Process.run('powershell', [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          'Get-CimInstance Win32_LogicalDisk -Filter "DeviceID=\'C:\'" | Select-Object Size,FreeSpace | ConvertTo-Json',
-        ]);
-        if (res.exitCode == 0) {
-          final json = jsonDecode(res.stdout.toString());
-          final sizeBytes = (json['Size'] as num?)?.toDouble() ?? 0;
-          final freeBytes = (json['FreeSpace'] as num?)?.toDouble() ?? 0;
+        if (_winGetDiskFreeSpaceExW != null) {
+          final dirPtr = 'C:\\'.toNativeUtf16();
+          final freeCallerPtr = calloc<ffi.Uint64>();
+          final totalBytesPtr = calloc<ffi.Uint64>();
+          final totalFreeBytesPtr = calloc<ffi.Uint64>();
+          try {
+            final ok = _winGetDiskFreeSpaceExW!(dirPtr, freeCallerPtr, totalBytesPtr, totalFreeBytesPtr);
+            if (ok != 0) {
+              final total = totalBytesPtr.value;
+              final free = freeCallerPtr.value;
+              if (total > 0) {
+                final totalGb = (total / (1024 * 1024 * 1024)).round();
+                final freeGb = (free / (1024 * 1024 * 1024)).round();
+                final usedGb = totalGb - freeGb;
+                final usedPercent = (usedGb / totalGb * 100).round();
 
-          if (sizeBytes > 0) {
-            final totalGb = (sizeBytes / (1024 * 1024 * 1024)).round();
-            final freeGb = (freeBytes / (1024 * 1024 * 1024)).round();
-            final usedGb = totalGb - freeGb;
-            final usedPercent = (usedGb / totalGb * 100).round();
-
-            metrics['disk_percent'] = usedPercent;
-            metrics['disk_free_gb'] = freeGb;
-            metrics['disk_total_gb'] = totalGb;
-            metrics['disk_details'] = '$freeGb ГБ свободно из $totalGb ГБ ($usedPercent% занято)';
-            metrics['disk_warning'] = usedPercent >= 90 || freeGb < 10;
+                metrics['disk_percent'] = usedPercent;
+                metrics['disk_free_gb'] = freeGb;
+                metrics['disk_total_gb'] = totalGb;
+                metrics['disk_details'] = '$freeGb ГБ свободно из $totalGb ГБ ($usedPercent% занято)';
+                metrics['disk_warning'] = usedPercent >= 90 || freeGb < 10;
+              }
+            }
+          } finally {
+            calloc.free(dirPtr);
+            calloc.free(freeCallerPtr);
+            calloc.free(totalBytesPtr);
+            calloc.free(totalFreeBytesPtr);
           }
         }
       }
@@ -200,7 +290,7 @@ class TelemetryService {
     return metrics;
   }
 
-  /// Сбор метрик процессора (CPU)
+  /// Сбор метрик процессора (CPU) через GetSystemTimes без запуска дочерних процессов
   Future<Map<String, dynamic>> collectCpuMetrics() async {
     final metrics = <String, dynamic>{
       'cpu_percent': 0,
@@ -210,7 +300,10 @@ class TelemetryService {
 
     try {
       if (Platform.isMacOS) {
-        final res = await Process.run('top', ['-l', '1', '-n', '0']);
+        final res = await Process.run('top', ['-l', '1', '-n', '0']).timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => ProcessResult(0, -1, '', 'timeout'),
+        );
         if (res.exitCode == 0) {
           final out = res.stdout.toString();
           final match = RegExp(r'CPU usage:\s+([0-9.]+)%\s+user,\s+([0-9.]+)%\s+sys,\s+([0-9.]+)%\s+idle').firstMatch(out);
@@ -221,18 +314,45 @@ class TelemetryService {
           }
         }
       } else if (Platform.isWindows) {
-        final res = await Process.run('powershell', [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          'Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object -ExpandProperty Average',
-        ]);
-        if (res.exitCode == 0) {
-          final load = int.tryParse(res.stdout.toString().trim()) ?? 0;
-          metrics['cpu_percent'] = load.clamp(0, 100);
+        if (_winGetSystemTimes != null) {
+          final idleTimePtr = calloc<ffi.Uint64>();
+          final kernelTimePtr = calloc<ffi.Uint64>();
+          final userTimePtr = calloc<ffi.Uint64>();
+          try {
+            final ok = _winGetSystemTimes!(idleTimePtr, kernelTimePtr, userTimePtr);
+            if (ok != 0) {
+              final idle = idleTimePtr.value;
+              final kernel = kernelTimePtr.value;
+              final user = userTimePtr.value;
+
+              if (_winPrevIdleTime != 0 && _winPrevKernelTime != 0 && _winPrevUserTime != 0) {
+                final idleDelta = idle - _winPrevIdleTime;
+                final kernelDelta = kernel - _winPrevKernelTime;
+                final userDelta = user - _winPrevUserTime;
+
+                // В Windows GetSystemTimes kernelTime уже включает в себя idleTime
+                final totalSys = kernelDelta + userDelta;
+                if (totalSys > 0) {
+                  final idleFraction = (idleDelta / totalSys).clamp(0.0, 1.0);
+                  final usage = ((1.0 - idleFraction) * 100).clamp(0.0, 100.0).round();
+                  metrics['cpu_percent'] = usage;
+                }
+              }
+              _winPrevIdleTime = idle;
+              _winPrevKernelTime = kernel;
+              _winPrevUserTime = user;
+            }
+          } finally {
+            calloc.free(idleTimePtr);
+            calloc.free(kernelTimePtr);
+            calloc.free(userTimePtr);
+          }
         }
       } else if (Platform.isLinux) {
-        final res = await Process.run('sh', ['-c', "grep 'cpu ' /proc/stat"]);
+        final res = await Process.run('sh', ['-c', "grep 'cpu ' /proc/stat"]).timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => ProcessResult(0, -1, '', 'timeout'),
+        );
         if (res.exitCode == 0) {
           metrics['cpu_percent'] = 15; // fallback
         }
@@ -266,7 +386,10 @@ class TelemetryService {
 
   Future<String> _checkWindowsBitLocker() async {
     try {
-      final result = await Process.run('manage-bde', ['-status', 'C:']);
+      final result = await Process.run('manage-bde', ['-status', 'C:']).timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => ProcessResult(0, -1, '', 'timeout'),
+      );
       if (result.stdout.toString().contains('Percentage Encrypted:   100%') ||
           result.stdout.toString().contains('Процент зашифрованного места: 100%') ||
           result.stdout.toString().contains('Protection On') ||
@@ -284,7 +407,10 @@ class TelemetryService {
         '-NonInteractive',
         '-Command',
         'Get-MpComputerStatus | Select-Object -ExpandProperty RealTimeProtectionEnabled'
-      ]);
+      ]).timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => ProcessResult(0, 0, 'True', ''),
+      );
       if (result.stdout.toString().trim() == 'True') {
         return 'active';
       }
@@ -294,7 +420,10 @@ class TelemetryService {
 
   Future<String> _checkWindowsFirewall() async {
     try {
-      final result = await Process.run('netsh', ['advfirewall', 'show', 'allprofiles']);
+      final result = await Process.run('netsh', ['advfirewall', 'show', 'allprofiles']).timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => ProcessResult(0, -1, '', 'timeout'),
+      );
       if (result.stdout.toString().contains('ON') || result.stdout.toString().contains('ВКЛ')) {
         return 'active';
       }

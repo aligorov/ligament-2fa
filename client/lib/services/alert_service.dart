@@ -47,6 +47,9 @@ class AlertService {
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
         // Показываем окно и разворачиваем, если было скрыто/минимизировано в трей
+        if (await windowManager.isMinimized()) {
+          await windowManager.restore();
+        }
         await windowManager.show();
         await windowManager.focus();
 

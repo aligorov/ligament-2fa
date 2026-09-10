@@ -558,7 +558,7 @@ class AuthState extends ChangeNotifier {
         final summary = sess['problem_summary']?.toString() ?? '';
         final accessMode = sess['access_mode']?.toString() ?? 'full_control';
 
-        if (status == 'connecting') {
+        if (status == 'connecting' || status == 'authorizing') {
           final numberMatch = sess['number_match']?.toString() ?? '';
           if (numberMatch.isNotEmpty && activeSupportPrompt == null && support.state != SupportSessionState.active) {
             activeSupportPrompt = {
@@ -595,7 +595,7 @@ class AuthState extends ChangeNotifier {
             );
             notifyListeners();
           }
-        } else if (status == 'ended' || status == 'rejected') {
+        } else if (status == 'ended' || status == 'rejected' || status == 'completed' || status == 'cancelled') {
           if (support.state != SupportSessionState.idle) {
             await support.stopScreenSharing();
           }
@@ -605,10 +605,13 @@ class AuthState extends ChangeNotifier {
           }
         }
       } else {
-        if (support.state == SupportSessionState.requested ||
-            support.state == SupportSessionState.authorizing) {
+        // Если активных сессий на сервере нет (при этом не сбрасываем модалку, пока пользователь в процессе ввода)
+        if (support.state == SupportSessionState.requested) {
           await support.stopScreenSharing();
           activeSupportPrompt = null;
+          notifyListeners();
+        } else if (support.state == SupportSessionState.authorizing && activeSupportPrompt == null) {
+          await support.stopScreenSharing();
           notifyListeners();
         }
       }

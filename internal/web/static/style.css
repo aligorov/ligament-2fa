@@ -1667,21 +1667,37 @@ button.select-chip.partial .ad-group-count {
 }
 
 .support-modal-window {
-  width: 880px;
-  max-width: 95vw;
-  max-height: 85vh;
+  width: 960px;
+  max-width: 96vw;
+  max-height: 90vh;
   display: flex;
   flex-direction: column;
-  padding: 24px;
+  padding: 0;
   overflow: hidden;
   box-sizing: border-box;
+  background: var(--surface, #1e293b);
+  border: 1px solid var(--line, #334155);
+  border-radius: 16px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.75);
 }
 
 .support-modal-scroll-body {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
-  padding-right: 4px;
+  padding: 20px 24px;
+}
+
+.support-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--line, #334155);
+  background: var(--surface, #1e293b);
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 /* ==========================================================================

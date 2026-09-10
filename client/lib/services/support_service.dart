@@ -710,14 +710,15 @@ class SupportService extends ChangeNotifier {
     _isStopping = true;
 
     try {
+      // 1. Немедленно освобождаем мышь и ввод пользователя
+      InputInjector.instance.setInputBlocked(false);
+
       _telemetryTimer?.cancel();
       _telemetryTimer = null;
-      InputInjector.instance.setInputBlocked(false);
 
       _pendingCandidates.clear();
 
-      // Немедленно переводим статус в idle, чтобы параллельные вызовы или события WebRTC
-      // не пытались повторно вызывать stopScreenSharing
+      // Немедленно переводим статус в idle, чтобы UI обновился мгновенно
       _state = SupportSessionState.idle;
       _activeSessionId = null;
       _category = null;
@@ -728,32 +729,18 @@ class SupportService extends ChangeNotifier {
       _api = null;
       notifyListeners();
 
-      // 1. Закрываем DataChannel и снимаем его обработчики
+      // 2. Закрываем DataChannel и снимаем его обработчики
       final dc = _dataChannel;
       _dataChannel = null;
       if (dc != null) {
         try {
           dc.onMessage = null;
           dc.onDataChannelState = null;
-          await dc.close().timeout(const Duration(milliseconds: 500), onTimeout: () => null);
+          await dc.close().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
         } catch (_) {}
       }
 
-      // 2. Останавливаем все медиатреки и поток экрана
-      final stream = _localStream;
-      _localStream = null;
-      if (stream != null) {
-        try {
-          for (final track in stream.getTracks()) {
-            try {
-              await track.stop().timeout(const Duration(milliseconds: 500), onTimeout: () => null);
-            } catch (_) {}
-          }
-          await stream.dispose().timeout(const Duration(milliseconds: 500), onTimeout: () => null);
-        } catch (_) {}
-      }
-
-      // 3. Отключаем слушатели peerConnection ПЕРЕД его закрытием
+      // 3. Закрываем PeerConnection ПЕРЕД остановкой треков, чтобы остановить RTP sender threads в libwebrtc
       final pc = _peerConnection;
       _peerConnection = null;
       if (pc != null) {
@@ -764,14 +751,37 @@ class SupportService extends ChangeNotifier {
           pc.onDataChannel = null;
           pc.onIceConnectionState = null;
           pc.onRenegotiationNeeded = null;
-          await pc.close().timeout(const Duration(milliseconds: 500), onTimeout: () => null);
-          await pc.dispose().timeout(const Duration(milliseconds: 500), onTimeout: () => null);
+          await pc.close().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
         } catch (_) {}
       }
+
+      // 4. Останавливаем все медиатреки захвата экрана
+      final stream = _localStream;
+      _localStream = null;
+      if (stream != null) {
+        try {
+          for (final track in stream.getTracks()) {
+            try {
+              await track.stop().timeout(const Duration(milliseconds: 300), onTimeout: () => null);
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+
+      // 5. Окончательное освобождение нативных дескрипторов производим в фоне (не блокируя UI)
+      Future.microtask(() async {
+        try {
+          await stream?.dispose();
+        } catch (_) {}
+        try {
+          await pc?.dispose();
+        } catch (_) {}
+      });
     } catch (e) {
       debugPrint('support_service: ошибка при stopScreenSharing: $e');
     } finally {
       _isStopping = false;
+      InputInjector.instance.setInputBlocked(false);
     }
   }
 
