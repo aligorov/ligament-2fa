@@ -97,7 +97,7 @@ HRESULT LigamentProvider::Advise(ICredentialProviderEvents* pcpe, UINT_PTR upAdv
     return S_OK;
 }
 
-HRESULT LigamentProvider::Unadvise() {
+HRESULT LigamentProvider::UnAdvise() {
     if (m_pEvents) {
         m_pEvents->Release();
         m_pEvents = nullptr;
@@ -179,6 +179,15 @@ HRESULT LigamentProvider::Filter(
         }
     }
     return S_OK;
+}
+
+HRESULT LigamentProvider::UpdateRemoteCredential(
+    const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcsIn,
+    CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcsOut)
+{
+    UNREFERENCED_PARAMETER(pcpcsIn);
+    UNREFERENCED_PARAMETER(pcpcsOut);
+    return E_NOTIMPL;
 }
 
 } // namespace ligament

@@ -38,7 +38,7 @@ public:
 
     // ICredentialProviderCredential
     IFACEMETHODIMP Advise(ICredentialProviderCredentialEvents* pcpce);
-    IFACEMETHODIMP Unadvise();
+    IFACEMETHODIMP UnAdvise();
     IFACEMETHODIMP SetSelected(BOOL* pbAutoLogon);
     IFACEMETHODIMP SetDeselected();
     IFACEMETHODIMP GetFieldState(DWORD dwFieldID, CREDENTIAL_PROVIDER_FIELD_STATE* pcpfs, CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE* pcpfis);

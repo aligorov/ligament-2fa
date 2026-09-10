@@ -76,7 +76,7 @@ HRESULT LigamentCredential::Advise(ICredentialProviderCredentialEvents* pcpce) {
     return S_OK;
 }
 
-HRESULT LigamentCredential::Unadvise() {
+HRESULT LigamentCredential::UnAdvise() {
     if (m_pEvents) {
         m_pEvents->Release();
         m_pEvents = nullptr;
