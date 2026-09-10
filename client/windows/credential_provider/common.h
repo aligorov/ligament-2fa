@@ -36,6 +36,7 @@ struct Config {
     bool fido2Enabled = true;
     int pushTimeoutSec = 45;
     bool failClose = true;
+    bool allowSelfSigned = false;
     std::vector<std::wstring> bypassAccounts;
 
     static Config LoadFromRegistry() {
@@ -70,6 +71,9 @@ struct Config {
             }
             if (RegQueryValueExW(hKey, L"FailClose", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
                 cfg.failClose = (dwVal != 0);
+            }
+            if (RegQueryValueExW(hKey, L"AllowSelfSigned", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
+                cfg.allowSelfSigned = (dwVal != 0);
             }
 
             // Bypass accounts (comma separated)
@@ -171,6 +175,41 @@ inline std::vector<unsigned char> Base64UrlDecode(const std::string& in) {
         }
     }
     return out;
+}
+
+inline std::string ExtractJsonString(const std::string& json, const std::string& key) {
+    std::string needle = "\"" + key + "\"";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) return "";
+
+    pos = json.find(':', pos + needle.length());
+    if (pos == std::string::npos) return "";
+
+    pos = json.find('\"', pos + 1);
+    if (pos == std::string::npos) return "";
+
+    size_t end = json.find('\"', pos + 1);
+    if (end == std::string::npos) return "";
+
+    return json.substr(pos + 1, end - pos - 1);
+}
+
+inline bool ExtractJsonBool(const std::string& json, const std::string& key) {
+    std::string needle = "\"" + key + "\"";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) return false;
+
+    pos = json.find(':', pos + needle.length());
+    if (pos == std::string::npos) return false;
+
+    size_t truePos = json.find("true", pos);
+    size_t falsePos = json.find("false", pos);
+    size_t commaPos = json.find_first_of(",}\n", pos);
+
+    if (truePos != std::string::npos && (commaPos == std::string::npos || truePos < commaPos)) {
+        return true;
+    }
+    return false;
 }
 
 } // namespace ligament

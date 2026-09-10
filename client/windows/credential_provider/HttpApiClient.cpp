@@ -3,44 +3,9 @@
 
 namespace ligament {
 
-// Simple JSON extraction helper
-static std::string ExtractJsonString(const std::string& json, const std::string& key) {
-    std::string needle = "\"" + key + "\"";
-    size_t pos = json.find(needle);
-    if (pos == std::string::npos) return "";
 
-    pos = json.find(':', pos + needle.length());
-    if (pos == std::string::npos) return "";
-
-    pos = json.find('\"', pos + 1);
-    if (pos == std::string::npos) return "";
-
-    size_t end = json.find('\"', pos + 1);
-    if (end == std::string::npos) return "";
-
-    return json.substr(pos + 1, end - pos - 1);
-}
-
-static bool ExtractJsonBool(const std::string& json, const std::string& key) {
-    std::string needle = "\"" + key + "\"";
-    size_t pos = json.find(needle);
-    if (pos == std::string::npos) return false;
-
-    pos = json.find(':', pos + needle.length());
-    if (pos == std::string::npos) return false;
-
-    size_t truePos = json.find("true", pos);
-    size_t falsePos = json.find("false", pos);
-    size_t commaPos = json.find_first_of(",}\n", pos);
-
-    if (truePos != std::string::npos && (commaPos == std::string::npos || truePos < commaPos)) {
-        return true;
-    }
-    return false;
-}
-
-HttpApiClient::HttpApiClient(const std::wstring& serverUrl)
-    : m_serverUrl(serverUrl) {
+HttpApiClient::HttpApiClient(const std::wstring& serverUrl, bool allowSelfSigned)
+    : m_serverUrl(serverUrl), m_allowSelfSigned(allowSelfSigned) {
     ParseUrl(serverUrl);
     m_hSession = WinHttpOpen(
         L"Ligament-2FA-CredentialProvider/1.0",
@@ -114,6 +79,14 @@ bool HttpApiClient::SendRequest(
     if (!hRequest) {
         WinHttpCloseHandle(hConnect);
         return false;
+    }
+
+    if (m_isHttps && m_allowSelfSigned) {
+        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                           SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
     }
 
     // Set Content-Type: application/json

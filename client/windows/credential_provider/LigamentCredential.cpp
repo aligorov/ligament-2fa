@@ -7,13 +7,13 @@ namespace ligament {
 static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[] = {
     { FID_LOGO, CPFT_TILE_IMAGE, L"Логотип", CPFG_CREDENTIAL_PROVIDER_LOGO },
     { FID_LARGE_TEXT, CPFT_LARGE_TEXT, L"Ligament 2FA", CPFG_CREDENTIAL_PROVIDER_LABEL },
-    { FID_USERNAME, CPFT_EDIT_TEXT, L"Имя пользователя", CPFG_LOGON_USERNAME },
-    { FID_PASSWORD, CPFT_PASSWORD_TEXT, L"Пароль", CPFG_LOGON_PASSWORD },
-    { FID_SUBMIT, CPFT_SUBMIT_BUTTON, L"Войти", CPFG_SUBMIT_BUTTON },
-    { FID_STATUS_TEXT, CPFT_SMALL_TEXT, L"Статус", CPFG_SM_STATUS },
-    { FID_FIDO2_BTN, CPFT_COMMAND_LINK, L"Войти с помощью ключа (FIDO2 / YubiKey)", CPFG_USER_FIDO2 },
-    { FID_OTP_CODE, CPFT_EDIT_TEXT, L"Код подтверждения (TOTP / YubiKey OTP)", CPFG_USER_OTP },
-    { FID_SWITCH_FACTOR_BTN, CPFT_COMMAND_LINK, L"Выбрать другой способ входа (Push / Код / Ключ)", CPFG_SWITCH_FACTOR },
+    { FID_USERNAME, CPFT_EDIT_TEXT, L"Имя пользователя", GUID_NULL },
+    { FID_PASSWORD, CPFT_PASSWORD_TEXT, L"Пароль", GUID_NULL },
+    { FID_SUBMIT, CPFT_SUBMIT_BUTTON, L"Войти", GUID_NULL },
+    { FID_STATUS_TEXT, CPFT_SMALL_TEXT, L"Статус", GUID_NULL },
+    { FID_FIDO2_BTN, CPFT_COMMAND_LINK, L"Войти с помощью ключа (FIDO2 / YubiKey)", GUID_NULL },
+    { FID_OTP_CODE, CPFT_EDIT_TEXT, L"Код подтверждения (TOTP / YubiKey OTP)", GUID_NULL },
+    { FID_SWITCH_FACTOR_BTN, CPFT_COMMAND_LINK, L"Выбрать другой способ входа (Push / Код / Ключ)", GUID_NULL },
 };
 
 LigamentCredential::LigamentCredential() {
@@ -27,12 +27,16 @@ LigamentCredential::~LigamentCredential() {
         CloseHandle(m_hPollThread);
         m_hPollThread = nullptr;
     }
+    if (!m_password.empty()) {
+        SecureZeroMemory(&m_password[0], m_password.size() * sizeof(wchar_t));
+        m_password.clear();
+    }
 }
 
 void LigamentCredential::Initialize(const Config& cfg, bool isRemote) {
     m_config = cfg;
     m_isRemoteSession = isRemote;
-    m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl);
+    m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned);
     m_webAuthn = std::make_unique<WebAuthnClient>();
 
     if (cfg.fido2Enabled && m_webAuthn->IsAvailable()) {
@@ -104,18 +108,18 @@ HRESULT LigamentCredential::GetFieldState(
     case FID_SUBMIT:
     case FID_STATUS_TEXT:
     case FID_SWITCH_FACTOR_BTN:
-        *pcpfs = CPFS_DISPLAYED;
+        *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
         if (dwFieldID == FID_USERNAME || dwFieldID == FID_PASSWORD) {
             *pcpfis = CPFIS_FOCUSED;
         }
         break;
 
     case FID_FIDO2_BTN:
-        *pcpfs = (m_currentMode == MODE_FIDO2) ? CPFS_DISPLAYED : CPFS_HIDDEN;
+        *pcpfs = (m_currentMode == MODE_FIDO2) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         break;
 
     case FID_OTP_CODE:
-        *pcpfs = (m_currentMode == MODE_OTP) ? CPFS_DISPLAYED : CPFS_HIDDEN;
+        *pcpfs = (m_currentMode == MODE_OTP) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         break;
 
     default:
@@ -235,7 +239,7 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
     CREDENTIAL_PROVIDER_FIELD_STATE cpfs = CPFS_HIDDEN;
     CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE cpfis = CPFIS_NONE;
     GetFieldState(dwFieldID, &cpfs, &cpfis);
-    m_pEvents->SetFieldStatePair(this, dwFieldID, cpfs);
+    m_pEvents->SetFieldState(this, dwFieldID, cpfs);
     m_pEvents->SetFieldInteractiveState(this, dwFieldID, cpfis);
     if (dwFieldID == FID_STATUS_TEXT) {
         m_pEvents->SetFieldString(this, FID_STATUS_TEXT, m_statusText.c_str());
@@ -313,11 +317,8 @@ void LigamentCredential::TriggerFIDO2Auth() {
     std::string finishErr;
     if (m_apiClient->WebAuthnFinish(beginRes.handle, assertionJson, finishErr)) {
         m_authenticated = true;
-        m_statusText = L"Ключ успешно подтвержден!";
-        if (m_pEvents) {
-            NotifyFieldChanged(FID_STATUS_TEXT);
-            m_pEvents->OnCredentialsChanged(reinterpret_cast<UINT_PTR>(this));
-        }
+        m_statusText = L"Ключ успешно подтвержден! Нажмите 'Войти'";
+        NotifyFieldChanged(FID_STATUS_TEXT);
     } else {
         m_statusText = L"Ошибка валидации ключа: " + Utf8ToWide(finishErr);
         NotifyFieldChanged(FID_STATUS_TEXT);
@@ -341,10 +342,7 @@ void LigamentCredential::RunPushPolling(const std::wstring& challengeId) {
             if (status == L"approved") {
                 m_authenticated = true;
                 m_statusText = L"Вход подтвержден в Telegram!";
-                if (m_pEvents) {
-                    NotifyFieldChanged(FID_STATUS_TEXT);
-                    m_pEvents->OnCredentialsChanged(reinterpret_cast<UINT_PTR>(this));
-                }
+                NotifyFieldChanged(FID_STATUS_TEXT);
                 break;
             } else if (status == L"rejected") {
                 m_statusText = L"Вход отклонен пользователем в Telegram";
@@ -469,12 +467,53 @@ HRESULT LigamentCredential::ReportResult(
     PWSTR* ppszOptionalStatusText,
     CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon)
 {
+    *ppszOptionalStatusText = nullptr;
+    *pcpsiOptionalStatusIcon = CPSI_NONE;
+
+    if (!m_password.empty()) {
+        SecureZeroMemory(&m_password[0], m_password.size() * sizeof(wchar_t));
+        m_password.clear();
+    }
     return S_OK;
 }
 
 HRESULT LigamentCredential::GetUserSid(PWSTR* ppszSid) {
     *ppszSid = nullptr;
     return E_NOTIMPL;
+}
+
+#ifndef NEGOSSP_NAME_A
+#define NEGOSSP_NAME_A "Negotiate"
+#endif
+
+#ifndef MICROSOFT_KERBEROS_NAME_A
+#define MICROSOFT_KERBEROS_NAME_A "Kerberos"
+#endif
+
+static ULONG GetNegotiateAuthPackage() {
+    HANDLE hLsa = nullptr;
+    NTSTATUS status = LsaConnectUntrusted(&hLsa);
+    if (status != 0) {
+        return 0;
+    }
+
+    LSA_STRING pkgName;
+    pkgName.Buffer = const_cast<PCHAR>(NEGOSSP_NAME_A);
+    pkgName.Length = static_cast<USHORT>(strlen(NEGOSSP_NAME_A));
+    pkgName.MaximumLength = pkgName.Length + 1;
+
+    ULONG pkgId = 0;
+    status = LsaLookupAuthenticationPackage(hLsa, &pkgName, &pkgId);
+    if (status != 0) {
+        // Fallback to Kerberos
+        pkgName.Buffer = const_cast<PCHAR>(MICROSOFT_KERBEROS_NAME_A);
+        pkgName.Length = static_cast<USHORT>(strlen(MICROSOFT_KERBEROS_NAME_A));
+        pkgName.MaximumLength = pkgName.Length + 1;
+        status = LsaLookupAuthenticationPackage(hLsa, &pkgName, &pkgId);
+    }
+    LsaDeregisterLogonProcess(hLsa);
+
+    return (status == 0) ? pkgId : 0;
 }
 
 HRESULT LigamentCredential::KerbInteractiveLogonPack(
@@ -516,7 +555,7 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     CopyMemory(ptr, password.data(), passBytes);
 
     pcpcs->clsidCredentialProvider = CLSID_LigamentProvider;
-    pcpcs->ulAuthenticationPackage = 0; // Negotiate
+    pcpcs->ulAuthenticationPackage = GetNegotiateAuthPackage();
     pcpcs->cbSerialization = totalSize;
     pcpcs->rgbSerialization = buffer;
 

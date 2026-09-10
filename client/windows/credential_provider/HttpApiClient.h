@@ -17,7 +17,7 @@ struct WebAuthnBeginResult {
 
 class HttpApiClient {
 public:
-    HttpApiClient(const std::wstring& serverUrl);
+    HttpApiClient(const std::wstring& serverUrl, bool allowSelfSigned = false);
     ~HttpApiClient();
 
     // 1. Push authentication
@@ -36,6 +36,7 @@ private:
     std::wstring m_host;
     INTERNET_PORT m_port = INTERNET_DEFAULT_HTTPS_PORT;
     bool m_isHttps = true;
+    bool m_allowSelfSigned = false;
     HINTERNET m_hSession = nullptr;
 
     bool ParseUrl(const std::wstring& url);
