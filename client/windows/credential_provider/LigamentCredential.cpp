@@ -5,8 +5,8 @@ namespace ligament {
 
 // Field descriptors
 static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[] = {
-    { FID_LOGO, CPFT_TILE_IMAGE, L"Логотип", CPFG_CREDENTIAL_PROVIDER_LOGO },
-    { FID_LARGE_TEXT, CPFT_LARGE_TEXT, L"Ligament 2FA", CPFG_CREDENTIAL_PROVIDER_LABEL },
+    { FID_LOGO, CPFT_TILE_IMAGE, L"Логотип", GUID_NULL },
+    { FID_LARGE_TEXT, CPFT_LARGE_TEXT, L"Ligament 2FA", GUID_NULL },
     { FID_USERNAME, CPFT_EDIT_TEXT, L"Имя пользователя", GUID_NULL },
     { FID_PASSWORD, CPFT_PASSWORD_TEXT, L"Пароль", GUID_NULL },
     { FID_SUBMIT, CPFT_SUBMIT_BUTTON, L"Войти", GUID_NULL },

@@ -17,7 +17,7 @@ public:
     IFACEMETHODIMP_(ULONG) Release();
 
     // ICredentialProvider
-    IFACEMETHODIMP SetUsageScenario(CPUS_USAGE_SCENARIO cpus, DWORD dwFlags);
+    IFACEMETHODIMP SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, DWORD dwFlags);
     IFACEMETHODIMP SetSerialization(const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs);
     IFACEMETHODIMP Advise(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext);
     IFACEMETHODIMP Unadvise();
@@ -28,7 +28,7 @@ public:
 
     // ICredentialProviderFilter
     IFACEMETHODIMP Filter(
-        CPUS_USAGE_SCENARIO cpus,
+        CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
         DWORD dwFlags,
         GUID* rgclsidProviders,
         BOOL* rgbAllow,
@@ -39,7 +39,7 @@ private:
     LONG m_cRef = 1;
     ICredentialProviderEvents* m_pEvents = nullptr;
     UINT_PTR m_adviseContext = 0;
-    CPUS_USAGE_SCENARIO m_scenario = CPUS_INVALID;
+    CREDENTIAL_PROVIDER_USAGE_SCENARIO m_scenario = CPUS_INVALID;
     DWORD m_flags = 0;
 
     Config m_config;

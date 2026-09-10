@@ -59,7 +59,7 @@ ULONG LigamentProvider::Release() {
 }
 
 // ICredentialProvider
-HRESULT LigamentProvider::SetUsageScenario(CPUS_USAGE_SCENARIO cpus, DWORD dwFlags) {
+HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, DWORD dwFlags) {
     m_scenario = cpus;
     m_flags = dwFlags;
     m_isRemoteSession = CheckIfRemoteSession();
@@ -159,7 +159,7 @@ HRESULT LigamentProvider::GetCredentialAt(DWORD dwIndex, ICredentialProviderCred
 
 // ICredentialProviderFilter: Filter out default password provider during remote RDP when 2FA is active
 HRESULT LigamentProvider::Filter(
-    CPUS_USAGE_SCENARIO cpus,
+    CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     DWORD dwFlags,
     GUID* rgclsidProviders,
     BOOL* rgbAllow,
