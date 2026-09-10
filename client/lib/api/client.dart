@@ -295,7 +295,7 @@ class ApiClient {
     final res = await http.post(
       Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/end')),
       headers: _headers(),
-    );
+    ).timeout(const Duration(seconds: 4));
     if (res.statusCode != 200) {
       throw ApiException(res.statusCode, 'end_support_failed');
     }

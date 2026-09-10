@@ -64,10 +64,12 @@ class SupportService extends ChangeNotifier {
     required String sessionId,
     String? category,
     String? problemSummary,
+    String? accessMode,
   }) {
     _activeSessionId = sessionId;
     if (category != null) _category = category;
     if (problemSummary != null) _problemSummary = problemSummary;
+    if (accessMode != null && accessMode.isNotEmpty) _accessMode = accessMode;
     _state = SupportSessionState.authorizing;
     notifyListeners();
   }
@@ -232,6 +234,17 @@ class SupportService extends ChangeNotifier {
         } else {
           await _peerConnection!.addCandidate(candidate);
         }
+      } else if (payload['type'] == 'input_control' && payload['data'] is Map<String, dynamic>) {
+        _handleRemoteInput(payload['data'] as Map<String, dynamic>);
+      } else if (payload.containsKey('type') &&
+          (payload['type'].toString().startsWith('mouse_') ||
+              payload['type'].toString().startsWith('key_') ||
+              payload['type'] == 'wheel' ||
+              payload['type'] == 'hotkey' ||
+              payload['type'] == 'switch_screen' ||
+              payload['type'] == 'clipboard_get' ||
+              payload['type'] == 'clipboard_set')) {
+        _handleRemoteInput(payload);
       }
     } catch (e) {
       debugPrint('support_service: ошибка обработки входящего сигнала: $e');
@@ -355,12 +368,13 @@ class SupportService extends ChangeNotifier {
       return;
     }
 
-    if (_accessMode != 'full_control') {
-      // Режим «Только просмотр» блокирует все команды управления
+    if (_accessMode == 'view_only') {
+      // Режим «Только просмотр» блокирует команды управления
       return;
     }
 
     try {
+      debugPrint('support_service: remote input command: $type');
       switch (type) {
         case 'mouse_move':
           final x = (input['x'] as num?)?.toDouble() ?? 0.0;
@@ -370,6 +384,7 @@ class SupportService extends ChangeNotifier {
         case 'mouse_down':
         case 'mouse_up':
         case 'mouse_click':
+        case 'click':
           final btn = (input['button'] as num?)?.toInt() ?? 0;
           final x = (input['x'] as num?)?.toDouble() ?? 0.0;
           final y = (input['y'] as num?)?.toDouble() ?? 0.0;
@@ -377,6 +392,7 @@ class SupportService extends ChangeNotifier {
           InputInjector.instance.mouseAction(action: act, button: btn, normX: x, normY: y);
           break;
         case 'wheel':
+        case 'mouse_wheel':
           final dy = (input['deltaY'] as num?)?.toDouble() ?? 0.0;
           InputInjector.instance.mouseWheel(dy);
           break;
@@ -392,7 +408,7 @@ class SupportService extends ChangeNotifier {
           InputInjector.instance.setInputBlocked(blocked);
           break;
         case 'hotkey':
-          final hotkey = (input['action'] ?? input['hotkey'])?.toString() ?? '';
+          final hotkey = (input['action'] ?? input['hotkey'] ?? input['key'])?.toString() ?? '';
           if (hotkey.isNotEmpty) {
             await InputInjector.instance.triggerHotkey(hotkey);
           }
@@ -403,40 +419,76 @@ class SupportService extends ChangeNotifier {
     }
   }
 
-  /// Остановка трансляции экрана и освобождение ресурсов
-  void stopScreenSharing() {
-    _telemetryTimer?.cancel();
-    _telemetryTimer = null;
-    InputInjector.instance.setInputBlocked(false);
+  bool _isStopping = false;
 
-    _pendingCandidates.clear();
+  /// Остановка трансляции экрана и освобождение ресурсов (асинхронно, с защитой от рекурсии)
+  Future<void> stopScreenSharing() async {
+    if (_isStopping) return;
+    _isStopping = true;
+
     try {
-      _dataChannel?.close();
+      _telemetryTimer?.cancel();
+      _telemetryTimer = null;
+      InputInjector.instance.setInputBlocked(false);
+
+      _pendingCandidates.clear();
+
+      // Немедленно переводим статус в idle, чтобы параллельные вызовы или события WebRTC
+      // не пытались повторно вызывать stopScreenSharing
+      _state = SupportSessionState.idle;
+      _activeSessionId = null;
+      _category = null;
+      _problemSummary = null;
+      _screens.clear();
+      _currentScreenId = null;
+      _api = null;
+      notifyListeners();
+
+      // 1. Закрываем DataChannel и снимаем его обработчики
+      final dc = _dataChannel;
       _dataChannel = null;
-    } catch (_) {}
+      if (dc != null) {
+        try {
+          dc.onMessage = null;
+          dc.onDataChannelState = null;
+          await dc.close();
+        } catch (_) {}
+      }
 
-    try {
-      _localStream?.getTracks().forEach((track) {
-        track.stop();
-      });
-      _localStream?.dispose();
+      // 2. Останавливаем все медиатреки и поток экрана
+      final stream = _localStream;
       _localStream = null;
-    } catch (_) {}
+      if (stream != null) {
+        try {
+          for (final track in stream.getTracks()) {
+            try {
+              await track.stop();
+            } catch (_) {}
+          }
+          await stream.dispose();
+        } catch (_) {}
+      }
 
-    try {
-      _peerConnection?.close();
-      _peerConnection?.dispose();
+      // 3. Отключаем слушатели peerConnection ПЕРЕД его закрытием
+      final pc = _peerConnection;
       _peerConnection = null;
-    } catch (_) {}
-
-    _state = SupportSessionState.idle;
-    _activeSessionId = null;
-    _category = null;
-    _problemSummary = null;
-    _screens.clear();
-    _currentScreenId = null;
-    _api = null;
-    notifyListeners();
+      if (pc != null) {
+        try {
+          pc.onIceCandidate = null;
+          pc.onConnectionState = null;
+          pc.onTrack = null;
+          pc.onDataChannel = null;
+          pc.onIceConnectionState = null;
+          pc.onRenegotiationNeeded = null;
+          await pc.close();
+          await pc.dispose();
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('support_service: ошибка при stopScreenSharing: $e');
+    } finally {
+      _isStopping = false;
+    }
   }
 
   @override

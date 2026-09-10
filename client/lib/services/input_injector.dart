@@ -127,6 +127,11 @@ class InputInjector {
       _postMacMouseEvent(5, px, py, 0); // 5 = kCGEventMouseMoved
     } else if (Platform.isWindows) {
       _winSetCursorPos?.call(px.round(), py.round());
+      const mouseEventfMove = 0x0001;
+      const mouseEventfAbsolute = 0x8000;
+      final absX = (normX * 65535).round().clamp(0, 65535);
+      final absY = (normY * 65535).round().clamp(0, 65535);
+      _winMouseEvent?.call(mouseEventfMove | mouseEventfAbsolute, absX, absY, 0, 0);
     } else if (Platform.isLinux) {
       Process.run('xdotool', ['mousemove', px.round().toString(), py.round().toString()]);
     }
@@ -181,6 +186,9 @@ class InputInjector {
       const rightUp = 0x0010;
       const midDown = 0x0020;
       const midUp = 0x0040;
+      const mouseEventfAbsolute = 0x8000;
+      final absX = (normX * 65535).round().clamp(0, 65535);
+      final absY = (normY * 65535).round().clamp(0, 65535);
 
       int flagDown = leftDown;
       int flagUp = leftUp;
@@ -194,12 +202,12 @@ class InputInjector {
       }
 
       if (action == 'down') {
-        _winMouseEvent?.call(flagDown, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagDown | mouseEventfAbsolute, absX, absY, 0, 0);
       } else if (action == 'up') {
-        _winMouseEvent?.call(flagUp, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagUp | mouseEventfAbsolute, absX, absY, 0, 0);
       } else {
-        _winMouseEvent?.call(flagDown, 0, 0, 0, 0);
-        _winMouseEvent?.call(flagUp, 0, 0, 0, 0);
+        _winMouseEvent?.call(flagDown | mouseEventfAbsolute, absX, absY, 0, 0);
+        _winMouseEvent?.call(flagUp | mouseEventfAbsolute, absX, absY, 0, 0);
       }
     } else if (Platform.isLinux) {
       final btnStr = button == 2 ? '3' : (button == 1 ? '2' : '1');
@@ -222,6 +230,7 @@ class InputInjector {
     calloc.free(pt);
     if (event.address != 0) {
       _cgEventPost!(0, event); // 0 = kCGHIDEventTap
+      _cgEventPost!(1, event); // 1 = kCGSessionEventTap
       _cfRelease!(event);
     }
   }
@@ -251,7 +260,8 @@ class InputInjector {
       if (macCode != null && _cgEventCreateKeyboardEvent != null && _cgEventPost != null && _cfRelease != null) {
         final ev = _cgEventCreateKeyboardEvent!(ffi.Pointer.fromAddress(0), macCode, isDown);
         if (ev.address != 0) {
-          _cgEventPost!(0, ev);
+          _cgEventPost!(0, ev); // 0 = kCGHIDEventTap
+          _cgEventPost!(1, ev); // 1 = kCGSessionEventTap
           _cfRelease!(ev);
         }
       }

@@ -128,6 +128,7 @@ class AuthState extends ChangeNotifier {
         sessionId: prompt['session_id']?.toString() ?? '',
         category: prompt['category']?.toString(),
         problemSummary: prompt['problem_summary']?.toString(),
+        accessMode: prompt['access_mode']?.toString(),
       );
       final cat = prompt['category'] == '1c' ? '1С-поддержка' : 'IT-служба';
       alert.triggerAlert(
@@ -499,23 +500,31 @@ class AuthState extends ChangeNotifier {
         decision: 'deny',
       );
     } catch (_) {}
-    support.stopScreenSharing();
+    await support.stopScreenSharing();
     notifyListeners();
   }
 
+  bool _isEndingSupport = false;
+
   /// Завершение сеанса удаленного доступа со стороны пользователя
   Future<void> endSupport() async {
-    final sessId = support.activeSessionId;
-    if (sessId != null && api != null) {
-      try {
-        await api!.endSupportSession(sessionId: sessId);
-      } catch (e) {
-        debugPrint('auth_state: ошибка завершения сессии поддержки: $e');
+    if (_isEndingSupport) return;
+    _isEndingSupport = true;
+    try {
+      final sessId = support.activeSessionId;
+      if (sessId != null && api != null) {
+        try {
+          await api!.endSupportSession(sessionId: sessId);
+        } catch (e) {
+          debugPrint('auth_state: ошибка завершения сессии поддержки: $e');
+        }
       }
+      await support.stopScreenSharing();
+      activeSupportPrompt = null;
+      notifyListeners();
+    } finally {
+      _isEndingSupport = false;
     }
-    support.stopScreenSharing();
-    activeSupportPrompt = null;
-    notifyListeners();
   }
 
   /// Проверка наличия активной сессии поддержки на сервере (периодический поллинг)
@@ -545,6 +554,7 @@ class AuthState extends ChangeNotifier {
               sessionId: sessionId,
               category: category,
               problemSummary: summary,
+              accessMode: accessMode,
             );
             final cat = category == '1c' ? '1С-поддержка' : 'IT-служба';
             alert.triggerAlert(
@@ -566,7 +576,7 @@ class AuthState extends ChangeNotifier {
           }
         } else if (status == 'ended' || status == 'rejected') {
           if (support.state != SupportSessionState.idle) {
-            support.stopScreenSharing();
+            await support.stopScreenSharing();
           }
           if (activeSupportPrompt != null) {
             activeSupportPrompt = null;
@@ -576,7 +586,7 @@ class AuthState extends ChangeNotifier {
       } else {
         if (support.state == SupportSessionState.requested ||
             support.state == SupportSessionState.authorizing) {
-          support.stopScreenSharing();
+          await support.stopScreenSharing();
           activeSupportPrompt = null;
           notifyListeners();
         }

@@ -291,10 +291,15 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   }
 
   void _sendDataMessage(Map<String, dynamic> msg) {
+    bool sent = false;
     if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
       try {
         _dataChannel!.send(RTCDataChannelMessage(jsonEncode(msg)));
+        sent = true;
       } catch (_) {}
+    }
+    if (!sent) {
+      _sendWsSignal({'type': 'input_control', 'data': msg});
     }
   }
 
@@ -398,6 +403,46 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     );
   }
 
+  bool _isCleanedUp = false;
+
+  void _cleanupResources() {
+    if (_isCleanedUp) return;
+    _isCleanedUp = true;
+
+    try {
+      _remoteRenderer.srcObject = null;
+      _remoteRenderer.dispose();
+    } catch (_) {}
+
+    final dc = _dataChannel;
+    _dataChannel = null;
+    if (dc != null) {
+      try {
+        dc.onMessage = null;
+        dc.onDataChannelState = null;
+        dc.close();
+      } catch (_) {}
+    }
+
+    final pc = _peerConnection;
+    _peerConnection = null;
+    if (pc != null) {
+      try {
+        pc.onConnectionState = null;
+        pc.onIceCandidate = null;
+        pc.onTrack = null;
+        pc.onDataChannel = null;
+        pc.close();
+        pc.dispose();
+      } catch (_) {}
+    }
+
+    try {
+      _wsChannel?.sink.close();
+      _wsChannel = null;
+    } catch (_) {}
+  }
+
   void _endSession() async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -424,8 +469,12 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
     if (confirm == true && mounted) {
       final auth = context.read<AuthState>();
+      _cleanupResources();
       try {
-        await auth.api?.endSupportSession(sessionId: widget.sessionId);
+        await auth.api?.endSupportSession(sessionId: widget.sessionId).timeout(
+          const Duration(seconds: 3),
+          onTimeout: () => null,
+        );
       } catch (_) {}
       if (!mounted) return;
       Navigator.of(context).pop();
@@ -435,17 +484,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   @override
   void dispose() {
     _keyboardFocus.dispose();
-    try {
-      _dataChannel?.close();
-    } catch (_) {}
-    try {
-      _peerConnection?.close();
-      _peerConnection?.dispose();
-    } catch (_) {}
-    try {
-      _wsChannel?.sink.close();
-    } catch (_) {}
-    _remoteRenderer.dispose();
+    _cleanupResources();
     super.dispose();
   }
 
