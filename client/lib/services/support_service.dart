@@ -82,6 +82,12 @@ class _ActiveFileDownload {
   final int totalChunks;
   final Map<int, List<int>> chunks = {};
 
+  /// Фактически получено байт (защита от заниженного totalSize)
+  int receivedBytes = 0;
+
+  /// Таймаут ожидания следующего чанка: истек — закачка отменяется
+  Timer? stallTimer;
+
   _ActiveFileDownload({
     required this.id,
     required this.filename,
@@ -100,6 +106,11 @@ enum SupportSessionState {
 
 /// Сервис управления WebRTC экраном и вводом для удаленной поддержки (SOS).
 class SupportService extends ChangeNotifier {
+  /// Лимиты файловых передач (защита памяти/диска от нелимитированных закачек)
+  static const int _maxFileTransferBytes = 50 * 1024 * 1024; // 50 МБ
+  static const int _maxConcurrentDownloads = 2;
+  static const Duration _downloadStallTimeout = Duration(seconds: 60);
+
   SupportSessionState _state = SupportSessionState.idle;
   String? _activeSessionId;
   String? _category;
@@ -134,6 +145,23 @@ class SupportService extends ChangeNotifier {
   int get unreadChatCount => _unreadChatCount;
   List<ReceivedFileItem> get receivedFiles => List.unmodifiable(_receivedFiles);
   void Function(SupportChatMessage message)? onChatMessageReceived;
+
+  /// Отмена конкретной закачки (таймаут, превышение лимита)
+  void _abortDownload(String transferId, String reason) {
+    final dl = _activeDownloads.remove(transferId);
+    dl?.stallTimer?.cancel();
+    if (dl != null) {
+      debugPrint('support_service: закачка "${dl.filename}" отменена ($reason)');
+    }
+  }
+
+  /// Отмена всех активных закачек с очисткой таймеров
+  void _cancelAllDownloads() {
+    for (final dl in _activeDownloads.values) {
+      dl.stallTimer?.cancel();
+    }
+    _activeDownloads.clear();
+  }
 
   void setApi(ApiClient api) {
     _api = api;
@@ -225,6 +253,19 @@ class SupportService extends ChangeNotifier {
     final filename = file.uri.pathSegments.last;
     final bytes = await file.readAsBytes();
     final totalSize = bytes.length;
+
+    if (totalSize > _maxFileTransferBytes) {
+      _chatMessages.add(SupportChatMessage(
+        id: 'sys_${DateTime.now().millisecondsSinceEpoch}',
+        sender: 'user',
+        senderName: 'Система',
+        text: '⚠ Файл не отправлен: превышен лимит размера 50 МБ ($filename)',
+        timestamp: DateTime.now(),
+      ));
+      notifyListeners();
+      return;
+    }
+
     const chunkSize = 32768; // 32 KB
     final totalChunks = (totalSize / chunkSize).ceil();
     final transferId = 'file_${DateTime.now().millisecondsSinceEpoch}';
@@ -339,7 +380,7 @@ class SupportService extends ChangeNotifier {
     _accessMode = accessMode;
     _state = SupportSessionState.requested;
     _unreadChatCount = 0;
-    _activeDownloads.clear();
+    _cancelAllDownloads();
     notifyListeners();
   }
 
@@ -635,33 +676,94 @@ class SupportService extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Начало входящей файловой передачи: проверка лимитов размера и числа
+  /// одновременных закачек, запуск таймаута ожидания первого чанка.
+  void _handleFileStart(Map<String, dynamic> input) {
+    final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+    if (transferId.isEmpty) return;
+    final filename = input['filename']?.toString() ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
+    final size = (input['size'] as num?)?.toInt() ?? 0;
+    final totalChunks = (input['total_chunks'] as num?)?.toInt() ?? 1;
+
+    if (size < 0 || size > _maxFileTransferBytes) {
+      debugPrint('support_service: передача "$filename" отклонена: размер $size байт превышает лимит 50 МБ');
+      return;
+    }
+    if (totalChunks <= 0) return;
+    if (_activeDownloads.length >= _maxConcurrentDownloads) {
+      debugPrint('support_service: передача "$filename" отклонена: превышен лимит одновременных закачек ($_maxConcurrentDownloads)');
+      return;
+    }
+
+    // Повторный file_start с тем же transferId перезаписывает предыдущую попытку
+    _activeDownloads.remove(transferId)?.stallTimer?.cancel();
+
+    final dl = _ActiveFileDownload(
+      id: transferId,
+      filename: filename,
+      totalSize: size,
+      totalChunks: totalChunks,
+    );
+    dl.stallTimer = Timer(_downloadStallTimeout, () {
+      _abortDownload(transferId, 'таймаут ожидания данных ${_downloadStallTimeout.inSeconds}с');
+    });
+    _activeDownloads[transferId] = dl;
+  }
+
+  /// Прием чанка: валидация, контроль фактически полученного объема и
+  /// перезапуск таймаута ожидания следующего чанка.
+  void _handleFileChunk(Map<String, dynamic> input) {
+    final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+    final chunkIndex = (input['chunk_index'] as num?)?.toInt() ?? 0;
+    final base64Data = input['data']?.toString() ?? '';
+    final dl = _activeDownloads[transferId];
+    if (dl == null || base64Data.isEmpty) return;
+
+    try {
+      final bytes = base64Decode(base64Data);
+      if (!dl.chunks.containsKey(chunkIndex)) {
+        dl.receivedBytes += bytes.length;
+      }
+      // Защита от заниженного size в file_start
+      if (dl.receivedBytes > _maxFileTransferBytes) {
+        _abortDownload(transferId, 'фактический объем превысил лимит 50 МБ');
+        return;
+      }
+      dl.chunks[chunkIndex] = bytes;
+
+      dl.stallTimer?.cancel();
+      dl.stallTimer = Timer(_downloadStallTimeout, () {
+        _abortDownload(transferId, 'таймаут ожидания данных ${_downloadStallTimeout.inSeconds}с');
+      });
+    } catch (_) {}
+  }
+
+  /// Завершение передачи: сборка и сохранение файла.
+  void _handleFileEnd(Map<String, dynamic> input) {
+    final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+    final dl = _activeDownloads.remove(transferId);
+    dl?.stallTimer?.cancel();
+    if (dl != null) {
+      _saveReceivedFile(dl);
+    }
+  }
+
   /// Эмуляция пользовательского ввода от оператора (мышь/клавиатура/хоткеи/буфер)
   void _handleRemoteInput(Map<String, dynamic> input) async {
     final type = (input['type'] ?? input['action'])?.toString();
     if (type == null) return;
 
-    // Команды, разрешенные даже в режиме просмотра (например, запрос списка экранов или буфер обмена)
+    // Гейт режима «Только просмотр» (view_only): единственные разрешенные
+    // команды — список экранов и чат. Управление вводом, буфер обмена,
+    // переключение экрана и файловые передачи блокируются ДО какой-либо
+    // обработки команды.
+    if (_accessMode == 'view_only' && type != 'screen_list' && type != 'chat_message') {
+      debugPrint('support_service: команда "$type" отклонена (view_only)');
+      return;
+    }
+
     if (type == 'screen_list') {
       _sendScreenList();
-      return;
-    } else if (type == 'switch_screen') {
-      final sId = input['screen_id']?.toString();
-      if (sId != null && sId.isNotEmpty) {
-        await switchScreen(sId);
-      }
-      return;
-    } else if (type == 'clipboard_set') {
-      final text = input['text']?.toString() ?? '';
-      await Clipboard.setData(ClipboardData(text: text));
-      return;
-    } else if (type == 'clipboard_get') {
-      final clip = await Clipboard.getData(Clipboard.kTextPlain);
-      if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
-        _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
-          'type': 'clipboard_data',
-          'text': clip?.text ?? '',
-        })));
-      }
       return;
     } else if (type == 'chat_message') {
       try {
@@ -686,35 +788,33 @@ class SupportService extends ChangeNotifier {
         debugPrint('support_service: ошибка разбора чат-сообщения: $e');
       }
       return;
+    } else if (type == 'switch_screen') {
+      final sId = input['screen_id']?.toString();
+      if (sId != null && sId.isNotEmpty) {
+        await switchScreen(sId);
+      }
+      return;
+    } else if (type == 'clipboard_set') {
+      final text = input['text']?.toString() ?? '';
+      await Clipboard.setData(ClipboardData(text: text));
+      return;
+    } else if (type == 'clipboard_get') {
+      final clip = await Clipboard.getData(Clipboard.kTextPlain);
+      if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+        _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
+          'type': 'clipboard_data',
+          'text': clip?.text ?? '',
+        })));
+      }
+      return;
     } else if (type == 'file_start') {
-      final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
-      final filename = input['filename']?.toString() ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
-      final size = (input['size'] as num?)?.toInt() ?? 0;
-      final totalChunks = (input['total_chunks'] as num?)?.toInt() ?? 1;
-      _activeDownloads[transferId] = _ActiveFileDownload(
-        id: transferId,
-        filename: filename,
-        totalSize: size,
-        totalChunks: totalChunks,
-      );
+      _handleFileStart(input);
       return;
     } else if (type == 'file_chunk') {
-      final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
-      final chunkIndex = (input['chunk_index'] as num?)?.toInt() ?? 0;
-      final base64Data = input['data']?.toString() ?? '';
-      final dl = _activeDownloads[transferId];
-      if (dl != null && base64Data.isNotEmpty) {
-        try {
-          dl.chunks[chunkIndex] = base64Decode(base64Data);
-        } catch (_) {}
-      }
+      _handleFileChunk(input);
       return;
     } else if (type == 'file_end') {
-      final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
-      final dl = _activeDownloads.remove(transferId);
-      if (dl != null) {
-        _saveReceivedFile(dl);
-      }
+      _handleFileEnd(input);
       return;
     }
 
@@ -792,7 +892,7 @@ class SupportService extends ChangeNotifier {
       _problemSummary = null;
       _screens.clear();
       _currentScreenId = null;
-      _activeDownloads.clear();
+      _cancelAllDownloads();
       notifyListeners();
 
       // 2. Закрываем DataChannel и снимаем его обработчики

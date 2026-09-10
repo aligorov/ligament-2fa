@@ -28,11 +28,38 @@ class _ConnectScreenState extends State<ConnectScreen> {
     }
   }
 
+  /// Проверка адреса сервера: допускается HTTPS (любой хост) и HTTP только
+  /// для localhost / 127.* (локальная отладка). Возвращает текст ошибки или null.
+  String? _validateServerUrl(String url) {
+    if (url.isEmpty || url == 'https://' || url == 'http://') {
+      return 'Введите корректный HTTPS адрес сервера';
+    }
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      return 'Некорректный адрес сервера';
+    }
+    final scheme = uri.scheme.toLowerCase();
+    final host = uri.host.toLowerCase();
+    if (scheme == 'http') {
+      final isLocalDev = host == 'localhost' || host.startsWith('127.');
+      if (!isLocalDev) {
+        return 'Небезопасное соединение: пароль и токены будут передаваться открытым текстом. '
+            'Укажите HTTPS-адрес сервера (http:// разрешен только для localhost / 127.*)';
+      }
+      return null;
+    }
+    if (scheme != 'https') {
+      return 'Адрес сервера должен начинаться с https:// (http:// — только localhost для отладки)';
+    }
+    return null;
+  }
+
   Future<void> _handleConnect() async {
     final auth = context.read<AuthState>();
     final url = _urlController.text.trim();
-    if (url.isEmpty || url == 'https://' || url == 'http://') {
-      setState(() => _error = 'Введите корректный HTTPS адрес сервера');
+    final validationError = _validateServerUrl(url);
+    if (validationError != null) {
+      setState(() => _error = validationError);
       return;
     }
 

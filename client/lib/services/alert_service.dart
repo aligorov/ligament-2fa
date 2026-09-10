@@ -139,7 +139,7 @@ class AlertService {
 
   /// Сброс AlwaysOnTop и индикатора на таскбаре после завершения обработки запроса
   Future<void> resetWindowPriority() async {
-    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS)) {
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       try {
         await windowManager.setAlwaysOnTop(false);
         if (Platform.isWindows) {

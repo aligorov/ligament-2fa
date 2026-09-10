@@ -251,6 +251,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let unreadChatCount = 0;
   const incomingDownloads = new Map();
+  // Собранные, но еще не скачанные оператором файлы: transferId -> { url, filename }
+  const pendingIncomingFiles = new Map();
 
   function escapeHtml(str) {
     if (!str) return "";
@@ -1306,26 +1308,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
     try {
       const blob = new Blob(parts);
+      // Файл НЕ скачивается автоматически: сохраняем blob-URL и показываем
+      // оператору явную кнопку подтверждения в чате (скачивание только по клику).
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = item.filename;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }, 1000);
+      pendingIncomingFiles.set(transferId, { url, filename: item.filename });
 
-      completeTransferUI(transferId, "Скачан в загрузки браузера ✅", false);
-      appendChatMessage({
-        type: "chat_message",
-        id: String(Date.now()),
-        sender: "user",
-        sender_name: "Система",
-        text: `📁 Получен файл: ${item.filename} (${formatBytes(item.size)})`,
-        timestamp: Date.now()
-      });
+      completeTransferUI(transferId, "Готов к скачиванию — подтвердите в чате ⏳", false);
+      appendFileDownloadMessage(transferId, item.filename, item.size);
       playSosChime();
     } catch (e) {
       console.error("Support incoming file save error:", e);
@@ -1333,6 +1322,62 @@ document.addEventListener("DOMContentLoaded", () => {
     } finally {
       incomingDownloads.delete(transferId);
     }
+  }
+
+  // Сообщение в чате с явной кнопкой скачивания полученного файла.
+  // Скачивание выполняется только по клику оператора (подтверждение получения).
+  function appendFileDownloadMessage(transferId, filename, size) {
+    if (!chatMessagesContainer) return;
+    const safeId = window.CSS && CSS.escape ? CSS.escape(String(transferId)) : String(transferId).replace(/["\\\]]/g, "_");
+    if (chatMessagesContainer.querySelector(`[data-msg-id="filedl_${safeId}"]`)) {
+      return;
+    }
+    const emptyHint = chatMessagesContainer.querySelector(".chat-empty-hint");
+    if (emptyHint) emptyHint.remove();
+
+    const el = document.createElement("div");
+    el.className = "chat-msg chat-msg-in";
+    el.dataset.msgId = "filedl_" + transferId;
+    const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+    el.innerHTML = `
+      <div class="chat-msg-meta">
+        <strong>Система</strong>
+        <span>${timeStr}</span>
+      </div>
+      <div class="chat-msg-text">📁 Получен файл: ${escapeHtml(filename)} (${formatBytes(size || 0)})</div>
+      <button type="button" style="display:block;width:100%;margin-top:8px;padding:8px 10px;border:none;border-radius:8px;cursor:pointer;background:#0284c7;color:#fff;font-size:13px;font-weight:600;text-align:center;">⬇ Скачать полученный файл: ${escapeHtml(filename)}</button>
+    `;
+
+    const btn = el.querySelector("button");
+    btn.addEventListener("click", () => {
+      const entry = pendingIncomingFiles.get(transferId);
+      if (!entry) {
+        btn.disabled = true;
+        btn.textContent = "Файл больше не доступен — запросите повторную передачу";
+        return;
+      }
+      try {
+        const a = document.createElement("a");
+        a.href = entry.url;
+        a.download = entry.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch (e) {
+        console.error("Support file download click error:", e);
+      }
+      pendingIncomingFiles.delete(transferId);
+      // Отложенный revoke: браузеру нужно время на начало загрузки blob-URL
+      setTimeout(() => URL.revokeObjectURL(entry.url), 60000);
+      btn.disabled = true;
+      btn.textContent = "✅ Скачано: " + entry.filename;
+      const statusEl = document.getElementById("status-" + transferId);
+      if (statusEl) statusEl.textContent = "Скачан в загрузки браузера ✅";
+    });
+
+    chatMessagesContainer.appendChild(el);
+    chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
   }
 
   if (btnFilesToggle) {

@@ -9,8 +9,12 @@ import 'services/auth_state.dart';
 import 'screens/connect_screen.dart';
 import 'screens/home_screen.dart';
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Запуск в свернутом виде (например, автозагрузка Windows/MSI с флагом --minimized):
+  // окно не показывается, приложение сидит в системном трее.
+  final startMinimized = !kIsWeb && args.contains('--minimized');
 
   // Инициализация оконного менеджера для Windows, macOS и Linux
   if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
@@ -26,6 +30,11 @@ void main() async {
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      if (startMinimized) {
+        // Остаемся скрытыми в трее; окно открывается из трея или по push-алерту
+        // (AlertService.triggerAlert сам вызывает windowManager.show()).
+        return;
+      }
       await windowManager.show();
       await windowManager.focus();
     });

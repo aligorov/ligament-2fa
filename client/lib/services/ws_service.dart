@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/io.dart';
 
 typedef PushPromptCallback = void Function(Map<String, dynamic> prompt);
 
@@ -35,11 +36,17 @@ class WebSocketService {
     if (wsUrl.endsWith('/')) {
       wsUrl = wsUrl.substring(0, wsUrl.length - 1);
     }
-    wsUrl = '$wsUrl/api/v1/app/ws?token=$token';
+    wsUrl = '$wsUrl/api/v1/app/ws';
 
     try {
       final uri = Uri.parse(wsUrl);
-      _channel = WebSocketChannel.connect(uri);
+      // Токен передается в заголовке Authorization (Bearer), а не в query-строке,
+      // чтобы не оседать в access-логах прокси и сервера приложений.
+      _channel = IOWebSocketChannel.connect(
+        uri,
+        headers: {'Authorization': 'Bearer $token'},
+        connectTimeout: const Duration(seconds: 10),
+      );
       onConnected?.call();
 
       _channel!.stream.listen(

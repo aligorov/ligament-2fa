@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -13,12 +14,18 @@ import 'telemetry_service.dart';
 import 'ws_service.dart';
 
 class AuthState extends ChangeNotifier {
+  static const String _tokenKey = 'auth_token';
+
   final GPOService gpo = GPOService();
   final AlertService alert = AlertService();
   final TelemetryService telemetry = TelemetryService();
   final WebSocketService ws = WebSocketService();
   final LocalAuthentication localAuth = LocalAuthentication();
   final SupportService support = SupportService();
+
+  /// Токен сессии устройства хранится в безопасном хранилище
+  /// (Keychain / Keystore / DPAPI / libsecret), а не в SharedPreferences.
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   ApiClient? api;
   String? serverUrl;
@@ -36,6 +43,7 @@ class AuthState extends ChangeNotifier {
   Map<String, dynamic>? activePrompt;
   Map<String, dynamic>? activeSupportPrompt;
   Timer? _pollingTimer;
+  bool _isPollingInFlight = false;
   final Set<String> _resolvedChallengeIds = {};
 
   bool get isLoggedIn => token != null && currentUser != null;
@@ -88,7 +96,28 @@ class AuthState extends ChangeNotifier {
     // Если GPO принудительно задает ServerURL, используем его
     serverUrl = gpo.enforcedServerUrl ?? prefs.getString('server_url');
 
-    final savedToken = prefs.getString('auth_token');
+    // Миграция: ранее токен хранился в SharedPreferences в открытом виде.
+    // При первом запуске новой версии переносим его в безопасное хранилище
+    // и удаляем plaintext-копию.
+    final legacyToken = prefs.getString(_tokenKey);
+    if (legacyToken != null && legacyToken.isNotEmpty) {
+      try {
+        final existing = await _secureStorage.read(key: _tokenKey);
+        if (existing == null || existing.isEmpty) {
+          await _secureStorage.write(key: _tokenKey, value: legacyToken);
+        }
+        await prefs.remove(_tokenKey);
+      } catch (e) {
+        debugPrint('auth_state: ошибка миграции токена в secure storage: $e');
+      }
+    }
+
+    String? savedToken;
+    try {
+      savedToken = await _secureStorage.read(key: _tokenKey);
+    } catch (e) {
+      debugPrint('auth_state: ошибка чтения токена из secure storage: $e');
+    }
 
     if (serverUrl != null && savedToken != null) {
       api = ApiClient(baseUrl: serverUrl!, token: savedToken);
@@ -204,12 +233,17 @@ class AuthState extends ChangeNotifier {
     // 3. Периодический опрос pending-запросов и сессий поддержки (fallback при временном обрыве WS)
     _pollingTimer?.cancel();
     _pollingTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
-      if (isLoggedIn) {
+      if (!isLoggedIn || _isPollingInFlight) return;
+      // Не порождаем новый цикл опроса, пока предыдущий еще выполняется
+      _isPollingInFlight = true;
+      try {
         await loadPendingChallenges();
         await checkSupportSession();
         if (isEngineer) {
           await loadSupportQueue();
         }
+      } finally {
+        _isPollingInFlight = false;
       }
     });
   }
@@ -281,7 +315,7 @@ class AuthState extends ChangeNotifier {
     isCompliant = currentPosture?['is_compliant'] == true;
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('auth_token', token!);
+    await _secureStorage.write(key: _tokenKey, value: token!);
     await prefs.setString('server_url', serverUrl!);
 
     _setupServices();
@@ -313,6 +347,11 @@ class AuthState extends ChangeNotifier {
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auth_token');
+    try {
+      await _secureStorage.delete(key: _tokenKey);
+    } catch (e) {
+      debugPrint('auth_state: ошибка удаления токена из secure storage: $e');
+    }
     notifyListeners();
   }
 

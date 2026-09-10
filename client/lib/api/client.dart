@@ -13,10 +13,24 @@ class ApiException implements Exception {
 }
 
 class ApiClient {
+  /// Максимальное время выполнения любого HTTP-запроса.
+  /// Защищает UI от вечного спиннера при сетевых проблемах.
+  static const Duration _requestTimeout = Duration(seconds: 10);
+
   String baseUrl;
   String? token;
 
   ApiClient({required this.baseUrl, this.token});
+
+  Future<http.Response> _get(String url, {Map<String, String>? headers}) {
+    return http.get(Uri.parse(url), headers: headers).timeout(_requestTimeout);
+  }
+
+  Future<http.Response> _post(String url, {Map<String, String>? headers, String? body}) {
+    return http
+        .post(Uri.parse(url), headers: headers, body: body)
+        .timeout(_requestTimeout);
+  }
 
   String _cleanUrl(String path) {
     var base = baseUrl.trim();
@@ -42,7 +56,7 @@ class ApiClient {
 
   /// Получение базовой конфигурации сервера
   Future<Map<String, dynamic>> getConfig() async {
-    final res = await http.get(Uri.parse(_cleanUrl('/api/v1/app/config')));
+    final res = await _get(_cleanUrl('/api/v1/app/config'));
     if (res.statusCode == 200) {
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     }
@@ -71,8 +85,8 @@ class ApiClient {
       'security_posture': securityPosture ?? {},
     };
 
-    final res = await http.post(
-      Uri.parse(_cleanUrl('/api/v1/app/login')),
+    final res = await _post(
+      _cleanUrl('/api/v1/app/login'),
       headers: _headers(),
       body: jsonEncode(payload),
     );
@@ -88,8 +102,8 @@ class ApiClient {
   /// Выход устройства (деактивация сессии)
   Future<void> logout() async {
     try {
-      await http.post(
-        Uri.parse(_cleanUrl('/api/v1/app/logout')),
+      await _post(
+        _cleanUrl('/api/v1/app/logout'),
         headers: _headers(),
       );
     } finally {
@@ -99,8 +113,8 @@ class ApiClient {
 
   /// Обновление APNs/FCM push-токена
   Future<void> updatePushToken(String pushToken) async {
-    final res = await http.post(
-      Uri.parse(_cleanUrl('/api/v1/app/device/push-token')),
+    final res = await _post(
+      _cleanUrl('/api/v1/app/device/push-token'),
       headers: _headers(),
       body: jsonEncode({'push_token': pushToken}),
     );
@@ -111,8 +125,8 @@ class ApiClient {
 
   /// Передача снимка безопасности (телеметрии) устройства
   Future<bool> sendTelemetry(Map<String, dynamic> posture) async {
-    final res = await http.post(
-      Uri.parse(_cleanUrl('/api/v1/app/telemetry')),
+    final res = await _post(
+      _cleanUrl('/api/v1/app/telemetry'),
       headers: _headers(),
       body: jsonEncode({'security_posture': posture}),
     );
@@ -125,8 +139,8 @@ class ApiClient {
 
   /// Получение активных запросов на подтверждение входа
   Future<List<Map<String, dynamic>>> getPendingChallenges() async {
-    final res = await http.get(
-      Uri.parse(_cleanUrl('/api/v1/app/challenges/pending')),
+    final res = await _get(
+      _cleanUrl('/api/v1/app/challenges/pending'),
       headers: _headers(),
     );
     if (res.statusCode == 200) {
@@ -149,8 +163,8 @@ class ApiClient {
       payload['number_match'] = numberMatch;
     }
 
-    final res = await http.post(
-      Uri.parse(_cleanUrl('/api/v1/app/challenges/$challengeId/decision')),
+    final res = await _post(
+      _cleanUrl('/api/v1/app/challenges/$challengeId/decision'),
       headers: _headers(),
       body: jsonEncode(payload),
     );
@@ -167,8 +181,8 @@ class ApiClient {
 
   /// Профиль текущего пользователя
   Future<Map<String, dynamic>> getProfile() async {
-    final res = await http.get(
-      Uri.parse(_cleanUrl('/api/v1/app/me/profile')),
+    final res = await _get(
+      _cleanUrl('/api/v1/app/me/profile'),
       headers: _headers(),
     );
     if (res.statusCode == 200) {
@@ -179,8 +193,8 @@ class ApiClient {
 
   /// Список доступных корпоративных приложений (SSO Launchpad)
   Future<List<Map<String, dynamic>>> getAllowedApps() async {
-    final res = await http.get(
-      Uri.parse(_cleanUrl('/api/v1/app/me/apps')),
+    final res = await _get(
+      _cleanUrl('/api/v1/app/me/apps'),
       headers: _headers(),
     );
     if (res.statusCode == 200) {
@@ -192,8 +206,8 @@ class ApiClient {
 
   /// История недавних входов пользователя (аудит-лог)
   Future<List<Map<String, dynamic>>> getHistory() async {
-    final res = await http.get(
-      Uri.parse(_cleanUrl('/api/v1/app/me/history')),
+    final res = await _get(
+      _cleanUrl('/api/v1/app/me/history'),
       headers: _headers(),
     );
     if (res.statusCode == 200) {
@@ -215,8 +229,8 @@ class ApiClient {
       'access_mode': accessMode,
     };
 
-    final res = await http.post(
-      Uri.parse(_cleanUrl('/api/v1/app/support/request')),
+    final res = await _post(
+      _cleanUrl('/api/v1/app/support/request'),
       headers: _headers(),
       body: jsonEncode(payload),
     );
@@ -230,8 +244,8 @@ class ApiClient {
 
   /// Получение текущей активной сессии поддержки
   Future<Map<String, dynamic>?> getCurrentSupportSession() async {
-    final res = await http.get(
-      Uri.parse(_cleanUrl('/api/v1/app/support/current')),
+    final res = await _get(
+      _cleanUrl('/api/v1/app/support/current'),
       headers: _headers(),
     );
     if (res.statusCode == 200) {
@@ -257,8 +271,8 @@ class ApiClient {
       payload['number_match'] = numberMatch;
     }
 
-    final res = await http.post(
-      Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/decision')),
+    final res = await _post(
+      _cleanUrl('/api/v1/app/support/$sessionId/decision'),
       headers: _headers(),
       body: jsonEncode(payload),
     );
@@ -278,8 +292,8 @@ class ApiClient {
     required String sessionId,
     required Map<String, dynamic> signal,
   }) async {
-    final res = await http.post(
-      Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/signal')),
+    final res = await _post(
+      _cleanUrl('/api/v1/app/support/$sessionId/signal'),
       headers: _headers(),
       body: jsonEncode(signal),
     );
@@ -292,19 +306,19 @@ class ApiClient {
   Future<List<Map<String, dynamic>>> getSupportMessages(String sessionId) async {
     http.Response res;
     try {
-      res = await http.get(
-        Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/messages')),
+      res = await _get(
+        _cleanUrl('/api/v1/app/support/$sessionId/messages'),
         headers: _headers(),
       );
     } catch (_) {
-      res = await http.get(
-        Uri.parse(_cleanUrl('/api/v1/support/sessions/$sessionId/messages')),
+      res = await _get(
+        _cleanUrl('/api/v1/support/sessions/$sessionId/messages'),
         headers: _headers(),
       );
     }
     if (res.statusCode != 200) {
-      res = await http.get(
-        Uri.parse(_cleanUrl('/api/v1/support/sessions/$sessionId/messages')),
+      res = await _get(
+        _cleanUrl('/api/v1/support/sessions/$sessionId/messages'),
         headers: _headers(),
       );
     }
@@ -335,21 +349,21 @@ class ApiClient {
     });
     http.Response res;
     try {
-      res = await http.post(
-        Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/messages')),
+      res = await _post(
+        _cleanUrl('/api/v1/app/support/$sessionId/messages'),
         headers: _headers(),
         body: body,
       );
       if (res.statusCode != 200) {
-        res = await http.post(
-          Uri.parse(_cleanUrl('/api/v1/support/sessions/$sessionId/messages')),
+        res = await _post(
+          _cleanUrl('/api/v1/support/sessions/$sessionId/messages'),
           headers: _headers(),
           body: body,
         );
       }
     } catch (_) {
-      res = await http.post(
-        Uri.parse(_cleanUrl('/api/v1/support/sessions/$sessionId/messages')),
+      res = await _post(
+        _cleanUrl('/api/v1/support/sessions/$sessionId/messages'),
         headers: _headers(),
         body: body,
       );
@@ -371,8 +385,8 @@ class ApiClient {
   Future<void> endSupportSession({
     required String sessionId,
   }) async {
-    final res = await http.post(
-      Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/end')),
+    final res = await _post(
+      _cleanUrl('/api/v1/app/support/$sessionId/end'),
       headers: _headers(),
     ).timeout(const Duration(seconds: 4));
     if (res.statusCode != 200) {
@@ -382,8 +396,8 @@ class ApiClient {
 
   /// Получение активных категорий поддержки (IT, 1C и др.)
   Future<List<Map<String, dynamic>>> getSupportCategories() async {
-    final res = await http.get(
-      Uri.parse(_cleanUrl('/api/v1/app/support/categories')),
+    final res = await _get(
+      _cleanUrl('/api/v1/app/support/categories'),
       headers: _headers(),
     );
     if (res.statusCode == 200) {
@@ -396,8 +410,8 @@ class ApiClient {
 
   /// Получение очереди входящих SOS-обращений для инженера
   Future<List<Map<String, dynamic>>> getSupportQueue() async {
-    final res = await http.get(
-      Uri.parse(_cleanUrl('/api/v1/app/support/queue')),
+    final res = await _get(
+      _cleanUrl('/api/v1/app/support/queue'),
       headers: _headers(),
     );
     if (res.statusCode == 200) {
@@ -421,8 +435,8 @@ class ApiClient {
     if (adminName != null && adminName.isNotEmpty) {
       payload['admin_name'] = adminName;
     }
-    final res = await http.post(
-      Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/connect')),
+    final res = await _post(
+      _cleanUrl('/api/v1/app/support/$sessionId/connect'),
       headers: _headers(),
       body: jsonEncode(payload),
     );
