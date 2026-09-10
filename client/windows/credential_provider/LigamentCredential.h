@@ -26,6 +26,8 @@ enum AUTH_FACTOR_MODE {
     MODE_OTP
 };
 
+extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[];
+
 class LigamentCredential : public ICredentialProviderCredential2 {
 public:
     LigamentCredential();

@@ -28,6 +28,8 @@
 
 namespace ligament {
 
+extern LONG g_cRefDll;
+
 // Configuration loaded from registry (GPO: HKLM\SOFTWARE\Policies\Ligament\2FA)
 struct Config {
     std::wstring serverUrl = L"https://twofa.corp.local";

@@ -3,7 +3,9 @@
 #include "ClassFactory.h"
 
 HINSTANCE g_hinstDll = nullptr;
-LONG g_cRefDll = 0;
+namespace ligament {
+    LONG g_cRefDll = 0;
+}
 
 static const wchar_t s_szCLSID[] = L"{7B896B21-8B35-4E7B-A350-9E17E5E3D10A}";
 static const wchar_t s_szProviderName[] = L"Ligament 2FA Credential Provider";
@@ -17,7 +19,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 }
 
 STDAPI DllCanUnloadNow() {
-    return (g_cRefDll == 0) ? S_OK : S_FALSE;
+    return (ligament::g_cRefDll == 0) ? S_OK : S_FALSE;
 }
 
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv) {
