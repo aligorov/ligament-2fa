@@ -61,16 +61,16 @@
   <form action="/admin/groups/{{.Edit.ID}}" method="post" class="form wide">
     {{csrf .CSRF}}
     <div class="field-row">
-      <label class="field" style="flex: 2;">
+      <label class="field field-flex-2">
         <span class="field-label">Название группы</span>
         <input class="input" type="text" name="name" value="{{.Edit.Name}}" required placeholder="Например: DevOps, Бухгалтерия">
       </label>
-      <label class="field" style="flex: 1; max-width: 150px;">
+      <label class="field field-priority">
         <span class="field-label">Приоритет (1–100)</span>
         <input class="input mono" type="number" name="priority" min="1" max="100" value="{{.Edit.Priority}}" required>
         <span class="help">Вес при конфликте</span>
       </label>
-      <label class="field" style="flex: 3;">
+      <label class="field field-flex-3">
         <span class="field-label">Описание</span>
         <input class="input" type="text" name="description" value="{{.Edit.Description}}" placeholder="Краткое назначение группы">
       </label>
@@ -78,15 +78,15 @@
 
     {{if .LDAPGroups}}
     <div class="field">
-      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
-        <span class="field-label" style="margin-bottom: 0;">👥 Доступные группы из Active Directory / LDAP</span>
-        <span class="muted" style="font-size: 0.82rem;">Нажмите на группу, чтобы быстро отметить или снять всех её участников</span>
+      <div class="ad-picker-head">
+        <span class="field-label field-label-flush">👥 Доступные группы из Active Directory / LDAP</span>
+        <span class="muted ad-picker-hint">Нажмите на группу, чтобы быстро отметить или снять всех её участников</span>
       </div>
-      <div class="select-grid ad-groups-grid" style="max-height: 140px; overflow-y: auto; padding: 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2);">
+      <div class="select-grid ad-groups-grid">
         {{range .LDAPGroups}}
         <button type="button" class="select-chip btn-ad-group-select" data-ad-group="{{.}}" data-ad-group-cn="{{groupCN .}}" title="{{.}}">
           <div class="select-chip-label">
-            <span style="font-weight: 500;">👥 {{groupCN .}}</span>
+            <span class="ad-group-label">👥 {{groupCN .}}</span>
           </div>
         </button>
         {{end}}
@@ -95,19 +95,19 @@
     {{end}}
 
     <div class="field group-members-section">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <span class="field-label" style="margin-bottom: 0;">Участники группы (отметьте пользователей)</span>
+      <div class="members-toolbar-row">
+        <div class="members-head-left">
+          <span class="field-label field-label-flush">Участники группы (отметьте пользователей)</span>
           <span class="badge neutral member-counter">Выбрано: <b class="member-count-num">{{len $.EditMemberIDs}}</b> из {{len .AllUsers}}</span>
         </div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <input type="text" class="input sm member-search-input" placeholder="🔍 Поиск участников..." style="max-width: 250px;">
+        <div class="members-head-right">
+          <input type="text" class="input sm member-search-input" placeholder="🔍 Поиск участников...">
           <button type="button" class="btn secondary sm btn-select-all">Выбрать всех</button>
           <button type="button" class="btn secondary sm btn-clear-all">Снять всех</button>
         </div>
       </div>
       {{if .AllUsers}}
-      <div class="select-grid members-grid" style="max-height: 260px; overflow-y: auto;">
+      <div class="select-grid members-grid">
         {{range .AllUsers}}
         <label class="select-chip member-chip"
                data-username="{{.Username}}"
@@ -115,9 +115,9 @@
                data-ad-groups="{{range .LDAPGroups}}{{groupCN .}}|{{.}}|{{end}}">
           <input type="checkbox" name="members" value="{{.ID}}"{{if hasUUID $.EditMemberIDs .ID}} checked{{end}}>
           <div class="select-chip-label">
-            <div style="display: flex; align-items: center; gap: 6px;">
+            <div class="member-name-row">
               <span class="user-chip-name">{{.Username}}</span>
-              {{if .LDAPGroups}}<span class="badge neutral" style="font-size: 0.65rem; padding: 1px 4px;" title="Группы AD: {{range .LDAPGroups}}{{groupCN .}} {{end}}">AD</span>{{end}}
+              {{if .LDAPGroups}}<span class="badge neutral badge-ad" title="Группы AD: {{range .LDAPGroups}}{{groupCN .}} {{end}}">AD</span>{{end}}
             </div>
             {{if .DisplayName}}<span class="select-chip-sub">{{.DisplayName}}</span>{{end}}
           </div>
@@ -139,49 +139,49 @@
 
     <label class="check"><input type="checkbox" name="radius_push" value="1"{{if .Edit.RadiusPush}} checked{{end}}> <span>RADIUS Push — требовать Telegram-подтверждение для участников группы</span></label>
 
-    <div class="field" style="margin-top: 0.5rem;">
+    <div class="field field-mt">
       <span class="field-label">📶 Сетевой сегмент / VLAN (Wi-Fi) для участников группы</span>
-      <div style="display: flex; gap: 8px; align-items: center; max-width: 500px;">
-        <select class="select" id="group-vlan-select" onchange="var inp=document.getElementById('group-vlan-input'); if(this.value!=='custom'){ inp.value=this.value; } else { inp.focus(); }">
+      <div class="vlan-row">
+        <select class="select" id="group-vlan-select" data-vlan-input="group-vlan-input">
           <option value="">— По умолчанию (без группового VLAN) —</option>
           {{range $vid, $vname := $.VLANProfiles}}
             <option value="{{$vid}}"{{if eq $.Edit.VLAN $vid}} selected{{end}}>VLAN {{$vid}} — {{$vname}}</option>
           {{end}}
           <option value="custom"{{if and $.Edit.VLAN (not (index $.VLANProfiles $.Edit.VLAN))}} selected{{end}}>Свой номер VLAN...</option>
         </select>
-        <input class="input mono" type="text" name="vlan_id" id="group-vlan-input" style="max-width: 130px;" placeholder="VLAN ID" value="{{.Edit.VLAN}}">
+        <input class="input mono vlan-input" type="text" name="vlan_id" id="group-vlan-input" placeholder="VLAN ID" value="{{.Edit.VLAN}}">
       </div>
       <span class="help">Автоматическая изоляция участников группы в указанный VLAN при подключении к корпоративному Wi-Fi или VPN (RFC 3580).</span>
     </div>
 
-    <details class="advanced-details" style="margin: 8px 0 16px;">
-      <summary class="muted" style="cursor: pointer; font-size: 0.9rem; user-select: none;">⚙️ Дополнительные RADIUS-атрибуты группы (JSON)</summary>
-      <label class="field" style="margin-top: 8px;">
+    <details class="advanced-details advanced-gap">
+      <summary class="muted summary-toggle">⚙️ Дополнительные RADIUS-атрибуты группы (JSON)</summary>
+      <label class="field field-mt-sm">
         <span class="field-label">RADIUS Reply <span class="muted">(JSON)</span></span>
         <textarea class="textarea mono" name="radius_reply" rows="3" placeholder='{"Mikrotik-Group": "vpn"}'>{{$.EditReplyJSON}}</textarea>
-        <div class="radius-presets" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px;">
-          <span class="muted" style="font-size: 0.8rem; align-self: center;">Шаблоны:</span>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_std')">⚡ MikroTik: 30M/50M</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_vip')">⚡ MikroTik: 100M (VIP)</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_guest')">⚡ MikroTik: 5M/10M</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'unifi_vlan20')">🌐 UniFi: VLAN 20</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'unifi_vlan30')">🌐 UniFi: VLAN 30</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'workday')">⏱️ Смена 8ч + 1 сессия</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'vpn_pool')">🛡️ VPN: Пул адресов</button>
+        <div class="radius-presets radius-presets-bar">
+          <span class="muted presets-label">Шаблоны:</span>
+          <button type="button" class="btn small outline" data-radius-preset="mikrotik_std">⚡ MikroTik: 30M/50M</button>
+          <button type="button" class="btn small outline" data-radius-preset="mikrotik_vip">⚡ MikroTik: 100M (VIP)</button>
+          <button type="button" class="btn small outline" data-radius-preset="mikrotik_guest">⚡ MikroTik: 5M/10M</button>
+          <button type="button" class="btn small outline" data-radius-preset="unifi_vlan20">🌐 UniFi: VLAN 20</button>
+          <button type="button" class="btn small outline" data-radius-preset="unifi_vlan30">🌐 UniFi: VLAN 30</button>
+          <button type="button" class="btn small outline" data-radius-preset="workday">⏱️ Смена 8ч + 1 сессия</button>
+          <button type="button" class="btn small outline" data-radius-preset="vpn_pool">🛡️ VPN: Пул адресов</button>
         </div>
         <span class="help">Специальные атрибуты Access-Accept для участников группы (скорость MikroTik-Rate-Limit, VLAN Tunnel-Private-Group-Id, тайм-ауты Session-Timeout, пулы Framed-Pool и др.).</span>
       </label>
     </details>
 
-    <div style="margin: 8px 0 16px; padding: 12px; background: var(--bg-card); border: 1px dashed var(--line); border-radius: 8px;">
+    <div class="apply-to-members-box">
       <label class="check">
         <input type="checkbox" name="apply_to_members" value="1">
         <span><b>Применить эти настройки ко всем текущим участникам группы прямо сейчас</b></span>
       </label>
-      <span class="help" style="display:block; margin-left: 24px; margin-top: 4px;">Принудительно обновит каналы 2FA, RADIUS Push, VLAN и RADIUS Reply в профилях всех пользователей, входящих в группу.</span>
+      <span class="help help-indented">Принудительно обновит каналы 2FA, RADIUS Push, VLAN и RADIUS Reply в профилях всех пользователей, входящих в группу.</span>
     </div>
 
-    <div class="form-actions" style="display:flex; gap:8px;">
+    <div class="form-actions form-actions-gap">
       <button type="submit" class="btn primary">Сохранить изменения</button>
       <a href="/admin/groups" class="btn secondary">Отмена</a>
     </div>
@@ -196,16 +196,16 @@
   <form action="/admin/groups" method="post" class="form wide">
     {{csrf .CSRF}}
     <div class="field-row">
-      <label class="field" style="flex: 2;">
+      <label class="field field-flex-2">
         <span class="field-label">Название группы</span>
         <input class="input" type="text" name="name" required placeholder="Например: DevOps, Бухгалтерия, Руководство">
       </label>
-      <label class="field" style="flex: 1; max-width: 150px;">
+      <label class="field field-priority">
         <span class="field-label">Приоритет (1–100)</span>
         <input class="input mono" type="number" name="priority" min="1" max="100" value="50" required>
         <span class="help">Вес при конфликте</span>
       </label>
-      <label class="field" style="flex: 3;">
+      <label class="field field-flex-3">
         <span class="field-label">Описание</span>
         <input class="input" type="text" name="description" placeholder="Краткое описание группы">
       </label>
@@ -213,15 +213,15 @@
 
     {{if .LDAPGroups}}
     <div class="field">
-      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
-        <span class="field-label" style="margin-bottom: 0;">👥 Доступные группы из Active Directory / LDAP</span>
-        <span class="muted" style="font-size: 0.82rem;">Нажмите на группу, чтобы быстро отметить или снять всех её участников</span>
+      <div class="ad-picker-head">
+        <span class="field-label field-label-flush">👥 Доступные группы из Active Directory / LDAP</span>
+        <span class="muted ad-picker-hint">Нажмите на группу, чтобы быстро отметить или снять всех её участников</span>
       </div>
-      <div class="select-grid ad-groups-grid" style="max-height: 140px; overflow-y: auto; padding: 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2);">
+      <div class="select-grid ad-groups-grid">
         {{range .LDAPGroups}}
         <button type="button" class="select-chip btn-ad-group-select" data-ad-group="{{.}}" data-ad-group-cn="{{groupCN .}}" title="{{.}}">
           <div class="select-chip-label">
-            <span style="font-weight: 500;">👥 {{groupCN .}}</span>
+            <span class="ad-group-label">👥 {{groupCN .}}</span>
           </div>
         </button>
         {{end}}
@@ -230,19 +230,19 @@
     {{end}}
 
     <div class="field group-members-section">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <span class="field-label" style="margin-bottom: 0;">Участники группы</span>
+      <div class="members-toolbar-row">
+        <div class="members-head-left">
+          <span class="field-label field-label-flush">Участники группы</span>
           <span class="badge neutral member-counter">Выбрано: <b class="member-count-num">0</b> из {{len .AllUsers}}</span>
         </div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <input type="text" class="input sm member-search-input" placeholder="🔍 Поиск участников..." style="max-width: 250px;">
+        <div class="members-head-right">
+          <input type="text" class="input sm member-search-input" placeholder="🔍 Поиск участников...">
           <button type="button" class="btn secondary sm btn-select-all">Выбрать всех</button>
           <button type="button" class="btn secondary sm btn-clear-all">Снять всех</button>
         </div>
       </div>
       {{if .AllUsers}}
-      <div class="select-grid members-grid" style="max-height: 260px; overflow-y: auto;">
+      <div class="select-grid members-grid">
         {{range .AllUsers}}
         <label class="select-chip member-chip"
                data-username="{{.Username}}"
@@ -250,9 +250,9 @@
                data-ad-groups="{{range .LDAPGroups}}{{groupCN .}}|{{.}}|{{end}}">
           <input type="checkbox" name="members" value="{{.ID}}">
           <div class="select-chip-label">
-            <div style="display: flex; align-items: center; gap: 6px;">
+            <div class="member-name-row">
               <span class="user-chip-name">{{.Username}}</span>
-              {{if .LDAPGroups}}<span class="badge neutral" style="font-size: 0.65rem; padding: 1px 4px;" title="Группы AD: {{range .LDAPGroups}}{{groupCN .}} {{end}}">AD</span>{{end}}
+              {{if .LDAPGroups}}<span class="badge neutral badge-ad" title="Группы AD: {{range .LDAPGroups}}{{groupCN .}} {{end}}">AD</span>{{end}}
             </div>
             {{if .DisplayName}}<span class="select-chip-sub">{{.DisplayName}}</span>{{end}}
           </div>
@@ -274,35 +274,35 @@
 
     <label class="check"><input type="checkbox" name="radius_push" value="1"> <span>RADIUS Push — требовать Telegram-подтверждение для участников группы</span></label>
 
-    <div class="field" style="margin-top: 0.5rem;">
+    <div class="field field-mt">
       <span class="field-label">📶 Сетевой сегмент / VLAN (Wi-Fi) для участников группы</span>
-      <div style="display: flex; gap: 8px; align-items: center; max-width: 500px;">
-        <select class="select" id="new-group-vlan-select" onchange="var inp=document.getElementById('new-group-vlan-input'); if(this.value!=='custom'){ inp.value=this.value; } else { inp.focus(); }">
+      <div class="vlan-row">
+        <select class="select" id="new-group-vlan-select" data-vlan-input="new-group-vlan-input">
           <option value="">— По умолчанию (без группового VLAN) —</option>
           {{range $vid, $vname := $.VLANProfiles}}
             <option value="{{$vid}}">VLAN {{$vid}} — {{$vname}}</option>
           {{end}}
           <option value="custom">Свой номер VLAN...</option>
         </select>
-        <input class="input mono" type="text" name="vlan_id" id="new-group-vlan-input" style="max-width: 130px;" placeholder="VLAN ID">
+        <input class="input mono vlan-input" type="text" name="vlan_id" id="new-group-vlan-input" placeholder="VLAN ID">
       </div>
       <span class="help">Автоматическая изоляция участников группы в указанный VLAN при подключении к корпоративному Wi-Fi или VPN (RFC 3580).</span>
     </div>
 
-    <details class="advanced-details" style="margin: 8px 0 16px;">
-      <summary class="muted" style="cursor: pointer; font-size: 0.9rem; user-select: none;">⚙️ Дополнительные RADIUS-атрибуты группы (JSON)</summary>
-      <label class="field" style="margin-top: 8px;">
+    <details class="advanced-details advanced-gap">
+      <summary class="muted summary-toggle">⚙️ Дополнительные RADIUS-атрибуты группы (JSON)</summary>
+      <label class="field field-mt-sm">
         <span class="field-label">RADIUS Reply <span class="muted">(JSON)</span></span>
         <textarea class="textarea mono" name="radius_reply" rows="3" placeholder='{"Mikrotik-Group": "vpn"}'></textarea>
-        <div class="radius-presets" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px;">
-          <span class="muted" style="font-size: 0.8rem; align-self: center;">Шаблоны:</span>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_std')">⚡ MikroTik: 30M/50M</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_vip')">⚡ MikroTik: 100M (VIP)</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_guest')">⚡ MikroTik: 5M/10M</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'unifi_vlan20')">🌐 UniFi: VLAN 20</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'unifi_vlan30')">🌐 UniFi: VLAN 30</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'workday')">⏱️ Смена 8ч + 1 сессия</button>
-          <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'vpn_pool')">🛡️ VPN: Пул адресов</button>
+        <div class="radius-presets radius-presets-bar">
+          <span class="muted presets-label">Шаблоны:</span>
+          <button type="button" class="btn small outline" data-radius-preset="mikrotik_std">⚡ MikroTik: 30M/50M</button>
+          <button type="button" class="btn small outline" data-radius-preset="mikrotik_vip">⚡ MikroTik: 100M (VIP)</button>
+          <button type="button" class="btn small outline" data-radius-preset="mikrotik_guest">⚡ MikroTik: 5M/10M</button>
+          <button type="button" class="btn small outline" data-radius-preset="unifi_vlan20">🌐 UniFi: VLAN 20</button>
+          <button type="button" class="btn small outline" data-radius-preset="unifi_vlan30">🌐 UniFi: VLAN 30</button>
+          <button type="button" class="btn small outline" data-radius-preset="workday">⏱️ Смена 8ч + 1 сессия</button>
+          <button type="button" class="btn small outline" data-radius-preset="vpn_pool">🛡️ VPN: Пул адресов</button>
         </div>
         <span class="help">Специальные атрибуты Access-Accept для участников группы (скорость MikroTik-Rate-Limit, VLAN Tunnel-Private-Group-Id, тайм-ауты Session-Timeout, пулы Framed-Pool и др.).</span>
       </label>
@@ -313,24 +313,5 @@
     </div>
   </form>
 </section>
-<script>
-function applyRadiusPreset(btn, preset) {
-  const form = btn.closest('form');
-  const textarea = form ? form.querySelector('textarea[name="radius_reply"]') : null;
-  if (!textarea) return;
-  const presets = {
-    'mikrotik_std': '{\\n  "Mikrotik-Rate-Limit": "30M/50M"\\n}',
-    'mikrotik_vip': '{\\n  "Mikrotik-Rate-Limit": "100M/100M",\\n  "Mikrotik-Group": "full"\\n}',
-    'mikrotik_guest': '{\\n  "Mikrotik-Rate-Limit": "5M/10M",\\n  "Mikrotik-Address-List": "guest_users"\\n}',
-    'unifi_vlan20': '{\\n  "Tunnel-Private-Group-Id": "20"\\n}',
-    'unifi_vlan30': '{\\n  "Tunnel-Private-Group-Id": "30"\\n}',
-    'workday': '{\\n  "Session-Timeout": "28800",\\n  "Idle-Timeout": "1800",\\n  "Port-Limit": "1"\\n}',
-    'vpn_pool': '{\\n  "Framed-Pool": "vpn_users",\\n  "Session-Timeout": "28800"\\n}'
-  };
-  if (presets[preset]) {
-    textarea.value = presets[preset].replace(/\\\\n/g, '\\n');
-  }
-}
-</script>
 {{end}}
 {{end}}

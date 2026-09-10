@@ -29,12 +29,12 @@
     <div class="field-row">
       <label class="field">
         <span class="field-label">Client ID</span>
-        <input class="input mono" type="text" value="{{.Client.ClientID}}" readonly disabled style="opacity: 0.8;">
+        <input class="input mono dim" type="text" value="{{.Client.ClientID}}" readonly disabled>
         <span class="help">Идентификатор клиента OIDC формируется при создании и не меняется.</span>
       </label>
       <div class="field">
         <span class="field-label">Тип клиента</span>
-        <div style="padding-top: 6px;">
+        <div class="pt-sm">
           {{if .Client.IsPublic}}
             <span class="badge neutral">Public-клиент (PKCE S256)</span>
           {{else}}
@@ -57,16 +57,16 @@
     </label>
 
     {{if not .Client.IsPublic}}
-    <div class="field" style="margin-top: 6px;">
+    <div class="field field-mt-xs">
       <label class="check">
         <input type="checkbox" name="regenerate_secret" value="1">
         <span><b>Сгенерировать новый Client Secret</b></span>
       </label>
-      <span class="help" style="margin-left: 24px;">Прежний секрет станет недействительным. Новый секрет отобразится после сохранения.</span>
+      <span class="help help-padded">Прежний секрет станет недействительным. Новый секрет отобразится после сохранения.</span>
     </div>
     {{end}}
 
-    <div class="card-head" style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line);">
+    <div class="card-head card-head-divider">
       <h3><span class="card-icon">🔒</span>Контроль доступа</h3>
       <p>Определите, какие пользователи или группы могут входить в это приложение. Если ничего не выбрано — доступ открыт <b>всем</b> активным пользователям. Системные администраторы имеют доступ всегда.</p>
     </div>
@@ -74,7 +74,7 @@
     {{if .AllGroups}}
     <div class="field">
       <span class="field-label">Локальные группы (Ligament)</span>
-      <div class="select-grid" style="max-height: 160px;">
+      <div class="select-grid select-grid-capped-md">
         {{range .AllGroups}}
         <label class="select-chip">
           <input type="checkbox" name="allowed_groups" value="{{.Name}}"{{if hasStr $.Client.AllowedGroups .Name}} checked{{end}}>
@@ -91,7 +91,7 @@
     {{if .LDAPGroups}}
     <div class="field">
       <span class="field-label">Группы LDAP / Active Directory</span>
-      <div class="select-grid" style="max-height: 160px;">
+      <div class="select-grid select-grid-capped-md">
         {{range .LDAPGroups}}
         <label class="select-chip" title="{{.}}">
           <input type="checkbox" name="allowed_groups" value="{{.}}"{{if or (hasStr $.Client.AllowedGroups .) (hasStr $.Client.AllowedGroups (groupCN .))}} checked{{end}}>
@@ -107,7 +107,7 @@
     {{if .AllUsers}}
     <div class="field">
       <span class="field-label">Отдельные пользователи</span>
-      <div class="select-grid" style="max-height: 180px;">
+      <div class="select-grid select-grid-capped-lg">
         {{range .AllUsers}}
         <label class="select-chip">
           <input type="checkbox" name="allowed_users" value="{{.Username}}"{{if hasStr $.Client.AllowedUsers .Username}} checked{{end}}>
@@ -127,7 +127,7 @@
       <span class="help">Укажите точные DN или имена групп Active Directory / OpenLDAP, если они ещё не встречались при синхронизации пользователей.</span>
     </label>
 
-    <div class="form-actions" style="display: flex; gap: 8px; margin-top: 16px;">
+    <div class="form-actions form-actions-mt">
       <button type="submit" class="btn primary">Сохранить изменения</button>
       <a href="/admin/oidc" class="btn secondary">Отмена</a>
     </div>

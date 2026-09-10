@@ -64,13 +64,13 @@
 </section>
 
 <section class="card">
-  <div class="card-head" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px;">
+  <div class="card-head card-head-flex">
     <div>
       <h2><span class="card-icon">➕</span>Новое приложение</h2>
       <p>client_id и client_secret сгенерируются автоматически (или можно указать свои); секрет
       покажется один раз. Public-клиенты (SPA/мобилки) секрет не получают — только PKCE.</p>
     </div>
-    <button type="button" class="btn sm neutral" id="btn-preset-playground" style="white-space:nowrap;">⚡ Шаблон openidconnect.net</button>
+    <button type="button" class="btn sm neutral btn-nowrap" id="btn-preset-playground">⚡ Шаблон openidconnect.net</button>
   </div>
   <form action="/admin/oidc/clients" method="post" class="form">
     {{csrf .CSRF}}
@@ -83,7 +83,7 @@
       <textarea class="input mono" name="redirect_uris" id="oidc-redirect-uris" rows="2" placeholder="https://grafana.example.com/login/generic_oauth" required></textarea>
       <span class="help">Строгое совпадение: куда перенаправлять код после входа.</span>
     </label>
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px;">
+    <div class="field-grid-auto">
       <label class="field">
         <span class="field-label">Client ID (опционально)</span>
         <input class="input mono" type="text" name="client_id" id="oidc-client-id" placeholder="Автоматически (mfa_...)">
@@ -100,17 +100,17 @@
       <span>Public-клиент (без секрета, PKCE S256 обязателен)</span>
     </label>
 
-    <details class="advanced-details" style="margin: 8px 0 16px;">
-      <summary class="muted" style="cursor: pointer; font-size: 0.95rem; user-select: none; font-weight: 600;">
-        🔒 Контроль доступа к приложению <span class="badge neutral" style="font-weight:normal;">По умолчанию: открыт всем</span>
+    <details class="advanced-details advanced-gap">
+      <summary class="muted summary-toggle-lg">
+        🔒 Контроль доступа к приложению <span class="badge neutral summary-badge">По умолчанию: открыт всем</span>
       </summary>
-      <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 12px;">
-        <p class="help" style="margin:0;">Если ни одна группа и ни один пользователь не выбраны — доступ открыт всем активным пользователям. Системные администраторы имеют доступ всегда.</p>
+      <div class="access-control-body">
+        <p class="help help-flush">Если ни одна группа и ни один пользователь не выбраны — доступ открыт всем активным пользователям. Системные администраторы имеют доступ всегда.</p>
 
         {{if .AllGroups}}
         <div class="field">
           <span class="field-label">Локальные группы</span>
-          <div class="select-grid" style="max-height: 140px;">
+          <div class="select-grid select-grid-capped">
             {{range .AllGroups}}
             <label class="select-chip">
               <input type="checkbox" name="allowed_groups" value="{{.Name}}">
@@ -127,7 +127,7 @@
         {{if .LDAPGroups}}
         <div class="field">
           <span class="field-label">Группы LDAP/Active Directory</span>
-          <div class="select-grid" style="max-height: 140px;">
+          <div class="select-grid select-grid-capped">
             {{range .LDAPGroups}}
             <label class="select-chip" title="{{.}}">
               <input type="checkbox" name="allowed_groups" value="{{.}}">
@@ -143,7 +143,7 @@
         {{if .AllUsers}}
         <div class="field">
           <span class="field-label">Отдельные пользователи</span>
-          <div class="select-grid" style="max-height: 140px;">
+          <div class="select-grid select-grid-capped">
             {{range .AllUsers}}
             <label class="select-chip">
               <input type="checkbox" name="allowed_users" value="{{.Username}}">
@@ -170,18 +170,4 @@
     </div>
   </form>
 </section>
-<script>
-document.getElementById('btn-preset-playground')?.addEventListener('click', function() {
-  var name = document.getElementById('oidc-name');
-  var uris = document.getElementById('oidc-redirect-uris');
-  var cid = document.getElementById('oidc-client-id');
-  var sec = document.getElementById('oidc-client-secret');
-  var pub = document.getElementById('oidc-is-public');
-  if (name) name.value = 'openidconnect.net';
-  if (uris) uris.value = 'https://openidconnect.net/callback';
-  if (cid) cid.value = 'kbyuFDidLLm280LiWVfiazOqjO3ty8KH';
-  if (sec) sec.value = '60Op4HFM0I8ajz0WdiStAbziZ-VFQttXuxixHHs2R7r7-CW8GR79l-mmLqMhc-Sa';
-  if (pub) pub.checked = false;
-});
-</script>
 {{end}}

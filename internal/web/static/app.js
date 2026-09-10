@@ -172,6 +172,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Polling статуса Number Match push-челленджа на странице логина
   initNumberMatchPolling();
+
+  // Быстрые RADIUS-пресеты (data-radius-preset) и связка «селект VLAN —
+  // поле VLAN ID» (data-vlan-input) — вместо инлайн-onclick/onchange,
+  // запрещённых CSP
+  initRadiusPresetButtons();
+  initVLANSelects();
+
+  // Цвет аватара пользователя из data-avatar-bg (динамический цвет из
+  // шаблона нельзя вынести в статический CSS)
+  initUserAvatarColors();
+
+  // Шаблон «openidconnect.net» для нового OIDC-клиента
+  initOIDCPlaygroundPreset();
 });
 
 function initGroupRadiusBuilder() {
@@ -1020,4 +1033,78 @@ function initNumberMatchPolling() {
       // сетевой retry
     }
   }, pollInterval);
+}
+
+// Быстрые шаблоны RADIUS Reply: кнопка data-radius-preset заполняет
+// textarea[name="radius_reply"] своей формы (делигирование клика —
+// покрывает кнопки, добавляемые после загрузки).
+function initRadiusPresetButtons() {
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-radius-preset]");
+    if (!btn) return;
+    applyRadiusPreset(btn, btn.dataset.radiusPreset);
+  });
+}
+
+function applyRadiusPreset(btn, preset) {
+  const form = btn.closest('form');
+  const textarea = form ? form.querySelector('textarea[name="radius_reply"]') : null;
+  if (!textarea) return;
+  const presets = {
+    'mikrotik_std': '{\\n  "Mikrotik-Rate-Limit": "30M/50M"\\n}',
+    'mikrotik_vip': '{\\n  "Mikrotik-Rate-Limit": "100M/100M",\\n  "Mikrotik-Group": "full"\\n}',
+    'mikrotik_guest': '{\\n  "Mikrotik-Rate-Limit": "5M/10M",\\n  "Mikrotik-Address-List": "guest_users"\\n}',
+    'unifi_vlan20': '{\\n  "Tunnel-Private-Group-Id": "20"\\n}',
+    'unifi_vlan30': '{\\n  "Tunnel-Private-Group-Id": "30"\\n}',
+    'workday': '{\\n  "Session-Timeout": "28800",\\n  "Idle-Timeout": "1800",\\n  "Port-Limit": "1"\\n}',
+    'vpn_pool': '{\\n  "Framed-Pool": "vpn_users",\\n  "Session-Timeout": "28800"\\n}'
+  };
+  if (presets[preset]) {
+    textarea.value = presets[preset].replace(/\\\\n/g, '\\n');
+  }
+}
+
+// Селект профиля VLAN (data-vlan-input — id связанного текстового поля):
+// выбор профиля подставляет номер VLAN в поле, «Свой номер...» —
+// фокусирует его для ручного ввода.
+function initVLANSelects() {
+  document.addEventListener("change", (e) => {
+    const sel = e.target.closest("select[data-vlan-input]");
+    if (!sel) return;
+    const inp = document.getElementById(sel.dataset.vlanInput);
+    if (!inp) return;
+    if (sel.value !== "custom") {
+      inp.value = sel.value;
+    } else {
+      inp.focus();
+    }
+  });
+}
+
+// Цвет аватара пользователя: значение приходит из шаблона (зависит от
+// логина), поэтому применяется через CSSOM из data-атрибута.
+function initUserAvatarColors() {
+  for (const el of document.querySelectorAll(".user-avatar[data-avatar-bg]")) {
+    if (el.dataset.avatarBg) {
+      el.style.backgroundColor = el.dataset.avatarBg;
+    }
+  }
+}
+
+// Кнопка «⚡ Шаблон openidconnect.net» на странице OIDC-клиентов.
+function initOIDCPlaygroundPreset() {
+  const btn = document.getElementById("btn-preset-playground");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const name = document.getElementById("oidc-name");
+    const uris = document.getElementById("oidc-redirect-uris");
+    const cid = document.getElementById("oidc-client-id");
+    const sec = document.getElementById("oidc-client-secret");
+    const pub = document.getElementById("oidc-is-public");
+    if (name) name.value = "openidconnect.net";
+    if (uris) uris.value = "https://openidconnect.net/callback";
+    if (cid) cid.value = "kbyuFDidLLm280LiWVfiazOqjO3ty8KH";
+    if (sec) sec.value = "60Op4HFM0I8ajz0WdiStAbziZ-VFQttXuxixHHs2R7r7-CW8GR79l-mmLqMhc-Sa";
+    if (pub) pub.checked = false;
+  });
 }

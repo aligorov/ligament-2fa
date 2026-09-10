@@ -38,7 +38,7 @@
 </section>
 {{end}}
 
-<header class="page-head" style="margin-top: 2rem;">
+<header class="page-head page-head-gap">
   <h2>Клиентские приложения (Ligament Authenticator)</h2>
   <p class="page-sub">Авторизованные приложения на Windows, Android и iOS с push-подтверждением и аудитом безопасности.</p>
 </header>
@@ -70,7 +70,7 @@
           </td>
           <td>
             {{$posture := .SecurityPosture}}
-            <div style="display: flex; gap: 0.3rem; flex-wrap: wrap;">
+            <div class="posture-badges">
               {{if eq .Platform "windows"}}
                 {{if eq (index $posture "bitlocker") "encrypted"}}
                   <span class="badge success" title="BitLocker активен">BitLocker: OK</span>

@@ -35,7 +35,7 @@
     <div class="users-search-box">
       <span class="search-icon">🔍</span>
       <input type="text" id="users-search" class="input" placeholder="Поиск по имени, логину, почте, телефону или группе..." autocomplete="off">
-      <button type="button" id="users-search-clear" class="search-clear" style="display: none;" title="Очистить">&times;</button>
+      <button type="button" id="users-search-clear" class="search-clear is-hidden" title="Очистить">&times;</button>
     </div>
     <div class="users-filter-pills" id="users-filter-pills">
       <button type="button" class="users-pill active" data-filter="all">Все <span class="count" id="count-all">{{.CountAll}}</span></button>
@@ -54,7 +54,7 @@
           <th>Источник / Статус</th>
           <th>Группы</th>
           <th>2FA & Сеть</th>
-          <th style="text-align: right;">Действия</th>
+          <th class="th-right">Действия</th>
         </tr>
       </thead>
       <tbody>
@@ -71,7 +71,7 @@
           data-groups="{{range $ug}}{{.}} {{end}}{{range .LDAPGroups}}{{groupCN .}} {{.}}{{end}}">
         <td>
           <div class="user-profile-cell">
-            <div class="user-avatar" style="background-color: {{userAvatarBg .Username}};">
+            <div class="user-avatar" data-avatar-bg="{{userAvatarBg .Username}}">
               {{userInitials .DisplayName .Username}}
             </div>
             <div class="user-names">
@@ -80,7 +80,7 @@
                   {{if .DisplayName}}{{.DisplayName}}{{else}}{{.Username}}{{end}}
                 </a>
                 {{if and .DisplayName (ne .DisplayName .Username)}}
-                  <span class="muted" style="font-size: 0.8rem; font-weight: normal;">@{{.Username}}</span>
+                  <span class="muted user-login-hint">@{{.Username}}</span>
                 {{end}}
               </div>
               <div class="user-secondary-name">
@@ -95,8 +95,8 @@
           </div>
         </td>
         <td>
-          <div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
-            <div style="display: flex; gap: 4px; align-items: center;">
+          <div class="badges-col-start">
+            <div class="badges-row">
               {{if eq .Source "ldap"}}
                 <span class="badge warn" title="Синхронизирован из Active Directory / LDAP">ldap</span>
               {{else}}
@@ -106,15 +106,15 @@
             </div>
             <div>
               {{if .Enabled}}
-                <span class="badge ok" style="font-size: 0.72rem;">активен</span>
+                <span class="badge ok badge-xs">активен</span>
               {{else}}
-                <span class="badge err" style="font-size: 0.72rem;">отключён</span>
+                <span class="badge err badge-xs">отключён</span>
               {{end}}
             </div>
             {{if or .IsSupportIT .IsSupport1C}}
-            <div style="display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px;">
-              {{if .IsSupportIT}}<span class="badge info" style="font-size: 0.7rem;" title="Специалист IT-поддержки">IT-help</span>{{end}}
-              {{if .IsSupport1C}}<span class="badge warn" style="font-size: 0.7rem;" title="Специалист по 1С">1C-help</span>{{end}}
+            <div class="badges-row-wrap-mt">
+              {{if .IsSupportIT}}<span class="badge info badge-xxs" title="Специалист IT-поддержки">IT-help</span>{{end}}
+              {{if .IsSupport1C}}<span class="badge warn badge-xxs" title="Специалист по 1С">1C-help</span>{{end}}
             </div>
             {{end}}
           </div>
@@ -136,46 +136,46 @@
                     <span class="badge neutral" title="LDAP DN: {{$g}}">{{groupCN $g}}</span>
                   {{end}}
                 {{end}}
-                <span class="badge neutral" style="cursor: help;" title="{{range .LDAPGroups}}{{.}}&#10;{{end}}">+{{sub $ldapLen 2}} ещё</span>
+                <span class="badge neutral cursor-help" title="{{range .LDAPGroups}}{{.}}&#10;{{end}}">+{{sub $ldapLen 2}} ещё</span>
               {{end}}
             {{end}}
             {{if and (not $ug) (not .LDAPGroups)}}
-              <span class="muted" style="font-size: 0.8rem;">—</span>
+              <span class="muted muted-sm">—</span>
             {{end}}
           </div>
         </td>
         <td>
-          <div style="display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem;">
-            <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
+          <div class="user-2fa-cell">
+            <div class="badges-row-wrap">
               {{if .PreferChannels}}
-                {{range .PreferChannels}}<span class="badge neutral" style="font-size: 0.72rem;">{{.}}</span>{{end}}
+                {{range .PreferChannels}}<span class="badge neutral badge-xs">{{.}}</span>{{end}}
               {{else}}
-                <span class="muted" style="font-size: 0.75rem;" title="Каналы не настроены">2FA: —</span>
+                <span class="muted muted-xs" title="Каналы не настроены">2FA: —</span>
               {{end}}
               {{if .RadiusPush}}
                 {{if .TelegramLinked}}
-                  <span class="badge ok" style="font-size: 0.72rem;" title="RADIUS Push включен в профиле">Push: да</span>
+                  <span class="badge ok badge-xs" title="RADIUS Push включен в профиле">Push: да</span>
                 {{else}}
-                  <span class="badge warn" style="font-size: 0.72rem;" title="Push включен, но Telegram не привязан">⚠️ Push (нет ТГ)</span>
+                  <span class="badge warn badge-xs" title="Push включен, но Telegram не привязан">⚠️ Push (нет ТГ)</span>
                 {{end}}
               {{else}}
                 {{$pushG := index $.InheritedPushGroup .ID}}
                 {{if $pushG}}
                   {{if .TelegramLinked}}
-                    <span class="badge ok" style="font-size: 0.72rem;" title="Push унаследован от группы {{$pushG}}">Push: {{$pushG}}</span>
+                    <span class="badge ok badge-xs" title="Push унаследован от группы {{$pushG}}">Push: {{$pushG}}</span>
                   {{else}}
-                    <span class="badge warn" style="font-size: 0.72rem;" title="Push унаследован от группы {{$pushG}}, но Telegram не привязан">⚠️ Push: {{$pushG}} (нет ТГ)</span>
+                    <span class="badge warn badge-xs" title="Push унаследован от группы {{$pushG}}, но Telegram не привязан">⚠️ Push: {{$pushG}} (нет ТГ)</span>
                   {{end}}
                 {{end}}
               {{end}}
             </div>
             <div>
               {{if .VLAN}}
-                <span class="badge info" style="font-size: 0.72rem;" title="VLAN {{.VLAN}} задан индивидуально">VLAN: {{vlanDesc $.VLANProfiles .VLAN}}</span>
+                <span class="badge info badge-xs" title="VLAN {{.VLAN}} задан индивидуально">VLAN: {{vlanDesc $.VLANProfiles .VLAN}}</span>
               {{else}}
                 {{$gVlan := index $.InheritedVLAN .ID}}
                 {{if $gVlan}}
-                  <span class="badge info" style="font-size: 0.72rem;" title="VLAN унаследован от группы {{index $.InheritedVLANGroup .ID}}">VLAN: {{vlanDesc $.VLANProfiles $gVlan}} <span style="opacity: 0.8;">({{index $.InheritedVLANGroup .ID}})</span></span>
+                  <span class="badge info badge-xs" title="VLAN унаследован от группы {{index $.InheritedVLANGroup .ID}}">VLAN: {{vlanDesc $.VLANProfiles $gVlan}} <span class="dim">({{index $.InheritedVLANGroup .ID}})</span></span>
                 {{end}}
               {{end}}
             </div>
@@ -231,7 +231,7 @@
       {{end}}
       </tbody>
     </table>
-    <div id="users-empty" class="users-empty-search" style="display: none;">
+    <div id="users-empty" class="users-empty-search is-hidden">
       Пользователи по заданным критериям не найдены
     </div>
   </div>
@@ -241,9 +241,9 @@
       Показано 0 из 0
     </div>
     <div class="users-pagination-controls">
-      <div style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted);">
+      <div class="per-page-control">
         <span>На странице:</span>
-        <select id="users-per-page" class="select" style="padding: 0.25rem 0.5rem; font-size: 0.82rem; height: auto;">
+        <select id="users-per-page" class="select select-per-page">
           <option value="25" selected>25</option>
           <option value="50">50</option>
           <option value="100">100</option>
@@ -270,7 +270,7 @@
 </section>
 
 {{if .EditAppDevices}}
-<section class="card" style="margin-top: 1.5rem;">
+<section class="card card-mt">
   <div class="card-head">
     <h2>Клиентские приложения и безопасность устройств (Телеметрия)</h2>
     <p>Устройства Windows, macOS, Android и iOS, авторизованные под пользователем <b>{{.Edit.Username}}</b></p>
@@ -300,7 +300,7 @@
           </td>
           <td>
             {{$posture := .SecurityPosture}}
-            <div style="display: flex; gap: 0.3rem; flex-wrap: wrap;">
+            <div class="posture-badges">
               {{if eq .Platform "windows"}}
                 {{if eq (index $posture "bitlocker") "encrypted"}}
                   <span class="badge success" title="BitLocker активен">BitLocker: OK</span>
@@ -444,7 +444,7 @@
 </label>
 <div class="field">
   <span class="field-label">Специализация технической поддержки (SOS)</span>
-  <div style="display: flex; gap: 16px; align-items: center; margin-top: 4px; flex-wrap: wrap;">
+  <div class="support-roles-row">
     {{if .SupportCategories}}
       {{range .SupportCategories}}
       <label class="check">
@@ -468,7 +468,7 @@
 <div class="field">
   <span class="field-label">Локальные группы</span>
   {{if .AllGroups}}
-  <div class="select-grid" style="max-height: 140px;">
+  <div class="select-grid select-grid-capped">
     {{range .AllGroups}}
     <label class="select-chip">
       <input type="checkbox" name="groups" value="{{.ID}}"{{if hasUUID $.EditGroupIDs .ID}} checked{{end}}>
@@ -486,7 +486,7 @@
 {{if and .Edit .Edit.LDAPGroups}}
 <div class="field">
   <span class="field-label">Группы LDAP/Active Directory</span>
-  <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;">
+  <div class="ldap-groups-badges">
     {{range .Edit.LDAPGroups}}<span class="badge neutral" title="{{.}}">{{groupCN .}}</span>{{end}}
   </div>
   <span class="help">Синхронизируются автоматически из каталога при входе пользователя.</span>
@@ -501,69 +501,50 @@
 </fieldset>
 <label class="check"><input type="checkbox" name="radius_push" value="1"{{if and .Edit .Edit.RadiusPush}} checked{{end}}> <span>RADIUS Push — Telegram-подтверждение вместо кода</span></label>
 {{if and .Edit (not .Edit.TelegramLinked)}}
-<div class="help" style="color: #f59e0b; margin: 4px 0 8px 24px; font-size: 0.85rem;">
+<div class="help help-warning">
   ⚠️ <b>Внимание:</b> Telegram ещё не привязан к этому аккаунту. Пока пользователь не привяжет бота (в личном кабинете <code>/me</code>) или не введёт TOTP-код слитно с паролем, подключение к Wi-Fi будет <b>заблокировано</b> сервером (защита от неавторизованного входа).
 </div>
 {{else if not .Edit}}
-<div class="help" style="color: var(--muted); margin: 4px 0 8px 24px; font-size: 0.85rem;">
+<div class="help help-note">
   ℹ️ Для нового пользователя потребуется привязать Telegram-бота в <code>/me</code> после первого входа, иначе вход по RADIUS Push будет требовать TOTP-код.
 </div>
 {{end}}
-<div class="field" style="margin-top: 0.5rem;">
+<div class="field field-mt">
   <span class="field-label">📶 Сетевой сегмент / VLAN (Wi-Fi)</span>
-  <div style="display: flex; gap: 8px; align-items: center; max-width: 500px;">
-    <select class="select" id="user-vlan-select" onchange="var inp=document.getElementById('user-vlan-input'); if(this.value!=='custom'){ inp.value=this.value; } else { inp.focus(); }">
+  <div class="vlan-row">
+    <select class="select" id="user-vlan-select" data-vlan-input="user-vlan-input">
       <option value="">— По умолчанию (наследовать из группы / без VLAN) —</option>
       {{range $vid, $vname := $.VLANProfiles}}
         <option value="{{$vid}}"{{if and $.Edit (eq $.Edit.VLAN $vid)}} selected{{end}}>VLAN {{$vid}} — {{$vname}}</option>
       {{end}}
       <option value="custom"{{if and $.Edit $.Edit.VLAN (not (index $.VLANProfiles $.Edit.VLAN))}} selected{{end}}>Свой номер VLAN...</option>
     </select>
-    <input class="input mono" type="text" name="vlan_id" id="user-vlan-input" style="max-width: 130px;" placeholder="VLAN ID" value="{{if .Edit}}{{.Edit.VLAN}}{{end}}">
+    <input class="input mono vlan-input" type="text" name="vlan_id" id="user-vlan-input" placeholder="VLAN ID" value="{{if .Edit}}{{.Edit.VLAN}}{{end}}">
   </div>
   {{if and .Edit $.EditInheritedVLAN (not .Edit.VLAN)}}
-    <span class="help" style="color: var(--accent); font-weight: 500;">💡 Сейчас унаследован от группы <b>{{$.EditInheritedGroup}}</b>: <b>{{vlanDesc $.VLANProfiles $.EditInheritedVLAN}}</b>. Укажите номер только если нужно переопределить сегмент персонально для этого пользователя.</span>
+    <span class="help help-accent">💡 Сейчас унаследован от группы <b>{{$.EditInheritedGroup}}</b>: <b>{{vlanDesc $.VLANProfiles $.EditInheritedVLAN}}</b>. Укажите номер только если нужно переопределить сегмент персонально для этого пользователя.</span>
   {{else}}
     <span class="help">Автоматическая изоляция пользователя в указанный VLAN при подключении к корпоративному Wi-Fi или VPN (RFC 3580). Если не задан, наследуется из группы с наивысшим приоритетом.</span>
   {{end}}
 </div>
-<details class="advanced-details" style="margin: 8px 0 16px;">
-  <summary class="muted" style="cursor: pointer; font-size: 0.9rem; user-select: none;">⚙️ Дополнительные RADIUS-атрибуты (JSON)</summary>
-  <label class="field" style="margin-top: 8px;">
+<details class="advanced-details advanced-gap">
+  <summary class="muted summary-toggle">⚙️ Дополнительные RADIUS-атрибуты (JSON)</summary>
+  <label class="field field-mt-sm">
     <span class="field-label">RADIUS Reply <span class="muted">(JSON)</span></span>
     <textarea class="textarea mono" name="radius_reply" rows="3" placeholder='{"Mikrotik-Group": "vpn"}'>{{if .Edit}}{{.EditReplyJSON}}{{end}}</textarea>
-    <div class="radius-presets" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px;">
-      <span class="muted" style="font-size: 0.8rem; align-self: center;">Шаблоны:</span>
-      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_std')">⚡ MikroTik: 30M/50M</button>
-      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_vip')">⚡ MikroTik: 100M (VIP)</button>
-      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'mikrotik_guest')">⚡ MikroTik: 5M/10M</button>
-      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'unifi_vlan20')">🌐 UniFi: VLAN 20</button>
-      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'unifi_vlan30')">🌐 UniFi: VLAN 30</button>
-      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'workday')">⏱️ Смена 8ч + 1 сессия</button>
-      <button type="button" class="btn small outline" onclick="applyRadiusPreset(this, 'vpn_pool')">🛡️ VPN: Пул адресов</button>
+    <div class="radius-presets radius-presets-bar">
+      <span class="muted presets-label">Шаблоны:</span>
+      <button type="button" class="btn small outline" data-radius-preset="mikrotik_std">⚡ MikroTik: 30M/50M</button>
+      <button type="button" class="btn small outline" data-radius-preset="mikrotik_vip">⚡ MikroTik: 100M (VIP)</button>
+      <button type="button" class="btn small outline" data-radius-preset="mikrotik_guest">⚡ MikroTik: 5M/10M</button>
+      <button type="button" class="btn small outline" data-radius-preset="unifi_vlan20">🌐 UniFi: VLAN 20</button>
+      <button type="button" class="btn small outline" data-radius-preset="unifi_vlan30">🌐 UniFi: VLAN 30</button>
+      <button type="button" class="btn small outline" data-radius-preset="workday">⏱️ Смена 8ч + 1 сессия</button>
+      <button type="button" class="btn small outline" data-radius-preset="vpn_pool">🛡️ VPN: Пул адресов</button>
     </div>
     <span class="help">Специальные атрибуты Access-Accept (скорость MikroTik-Rate-Limit, VLAN Tunnel-Private-Group-Id, тайм-ауты Session-Timeout, пулы Framed-Pool и др.).</span>
   </label>
 </details>
-<script>
-function applyRadiusPreset(btn, preset) {
-  const form = btn.closest('form');
-  const textarea = form ? form.querySelector('textarea[name="radius_reply"]') : null;
-  if (!textarea) return;
-  const presets = {
-    'mikrotik_std': '{\\n  "Mikrotik-Rate-Limit": "30M/50M"\\n}',
-    'mikrotik_vip': '{\\n  "Mikrotik-Rate-Limit": "100M/100M",\\n  "Mikrotik-Group": "full"\\n}',
-    'mikrotik_guest': '{\\n  "Mikrotik-Rate-Limit": "5M/10M",\\n  "Mikrotik-Address-List": "guest_users"\\n}',
-    'unifi_vlan20': '{\\n  "Tunnel-Private-Group-Id": "20"\\n}',
-    'unifi_vlan30': '{\\n  "Tunnel-Private-Group-Id": "30"\\n}',
-    'workday': '{\\n  "Session-Timeout": "28800",\\n  "Idle-Timeout": "1800",\\n  "Port-Limit": "1"\\n}',
-    'vpn_pool': '{\\n  "Framed-Pool": "vpn_users",\\n  "Session-Timeout": "28800"\\n}'
-  };
-  if (presets[preset]) {
-    textarea.value = presets[preset].replace(/\\\\n/g, '\\n');
-  }
-}
-</script>
 <div class="form-actions">
   <button type="submit" class="btn primary">Сохранить</button>
 </div>

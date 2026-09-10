@@ -20,7 +20,7 @@
         <td class="detail">
           {{if .Detail}}
             {{if or (index .Detail "vlan") (index .Detail "nas") (index .Detail "device")}}
-              <div style="margin-bottom: 4px; display: flex; gap: 4px; flex-wrap: wrap;">
+              <div class="audit-detail-badges">
                 {{with index .Detail "vlan"}}<span class="badge info">VLAN {{.}}</span>{{end}}
                 {{with index .Detail "device"}}<span class="badge neutral" title="Устройство">📱 {{.}}</span>{{end}}
                 {{with index .Detail "nas"}}<span class="badge neutral" title="Точка доступа (NAS)">📡 {{.}}</span>{{end}}
