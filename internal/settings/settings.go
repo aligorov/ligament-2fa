@@ -205,6 +205,12 @@ type T struct {
 		DefaultPrefer    []channel.Channel
 	}
 
+	// Audit — ретеншн журнала audit_log (ключ audit.retention_days):
+	// ежедневная фоновая чистка удаляет события старше N дней; 0 — вечно.
+	Audit struct {
+		RetentionDays int
+	}
+
 	Support SupportSettings
 }
 
@@ -383,6 +389,7 @@ func defaultT() *T {
 	t.Policy.PushPerHour = 10
 	t.Policy.MaxFail = 5
 	t.Policy.DefaultPrefer = []channel.Channel{channel.TOTP, channel.Telegram, channel.Email, channel.SMS}
+	t.Audit.RetentionDays = 365
 	t.SMS = json.RawMessage(`{}`)
 	t.SMSPresets = json.RawMessage(`{}`)
 	t.Support.Enabled = true
@@ -819,6 +826,7 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Policy.PushPerHour = parseInt(pol["push_per_hour"], def.Policy.PushPerHour)
 	t.Policy.DefaultPrefer = parseChannels(pol["default_prefer_channels"], def.Policy.DefaultPrefer)
 	t.Policy.SessionTTL = parseDur(raw["web.session_ttl"], def.Policy.SessionTTL)
+	t.Audit.RetentionDays = parseInt(raw["audit.retention_days"], def.Audit.RetentionDays)
 
 	sup := fields(raw["support"])
 	t.Support.Enabled = parseBool(sup["enabled"], def.Support.Enabled)
@@ -1300,6 +1308,9 @@ func (t *T) masked() map[string]any {
 		},
 		"web": map[string]any{
 			"session_ttl": t.Policy.SessionTTL.String(),
+		},
+		"audit": map[string]any{
+			"retention_days": t.Audit.RetentionDays,
 		},
 	}
 }

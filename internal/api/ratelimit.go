@@ -7,6 +7,8 @@
 package api
 
 import (
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -143,4 +145,17 @@ func (m *limiterMap) cleanup(now time.Time) {
 			delete(m.entries, k)
 		}
 	}
+}
+
+// isStreamRequest сообщает, что запрос открывает потоковый канал
+// (WebSocket-апгрейд или SSE): только для таких запросов легитимен токен
+// в query-строке (?token= / ?admin_token=) — браузерный EventSource и
+// браузерный WebSocket не умеют ставить заголовок Authorization. Для
+// обычных JSON-запросов токен принимается исключительно из заголовка:
+// query-строка оседает в логах прокси и истории браузера.
+func isStreamRequest(r *http.Request) bool {
+	if r.Header.Get("Upgrade") != "" {
+		return true
+	}
+	return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 }

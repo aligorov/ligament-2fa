@@ -57,6 +57,9 @@ var defaults = map[string]json.RawMessage{
 	"webauthn":        json.RawMessage(`{"rp_id":"","rp_name":"twofa","origins":[]}`),
 	"policy":          json.RawMessage(`{"code_ttl":"5m","code_length":6,"max_attempts":5,"resend_cooldown":"60s","default_prefer_channels":["totp","telegram","email","sms"],"push_cooldown":"30s","push_per_hour":10,"trusted_device_ttl":"720h","max_fail":5,"fail_window":"5m","ban_time":"15m"}`),
 	"web.session_ttl": json.RawMessage(`"12h"`),
+	// audit.retention_days — ретеншн журнала audit_log (дней): ежедневная
+	// фоновая чистка удаляет события старше. 0 — хранить вечно.
+	"audit.retention_days": json.RawMessage(`365`),
 	"ldap":            json.RawMessage(`{"enabled":false,"url":"","starttls":false,"bind_dn":"","bind_password":"","base_dn":"","user_filter":"(&(objectClass=user)(sAMAccountName={login}))","group_base_dn":"","group_filter":"(&(objectClass=group)(member={dn}))","attrs":{"email":"mail","phone":"telephoneNumber","display_name":"displayName"},"allow_groups":[],"role_map":{},"group_radius_map":{}}`),
 	"support":         json.RawMessage(`{"enabled":true,"categories":[{"id":"it","name":"IT-служба","icon":"🖥","emails":[],"telegram_chat":0},{"id":"1c","name":"Поддержка 1С","icon":"📊","emails":[],"telegram_chat":0}],"disk_warning_percent":90,"disk_warning_min_gb":10,"cpu_warning_percent":95,"cpu_spike_duration_sec":15,"emails_it":[],"emails_1c":[],"telegram_chat_it":0,"telegram_chat_1c":0}`),
 	// oidc.keys — пара ключей подписи ID-токенов (RSA-2048, JSON

@@ -677,6 +677,7 @@ func TestDefaultsCoverKnownKeys(t *testing.T) {
 		"radius.cert_file", "radius.key_file", "radius.eap_cert", "acme",
 		"smtp", "sms.gateway", "sms.presets", "totp", "telegram", "webauthn",
 		"policy", "web.session_ttl", "ldap", "oidc.keys", "support",
+		"audit.retention_days",
 	}
 	if len(knownKeys) != len(want) {
 		t.Fatalf("knownKeys: %d ключей, ожидалось %d (%v)", len(knownKeys), len(want), knownKeys)

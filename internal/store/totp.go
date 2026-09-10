@@ -31,6 +31,22 @@ func (s *Store) TOTPSave(ctx context.Context, userID uuid.UUID, secretEnc []byte
 	return nil
 }
 
+// TOTPUpdateSecret заменяет шифротекст секрета, СОХРАНЯЯ подтверждённость и
+// replay-счётчик (перешифровка при смене username — AAD привязан к логину;
+// TOTPSave не годится: он сбрасывает confirmed_at и требует повторного
+// подтверждения). ErrNotFound, если секрета нет.
+func (s *Store) TOTPUpdateSecret(ctx context.Context, userID uuid.UUID, secretEnc []byte) error {
+	ct, err := s.Pool().Exec(ctx,
+		`UPDATE totp_secrets SET secret_enc = $2 WHERE user_id = $1`, userID, secretEnc)
+	if err != nil {
+		return fmt.Errorf("store: заменить шифротекст TOTP %s: %w", userID, err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // TOTPConfirm подтверждает выданный секрет; ErrNotFound, если секрета нет.
 func (s *Store) TOTPConfirm(ctx context.Context, userID uuid.UUID) error {
 	ct, err := s.Pool().Exec(ctx,
