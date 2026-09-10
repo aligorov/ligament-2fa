@@ -5,12 +5,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +34,12 @@ const (
 	appKeyDevice
 )
 
+// appFirewall — узкое окно в firewall.Guard (подача неудач входа в fail2ban,
+// без импорта пакета firewall и цикла зависимостей).
+type appFirewall interface {
+	Fail(ctx context.Context, ip, reason string)
+}
+
 // AppAPI предоставляет API для клиентских приложений Ligament Authenticator.
 type AppAPI struct {
 	core     *auth.Core
@@ -43,11 +49,24 @@ type AppAPI struct {
 	hub      *delivery.AppHub
 	oidc     *oidc.Manager
 	notifier *delivery.SupportNotifier
+	rl       *limiterMap // корзины username+IP для /app/login
+	fw       appFirewall // nil — неудачи входа не кормят fail2ban
 }
 
 // SetSupportNotifier подключает диспетчер оповещений поддержки.
 func (a *AppAPI) SetSupportNotifier(n *delivery.SupportNotifier) {
 	a.notifier = n
+}
+
+// SetFirewall подключает fail2ban-guard: неудачные app-логины считаются
+// по IP наравне с web-входом (аудит раунд-2: app-путь был невидим fail2ban).
+func (a *AppAPI) SetFirewall(f appFirewall) { a.fw = f }
+
+// Stop освобождает фоновую очистку rate-limiter.
+func (a *AppAPI) Stop() {
+	if a.rl != nil {
+		a.rl.Stop()
+	}
 }
 
 // NewAppAPI создает обработчик клиентского API.
@@ -59,6 +78,7 @@ func NewAppAPI(core *auth.Core, st *store.Store, pv auth.PasswordVerifier, set *
 		set:  set,
 		hub:  hub,
 		oidc: oidcMgr,
+		rl:   newLimiterMap(),
 	}
 }
 
@@ -136,11 +156,39 @@ type appUserResponse struct {
 	SupportRoles []string  `json:"support_roles"`
 }
 
-// handleLogin — авторизация устройства в приложении.
+// allow проверяет rate-limit корзины username и IP /app/login (как
+// /auth/start и web-вход); при исчерпании сам отвечает 429.
+func (a *AppAPI) allow(w http.ResponseWriter, r *http.Request, username string) bool {
+	if !a.rl.Allow("u:"+username) || !a.rl.Allow("ip:"+clientIP(r)) {
+		w.Header().Set("Retry-After", strconv.Itoa(rlRetryAfterSec))
+		writeJSON(w, http.StatusTooManyRequests,
+			map[string]any{"error": "rate_limited", "retry_after": rlRetryAfterSec})
+		return false
+	}
+	return true
+}
+
+// failLogin фиксирует неудачный app-вход: событие login_fail (flow=app)
+// кормит per-user fail-счётчик (core.FailLocked считает login_fail) и
+// fail2ban (Guard.Fail по IP).
+func (a *AppAPI) failLogin(ctx context.Context, username, ip, reason string, detail map[string]any) {
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	detail["reason"] = reason
+	detail["flow"] = "app"
+	a.audit(ctx, username, "login_fail", detail, ip, "fail")
+	if a.fw != nil {
+		a.fw.Fail(ctx, ip, "login_fail")
+	}
+}
+
+// handleLogin — авторизация устройства в приложении. Защищён как web-вход
+// (аудит раунд-2): rate-limit username+IP, per-user fail-блокировка до
+// проверки пароля, единый 401 против перечисления, кормление fail2ban.
 func (a *AppAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req appLoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_json")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
@@ -148,21 +196,41 @@ func (a *AppAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "empty_credentials")
 		return
 	}
+	if !a.allow(w, r, req.Username) {
+		return
+	}
+	ctx := r.Context()
 	ip := clientIP(r)
 
-	// Проверка первого фактора (пароля) через PasswordVerifier
-	if _, err := a.pv.Verify(r.Context(), req.Username, req.Password); err != nil {
-		a.audit(r.Context(), req.Username, "app_login_fail",
-			map[string]any{"reason": "bad_credentials", "platform": req.Platform, "device": req.DeviceName}, ip, "fail")
+	// Пользователь нужен для fail-блокировки; отсутствие не раскрывается
+	// (ответ проходит через ту же argon2-проверку, что и существующий).
+	user, lookupErr := a.st.UserByUsername(ctx, req.Username)
+	if lookupErr != nil && !errors.Is(lookupErr, store.ErrNotFound) {
+		slog.Error("app_api: поиск пользователя при входе", "error", lookupErr)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	if lookupErr == nil && a.core != nil && a.core.FailLocked(ctx, user.ID) {
+		a.failLogin(ctx, user.Username, ip, "locked", nil)
+		writeError(w, http.StatusLocked, "locked")
+		return
+	}
+
+	// Проверка первого фактора (пароля) через PasswordVerifier.
+	if _, err := a.pv.Verify(ctx, req.Username, req.Password); err != nil {
+		a.failLogin(ctx, req.Username, ip, "bad_credentials",
+			map[string]any{"platform": req.Platform, "device": req.DeviceName})
+		writeError(w, http.StatusUnauthorized, "invalid_credentials")
+		return
+	}
+	if lookupErr != nil {
+		// Несуществующий пользователь: argon2 уже сожжён Verify — отвечаем
+		// тем же кодом, что и неверный пароль.
+		a.failLogin(ctx, req.Username, ip, "no_user", nil)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials")
 		return
 	}
 
-	user, err := a.st.UserByUsername(r.Context(), req.Username)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid_credentials")
-		return
-	}
 	if !user.Enabled {
 		writeError(w, http.StatusForbidden, "user_disabled")
 		return
@@ -241,14 +309,19 @@ func (a *AppAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// authMiddleware проверяет Bearer токен клиентского приложения.
+// authMiddleware проверяет Bearer токен клиентского приложения. Токен в
+// ?token= принимается только для WS/SSE-запросов (браузерные EventSource и
+// WebSocket не умеют заголовок Authorization; для обычных JSON-запросов
+// query-строка оседает в логах прокси и истории — только заголовок).
+// Токен бессрочным не является: истёкший (expires_at) отклоняется, при
+// использовании лениво продлевается sliding-окном (store.AppDeviceTouch).
 func (a *AppAPI) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		var tokenStr string
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			tokenStr = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-		} else if qToken := r.URL.Query().Get("token"); qToken != "" {
+		} else if qToken := r.URL.Query().Get("token"); qToken != "" && isStreamRequest(r) {
 			tokenStr = strings.TrimSpace(qToken)
 		}
 
@@ -272,6 +345,12 @@ func (a *AppAPI) authMiddleware(next http.Handler) http.Handler {
 
 		// Обновляем активность устройства
 		_ = a.st.AppDeviceUpdateSeen(r.Context(), device.ID, clientIP(r), device.SecurityPosture)
+
+		// Sliding-продление токена: UPDATE только когда до истечения
+		// осталось меньше окна продления — регулярный запрос не пишет в БД.
+		if device.ExpiresAt.Before(time.Now().Add(store.AppDeviceRenewWindow)) {
+			_ = a.st.AppDeviceTouch(r.Context(), device.ID)
+		}
 
 		ctx := context.WithValue(r.Context(), appKeyDevice, device)
 		ctx = context.WithValue(ctx, appKeyUser, user)
@@ -311,8 +390,7 @@ func (a *AppAPI) handleUpdatePushToken(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PushToken string `json:"push_token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_json")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -331,8 +409,7 @@ func (a *AppAPI) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SecurityPosture map[string]any `json:"security_posture"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_json")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if req.SecurityPosture == nil {
@@ -442,8 +519,7 @@ func (a *AppAPI) handleChallengeDecision(w http.ResponseWriter, r *http.Request)
 		Decision    string `json:"decision"` // approve | deny
 		NumberMatch string `json:"number_match,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_json")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	req.Decision = strings.ToLower(strings.TrimSpace(req.Decision))
@@ -734,8 +810,7 @@ func (a *AppAPI) handleSupportRequest(w http.ResponseWriter, r *http.Request) {
 	user, _ := appUserFromCtx(r.Context())
 
 	var req supportRequestPayload
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_json")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -842,8 +917,7 @@ func (a *AppAPI) handleSupportDecision(w http.ResponseWriter, r *http.Request) {
 		Decision    string `json:"decision"` // approve | deny
 		NumberMatch string `json:"number_match,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_json")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	req.Decision = strings.ToLower(strings.TrimSpace(req.Decision))
@@ -866,6 +940,21 @@ func (a *AppAPI) handleSupportDecision(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 
 	if req.Decision == "approve" {
+		// Переход допустим только из неразыгранных состояний; requested→active
+		// требует назначенного оператора (connect прошёл). connecting сам по
+		// себе — операторское действие (connect), оно могло прийти и по
+		// admin-токену без user_id (аудит раунд-2, находка D).
+		switch ss.Status {
+		case "requested", "connecting":
+		default:
+			writeError(w, http.StatusConflict, "invalid_session_state")
+			return
+		}
+		if ss.AssignedAdminID == nil && ss.Status != "connecting" {
+			writeError(w, http.StatusConflict, "no_operator_assigned")
+			return
+		}
+
 		// Проверка 2FA Number Matching
 		if ss.NumberMatch != "" && strings.TrimSpace(req.NumberMatch) != ss.NumberMatch {
 			a.audit(r.Context(), user.Username, "support_decision_mismatch", map[string]any{
@@ -878,6 +967,9 @@ func (a *AppAPI) handleSupportDecision(w http.ResponseWriter, r *http.Request) {
 		}
 
 		_ = a.st.SupportSessionUpdateStatus(r.Context(), ss.ID, "active", ss.AssignedAdminID, "")
+		// Код number-match одноразовый: после approve гасим, повторно
+		// использовать подсмотренный код нельзя.
+		_ = a.st.SupportSessionClearNumberMatch(r.Context(), ss.ID)
 		if a.hub != nil {
 			a.hub.SendEventToAdmin(ss.ID, "session_approved", map[string]any{"user": user.Username})
 		}
@@ -900,7 +992,11 @@ func (a *AppAPI) handleSupportDecision(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSupportSignal транслирует сигнальные сообщения WebRTC от клиента в браузер оператора.
+// Проверяется владение сессией и живое состояние (аудит раунд-2, IDOR:
+// раньше сигнал/чат можно было слать в ЛЮБУЮ сессию по UUID).
 func (a *AppAPI) handleSupportSignal(w http.ResponseWriter, r *http.Request) {
+	user, _ := appUserFromCtx(r.Context())
+
 	idStr := chi.URLParam(r, "id")
 	sessID, err := uuid.Parse(idStr)
 	if err != nil {
@@ -908,9 +1004,28 @@ func (a *AppAPI) handleSupportSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ss, err := a.st.SupportSessionGet(r.Context(), sessID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "session_not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+	if user == nil || ss.UserID != user.ID {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	switch ss.Status {
+	case "requested", "connecting", "active", "transferred":
+	default:
+		writeError(w, http.StatusConflict, "invalid_session_state")
+		return
+	}
+
 	var signal map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&signal); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_json")
+	if !decodeJSON(w, r, &signal) {
 		return
 	}
 
@@ -919,7 +1034,6 @@ func (a *AppAPI) handleSupportSignal(w http.ResponseWriter, r *http.Request) {
 		text, _ := signal["text"].(string)
 		senderName, _ := signal["sender_name"].(string)
 		if strings.TrimSpace(text) != "" {
-			user, _ := appUserFromCtx(r.Context())
 			if senderName == "" && user != nil {
 				senderName = user.DisplayName
 				if senderName == "" {
@@ -934,11 +1048,7 @@ func (a *AppAPI) handleSupportSignal(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = a.st.SupportMessageCreate(r.Context(), msg)
 			if a.hub != nil {
-				var uid uuid.UUID
-				if user != nil {
-					uid = user.ID
-				}
-				a.hub.SendSupportChatMessage(sessID, uid, msg)
+				a.hub.SendSupportChatMessage(sessID, user.ID, msg)
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "message": msg})
 			return
@@ -1006,8 +1116,7 @@ func (a *AppAPI) handleSupportMessageSend(w http.ResponseWriter, r *http.Request
 		Text       string `json:"text"`
 		SenderName string `json:"sender_name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_json")
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -1053,6 +1162,7 @@ func (a *AppAPI) handleSupportMessageSend(w http.ResponseWriter, r *http.Request
 }
 
 // handleSupportEnd завершает активный сеанс удаленного доступа по инициативе пользователя.
+// Владение сессией проверяется как в decision (аудит раунд-2, IDOR).
 func (a *AppAPI) handleSupportEnd(w http.ResponseWriter, r *http.Request) {
 	user, _ := appUserFromCtx(r.Context())
 
@@ -1060,6 +1170,20 @@ func (a *AppAPI) handleSupportEnd(w http.ResponseWriter, r *http.Request) {
 	sessID, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_id")
+		return
+	}
+
+	ss, err := a.st.SupportSessionGet(r.Context(), sessID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "session_not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+	if user == nil || ss.UserID != user.ID {
+		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
@@ -1175,17 +1299,16 @@ func (a *AppAPI) handleSupportConnect(w http.ResponseWriter, r *http.Request) {
 		adminName = user.Username
 	}
 
-	// Генерируем 2-значное число (10..99) для Zero-Trust Number Matching
-	numberMatch := session.NumberMatch
-	if numberMatch == "" {
-		nBig, err := rand.Int(rand.Reader, big.NewInt(90))
-		num := 42
-		if err == nil {
-			num = int(nBig.Int64()) + 10
-		}
-		numberMatch = fmt.Sprintf("%02d", num)
-		session.NumberMatch = numberMatch
+	// Number Matching: код генерируется ЗАНОВО на каждый connect (аудит
+	// раунд-2, находка A): переиспользование подсмотренного кода и
+	// «вечная» пара цифр исключены.
+	nBig, err := rand.Int(rand.Reader, big.NewInt(90))
+	num := 42
+	if err == nil {
+		num = int(nBig.Int64()) + 10
 	}
+	numberMatch := fmt.Sprintf("%02d", num)
+	session.NumberMatch = numberMatch
 
 	if err := a.st.SupportSessionUpdateStatus(r.Context(), session.ID, "connecting", &user.ID, numberMatch); err != nil {
 		slog.Error("app_api: ошибка обновления статуса сессии", "error", err)
@@ -1218,5 +1341,3 @@ func (a *AppAPI) handleSupportConnect(w http.ResponseWriter, r *http.Request) {
 		"session":      session,
 	})
 }
-
-

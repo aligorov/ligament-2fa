@@ -75,6 +75,16 @@
         <span class="field-label">Ожидание push (duration)</span>
         <input class="input mono" type="text" name="radius.push_wait" value="{{.S.Radius.PushWait}}">
       </label>
+      <label class="field">
+        <span class="field-label">Требовать Message-Authenticator</span>
+        <input type="checkbox" name="radius.require_message_authenticator" value="1" {{if .S.Radius.RequireMessageAuthenticator}}checked{{end}}>
+        <span class="help">Access-Request без валидного Message-Authenticator отклоняется (RFC 3579 / митигация BlastRADIUS). Отключайте только для очень старых NAS.</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Лимит пакетов на NAS (pps)</span>
+        <input class="input" type="number" name="radius.rate_limit_pps" value="{{.S.Radius.RateLimitPPS}}">
+        <span class="help">Token bucket пакетов в секунду с одного NAS до тяжёлой работы (argon2/БД). 0 — лимит выключен.</span>
+      </label>
     </div>
     <label class="field">
       <span class="field-label">Reply-атрибуты Accept (JSON)</span>

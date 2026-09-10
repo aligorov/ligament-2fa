@@ -375,6 +375,39 @@ func main() {
 		}()
 	}
 
+	// Ретеншн audit_log: ежедневная чистка событий старше
+	// audit.retention_days (0 — выключено). Снимок читается на каждом
+	// проходе — SIGHUP применяет смену настройки без рестарта.
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		cleanupAudit := func() {
+			days := m.Get().Audit.RetentionDays
+			if days <= 0 {
+				return
+			}
+			cctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			n, err := st.AuditDeleteOlderThan(cctx, days)
+			if err != nil {
+				slog.Warn("main: ретеншн audit_log", "error", err)
+				return
+			}
+			if n > 0 {
+				slog.Info("main: ретеншн audit_log", "deleted", n, "older_than_days", days)
+			}
+		}
+		cleanupAudit()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cleanupAudit()
+			}
+		}
+	}()
+
 	// RADIUS auth+acct: слушатели поднимаются в ListenAndServe, Shutdown —
 	// по отмене ctx (grace внутри radiusserver).
 	radiusDone := make(chan struct{})

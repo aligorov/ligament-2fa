@@ -12,6 +12,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// Параметры TTL device-токена: выдаётся на 90 дней, при использовании
+// лениво продлевается (sliding), когда осталось меньше 30 дней.
+const (
+	AppDeviceTTL         = 90 * 24 * time.Hour
+	AppDeviceRenewWindow = 30 * 24 * time.Hour
+)
+
 // AppDevice — клиентское приложение (Windows, Android, iOS), авторизованное пользователем.
 type AppDevice struct {
 	ID              uuid.UUID      `json:"id"`
@@ -27,12 +34,13 @@ type AppDevice struct {
 	SecurityPosture map[string]any `json:"security_posture"`
 	LastIP          string         `json:"last_ip"`
 	LastSeenAt      time.Time      `json:"last_seen_at"`
+	ExpiresAt       time.Time      `json:"expires_at"`
 	CreatedAt       time.Time      `json:"created_at"`
 }
 
 const appDeviceCols = `id, user_id, device_name, platform, public_key, push_token,
 	token_hash, active, os_version, app_version, COALESCE(security_posture, '{}'::jsonb),
-	last_ip, last_seen_at, created_at`
+	last_ip, last_seen_at, expires_at, created_at`
 
 func scanAppDevice(row scanner) (*AppDevice, error) {
 	var d AppDevice
@@ -40,7 +48,7 @@ func scanAppDevice(row scanner) (*AppDevice, error) {
 	if err := row.Scan(
 		&d.ID, &d.UserID, &d.DeviceName, &d.Platform, &d.PublicKey,
 		&d.PushToken, &d.TokenHash, &d.Active, &d.OSVersion, &d.AppVersion,
-		&postureBytes, &d.LastIP, &d.LastSeenAt, &d.CreatedAt,
+		&postureBytes, &d.LastIP, &d.LastSeenAt, &d.ExpiresAt, &d.CreatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -67,20 +75,22 @@ func (s *Store) AppDeviceCreate(ctx context.Context, d *AppDevice) error {
 		(id, user_id, device_name, platform, public_key, push_token, token_hash,
 		 active, os_version, app_version, security_posture, last_ip)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		RETURNING last_seen_at, created_at`,
+		RETURNING last_seen_at, expires_at, created_at`,
 		d.ID, d.UserID, d.DeviceName, d.Platform, d.PublicKey, d.PushToken,
 		d.TokenHash, d.Active, d.OSVersion, d.AppVersion, postureJSON, d.LastIP,
-	).Scan(&d.LastSeenAt, &d.CreatedAt)
+	).Scan(&d.LastSeenAt, &d.ExpiresAt, &d.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("store: создать app_device: %w", err)
 	}
 	return nil
 }
 
-// AppDeviceGetByTokenHash находит активное устройство по хешу bearer-токена.
+// AppDeviceGetByTokenHash находит активное устройство по хешу bearer-токена;
+// истёкший токен (expires_at) не находится — как и отозванный.
 func (s *Store) AppDeviceGetByTokenHash(ctx context.Context, tokenHash []byte) (*AppDevice, error) {
 	d, err := scanAppDevice(s.Pool().QueryRow(ctx,
-		`SELECT `+appDeviceCols+` FROM app_devices WHERE token_hash = $1 AND active = true`, tokenHash))
+		`SELECT `+appDeviceCols+` FROM app_devices
+		 WHERE token_hash = $1 AND active = true AND expires_at > now()`, tokenHash))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -113,7 +123,9 @@ func (s *Store) AppDeviceListByUser(ctx context.Context, userID uuid.UUID) ([]*A
 // AppDeviceActiveListByUser возвращает только активные авторизованные устройства пользователя.
 func (s *Store) AppDeviceActiveListByUser(ctx context.Context, userID uuid.UUID) ([]*AppDevice, error) {
 	rows, err := s.Pool().Query(ctx,
-		`SELECT `+appDeviceCols+` FROM app_devices WHERE user_id = $1 AND active = true ORDER BY last_seen_at DESC`, userID)
+		`SELECT `+appDeviceCols+` FROM app_devices
+		 WHERE user_id = $1 AND active = true AND expires_at > now()
+		 ORDER BY last_seen_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("store: список активных app_devices для %s: %w", userID, err)
 	}
@@ -134,11 +146,29 @@ func (s *Store) AppDeviceActiveListByUser(ctx context.Context, userID uuid.UUID)
 func (s *Store) AppDeviceHasActive(ctx context.Context, userID uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.Pool().QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM app_devices WHERE user_id = $1 AND active = true)`, userID).Scan(&exists)
+		`SELECT EXISTS (SELECT 1 FROM app_devices
+		 WHERE user_id = $1 AND active = true AND expires_at > now())`, userID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("store: проверка активных app_devices %s: %w", userID, err)
 	}
 	return exists, nil
+}
+
+// AppDeviceTouch продлевает срок жизни токена устройства (sliding TTL):
+// UPDATE выполняется только когда до expires_at осталось меньше окна
+// продления — обычный запрос не платит ценой записи. Сама команда условна
+// (expires_at < now()+окно), гонка параллельных касаний безвредна: обе
+// записывают одно и то же now()+TTL.
+func (s *Store) AppDeviceTouch(ctx context.Context, id uuid.UUID) error {
+	_, err := s.Pool().Exec(ctx, `
+		UPDATE app_devices
+		SET expires_at = now() + make_interval(secs => $2::float8)
+		WHERE id = $1 AND expires_at < now() + make_interval(secs => $3::float8)`,
+		id, AppDeviceTTL.Seconds(), AppDeviceRenewWindow.Seconds())
+	if err != nil {
+		return fmt.Errorf("store: продление app_device %s: %w", id, err)
+	}
+	return nil
 }
 
 // AppDeviceUpdateSeen обновляет время активности, IP и снимок телеметрии устройства.

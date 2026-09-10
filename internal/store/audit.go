@@ -58,6 +58,21 @@ func (s *Store) Audit(ctx context.Context, username, event string, detail map[st
 	return nil
 }
 
+// AuditDeleteOlderThan удаляет события старше days дней (ретеншн журнала,
+// daily-задача main). days <= 0 — no-op (ретеншн выключен). Возвращает число
+// удалённых строк.
+func (s *Store) AuditDeleteOlderThan(ctx context.Context, days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	ct, err := s.Pool().Exec(ctx,
+		`DELETE FROM audit_log WHERE ts < now() - make_interval(days => $1::int)`, days)
+	if err != nil {
+		return 0, fmt.Errorf("store: ретеншн audit_log (%d дней): %w", days, err)
+	}
+	return ct.RowsAffected(), nil
+}
+
 // AuditList возвращает записи аудита по фильтру, новые первыми
 // (ORDER BY ts DESC, id DESC); лимит по умолчанию 100.
 func (s *Store) AuditList(ctx context.Context, f AuditFilter) ([]*AuditRow, error) {

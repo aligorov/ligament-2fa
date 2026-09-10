@@ -14,22 +14,22 @@ import (
 
 // SupportSession — сессия экстренной удаленной помощи и поддержки.
 type SupportSession struct {
-	ID                  uuid.UUID      `json:"id"`
-	UserID              uuid.UUID      `json:"user_id"`
-	DeviceID            uuid.UUID      `json:"device_id"`
-	Category            string         `json:"category"` // "it" | "1c"
-	Status              string         `json:"status"`   // "requested" | "authorizing" | "approved" | "active" | "transferred" | "rejected" | "completed" | "cancelled"
-	ProblemSummary      string         `json:"problem_summary"`
-	AssignedAdminID     *uuid.UUID     `json:"assigned_admin_id,omitempty"`
-	TransferredFromID   *uuid.UUID     `json:"transferred_from_id,omitempty"`
-	TransferredToID     *uuid.UUID     `json:"transferred_to_id,omitempty"`
-	TransferTokenHash   []byte         `json:"-"`
-	NumberMatch         string         `json:"number_match,omitempty"`
-	AccessMode          string         `json:"access_mode"` // "full_control" | "view_only"
-	StartedAt           *time.Time     `json:"started_at,omitempty"`
-	EndedAt             *time.Time     `json:"ended_at,omitempty"`
-	Metadata            map[string]any `json:"metadata"`
-	CreatedAt           time.Time      `json:"created_at"`
+	ID                uuid.UUID      `json:"id"`
+	UserID            uuid.UUID      `json:"user_id"`
+	DeviceID          uuid.UUID      `json:"device_id"`
+	Category          string         `json:"category"` // "it" | "1c"
+	Status            string         `json:"status"`   // "requested" | "authorizing" | "approved" | "active" | "transferred" | "rejected" | "completed" | "cancelled"
+	ProblemSummary    string         `json:"problem_summary"`
+	AssignedAdminID   *uuid.UUID     `json:"assigned_admin_id,omitempty"`
+	TransferredFromID *uuid.UUID     `json:"transferred_from_id,omitempty"`
+	TransferredToID   *uuid.UUID     `json:"transferred_to_id,omitempty"`
+	TransferTokenHash []byte         `json:"-"`
+	NumberMatch       string         `json:"number_match,omitempty"`
+	AccessMode        string         `json:"access_mode"` // "full_control" | "view_only"
+	StartedAt         *time.Time     `json:"started_at,omitempty"`
+	EndedAt           *time.Time     `json:"ended_at,omitempty"`
+	Metadata          map[string]any `json:"metadata"`
+	CreatedAt         time.Time      `json:"created_at"`
 
 	// Виртуальные поля (присоединяемые при выборке для UI)
 	Username    string `json:"username,omitempty"`
@@ -49,6 +49,20 @@ type SupportFilter struct {
 	ActiveOnly bool
 	Limit      int
 }
+
+// supportPendingTTL — время жизни неразыгранной заявки: requested/connecting
+// старше этого срока считаются истёкшими (фильтры выборки переводят их в
+// expired при cleanup). Окно усталости закрывается, «залежавшуюся» заявку
+// нельзя подключить через сколь угодно долгое время.
+const supportPendingTTL = 15 * time.Minute
+
+// supportTransferTTL — окно действия transfer-токена переадресации.
+const supportTransferTTL = 10 * time.Minute
+
+// notStalePending — SQL-фрагмент «неразыгранная заявка не просрочена»
+// (используется фильтрами активных сессий).
+const notStalePending = ` NOT (s.status IN ('requested', 'connecting')
+		       AND s.created_at < now() - interval '15 minutes')`
 
 // SupportSessionCreate создаёт новую сессию поддержки.
 func (s *Store) SupportSessionCreate(ctx context.Context, ss *SupportSession) error {
@@ -127,7 +141,9 @@ func (s *Store) SupportSessionGet(ctx context.Context, id uuid.UUID) (*SupportSe
 	return &ss, nil
 }
 
-// SupportSessionGetByTransferToken возвращает сессию по хешу токена переадресации.
+// SupportSessionGetByTransferToken возвращает сессию по хешу токена
+// переадресации. Токен действует supportTransferTTL (10 минут) от момента
+// передачи; после принятия хеш очищается (single-use).
 func (s *Store) SupportSessionGetByTransferToken(ctx context.Context, tokenHash []byte) (*SupportSession, error) {
 	row := s.Pool().QueryRow(ctx, `
 		SELECT s.id, s.user_id, s.device_id, s.category, s.status, s.problem_summary,
@@ -139,7 +155,8 @@ func (s *Store) SupportSessionGetByTransferToken(ctx context.Context, tokenHash 
 		FROM support_sessions s
 		LEFT JOIN users u ON u.id = s.user_id
 		LEFT JOIN app_devices d ON d.id = s.device_id
-		WHERE s.transfer_token_hash = $1 AND s.status IN ('approved', 'active', 'transferred')`, tokenHash)
+		WHERE s.transfer_token_hash = $1 AND s.status IN ('approved', 'active', 'transferred')
+		  AND s.transferred_at > now() - interval '10 minutes'`, tokenHash)
 
 	var ss SupportSession
 	var metaRaw []byte
@@ -165,7 +182,9 @@ func (s *Store) SupportSessionGetByTransferToken(ctx context.Context, tokenHash 
 	return &ss, nil
 }
 
-// SupportSessionActiveByUser возвращает активную или ожидающую сессию пользователя.
+// SupportSessionActiveByUser возвращает активную или ожидающую сессию
+// пользователя (неразыгранные заявки старше supportPendingTTL не считаются
+// активными — окно усталости закрыто).
 func (s *Store) SupportSessionActiveByUser(ctx context.Context, userID uuid.UUID) (*SupportSession, error) {
 	row := s.Pool().QueryRow(ctx, `
 		SELECT s.id, s.user_id, s.device_id, s.category, s.status, s.problem_summary,
@@ -178,6 +197,7 @@ func (s *Store) SupportSessionActiveByUser(ctx context.Context, userID uuid.UUID
 		LEFT JOIN users u ON u.id = s.user_id
 		LEFT JOIN app_devices d ON d.id = s.device_id
 		WHERE s.user_id = $1 AND s.status IN ('requested', 'connecting', 'authorizing', 'approved', 'active', 'transferred')
+		  AND`+notStalePending+`
 		ORDER BY s.created_at DESC LIMIT 1`, userID)
 
 	var ss SupportSession
@@ -241,7 +261,8 @@ func (s *Store) SupportSessionList(ctx context.Context, f SupportFilter) ([]Supp
 		}
 	}
 	if f.ActiveOnly {
-		query += " AND s.status IN ('requested', 'connecting', 'authorizing', 'approved', 'active', 'transferred')"
+		query += ` AND s.status IN ('requested', 'connecting', 'authorizing', 'approved', 'active', 'transferred')
+		   AND` + notStalePending
 	} else if len(f.Statuses) > 0 {
 		query += fmt.Sprintf(" AND s.status = ANY($%d)", argIdx)
 		args = append(args, f.Statuses)
@@ -332,13 +353,16 @@ func (s *Store) SupportSessionUpdateStatus(ctx context.Context, id uuid.UUID, st
 	return nil
 }
 
-// SupportSessionTransfer выполняет переадресацию сессии на другого сотрудника.
+// SupportSessionTransfer выполняет переадресацию сессии на другого сотрудника:
+// фиксирует момент выдачи transfer-токена (transferred_at — старт окна
+// supportTransferTTL, в течение которого токен можно принять).
 func (s *Store) SupportSessionTransfer(ctx context.Context, id uuid.UUID, fromID uuid.UUID, toID *uuid.UUID, tokenHash []byte) error {
 	_, err := s.Pool().Exec(ctx, `UPDATE support_sessions SET
 		status = 'transferred',
 		transferred_from_id = $2,
 		transferred_to_id = $3,
-		transfer_token_hash = $4
+		transfer_token_hash = $4,
+		transferred_at = now()
 		WHERE id = $1`,
 		id, fromID, toID, tokenHash)
 	if err != nil {
@@ -347,15 +371,29 @@ func (s *Store) SupportSessionTransfer(ctx context.Context, id uuid.UUID, fromID
 	return nil
 }
 
-// SupportSessionAcceptTransfer принимает переадресованную сессию новым оператором.
+// SupportSessionAcceptTransfer принимает переадресованную сессию новым
+// оператором. Transfer-токен одноразовый: хеш очищается, повторное
+// принятие по той же ссылке невозможно.
 func (s *Store) SupportSessionAcceptTransfer(ctx context.Context, id uuid.UUID, newAdminID uuid.UUID) error {
 	_, err := s.Pool().Exec(ctx, `UPDATE support_sessions SET
 		status = 'active',
-		assigned_admin_id = $2
+		assigned_admin_id = $2,
+		transfer_token_hash = NULL
 		WHERE id = $1`,
 		id, newAdminID)
 	if err != nil {
 		return fmt.Errorf("store: принять переадресацию support_session %s: %w", id, err)
+	}
+	return nil
+}
+
+// SupportSessionClearNumberMatch гасит код number-match после успешного
+// approve: подсмотренный/подобранный код нельзя использовать повторно.
+func (s *Store) SupportSessionClearNumberMatch(ctx context.Context, id uuid.UUID) error {
+	_, err := s.Pool().Exec(ctx,
+		`UPDATE support_sessions SET number_match = '' WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("store: погасить number_match support_session %s: %w", id, err)
 	}
 	return nil
 }
@@ -387,9 +425,21 @@ func (s *Store) SupportSessionDelete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// SupportSessionCleanupClosed удаляет все завершенные, отклоненные или отмененные сессии.
+// SupportSessionCleanupClosed переводит «залежавшиеся» неразыгранные заявки
+// (requested/connecting старше supportPendingTTL) в expired и удаляет все
+// завершённые сессии (включая expired).
 func (s *Store) SupportSessionCleanupClosed(ctx context.Context) (int64, error) {
-	ct, err := s.Pool().Exec(ctx, `DELETE FROM support_sessions WHERE status IN ('completed', 'ended_by_admin', 'ended_by_user', 'rejected', 'cancelled')`)
+	if _, err := s.Pool().Exec(ctx, `
+		UPDATE support_sessions SET
+			status = 'expired',
+			ended_at = now(),
+			updated_at = now()
+		WHERE status IN ('requested', 'connecting')
+		  AND created_at < now() - interval '15 minutes'`); err != nil {
+		return 0, fmt.Errorf("store: истечь просроченные support_sessions: %w", err)
+	}
+	ct, err := s.Pool().Exec(ctx, `DELETE FROM support_sessions
+		WHERE status IN ('completed', 'ended_by_admin', 'ended_by_user', 'rejected', 'cancelled', 'expired')`)
 	if err != nil {
 		return 0, fmt.Errorf("store: очистить завершенные support_sessions: %w", err)
 	}
@@ -400,7 +450,7 @@ func (s *Store) SupportSessionCleanupClosed(ctx context.Context) (int64, error) 
 type SupportMessage struct {
 	ID         uuid.UUID `json:"id"`
 	SessionID  uuid.UUID `json:"session_id"`
-	Sender     string    `json:"sender"`      // "user" | "operator"
+	Sender     string    `json:"sender"` // "user" | "operator"
 	SenderName string    `json:"sender_name"`
 	Text       string    `json:"text"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -446,4 +496,3 @@ func (s *Store) SupportMessagesList(ctx context.Context, sessionID uuid.UUID) ([
 	}
 	return out, rows.Err()
 }
-

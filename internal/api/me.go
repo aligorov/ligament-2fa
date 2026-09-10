@@ -238,6 +238,12 @@ func (p *MeAPI) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
 	if err := p.st.DeviceDeleteAllForUser(ctx, user.ID); err != nil {
 		slog.Warn("api: отзыв устройств после смены пароля", "error", err)
 	}
+	// App-устройства отзываются наравне с web-сессиями: device-токен даёт
+	// approve-права push-челленджей и не должен переживать смену пароля
+	// (аудит раунд-2, N2).
+	if err := p.st.AppDeviceRevokeAllForUser(ctx, user.ID); err != nil {
+		slog.Warn("api: отзыв app-устройств после смены пароля", "error", err)
+	}
 	setCookie(w, cookieSession, "", -1)
 	setCookie(w, cookieDevice, "", -1)
 	p.audit(ctx, user.Username, "password_change", ip, "ok", nil)

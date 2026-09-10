@@ -69,16 +69,37 @@ type AdminAPI struct {
 	acme           *acme.Manager
 	hub            *delivery.AppHub
 	notifier       *delivery.SupportNotifier
+	// rlAdmin — корзины IP для неудачных проверок admin-токена (анти-брут
+	// статического секрета; аудит раунд-2, N7).
+	rlAdmin *limiterMap
+	// f2b — подача неудачных проверок admin-токена в fail2ban (Guard.Fail).
+	f2b interface {
+		Fail(ctx context.Context, ip, reason string)
+	}
 }
 
 func (a *AdminAPI) SetRadius(srv *radiusserver.Server)             { a.radius = srv }
-func (a *AdminAPI) SetACME(mgr *acme.Manager)                     { a.acme = mgr }
-func (a *AdminAPI) SetAppHub(hub *delivery.AppHub)                { a.hub = hub }
+func (a *AdminAPI) SetACME(mgr *acme.Manager)                      { a.acme = mgr }
+func (a *AdminAPI) SetAppHub(hub *delivery.AppHub)                 { a.hub = hub }
 func (a *AdminAPI) SetSupportNotifier(n *delivery.SupportNotifier) { a.notifier = n }
+
+// SetFail2ban подключает guard для подачи неудачных проверок admin-токена.
+func (a *AdminAPI) SetFail2ban(f interface {
+	Fail(ctx context.Context, ip, reason string)
+}) {
+	a.f2b = f
+}
+
+// Stop освобождает фоновую очистку rate-limiter админ-токена.
+func (a *AdminAPI) Stop() {
+	if a.rlAdmin != nil {
+		a.rlAdmin.Stop()
+	}
+}
 
 // NewAdminAPI собирает админ API.
 func NewAdminAPI(st *store.Store, m *settings.M, lic *license.Manager) *AdminAPI {
-	a := &AdminAPI{st: st, m: m, lic: lic}
+	a := &AdminAPI{st: st, m: m, lic: lic, rlAdmin: newLimiterMap()}
 	a.countAuditRows = func(ctx context.Context) (int64, error) {
 		var n int64
 		if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM audit_log`).Scan(&n); err != nil {
@@ -166,22 +187,46 @@ func (a *AdminAPI) Register(r chi.Router) {
 // RequireAdminToken пропускает запросы с Authorization: Bearer <admin_token>.
 // Сравниваются SHA-256 обоих значений в постоянном времени — длина секрета
 // не раскрывается и сравнение не зависит от совпавшего префикса. Неудачная
-// попытка пишется в аудит (SEC-010, event admin_auth_fail) — брут токена
-// виден в журнале наравне с брутом паролей.
+// попытка пишется в аудит (SEC-010, event admin_auth_fail), кормит fail2ban
+// (Guard.Fail, reason login_fail) и rate-limited по IP (5/мин, 6-я неудача
+// подряд — 429): онлайн-брут статического секрета ограничен (аудит раунд-2, N7).
 func (a *AdminAPI) RequireAdminToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		want := sha256.Sum256([]byte(a.m.Get().AdminToken))
 		got := sha256.Sum256([]byte(bearerToken(r)))
 		if subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
+			ip := clientIP(r)
 			if err := a.st.Audit(r.Context(), "", "admin_auth_fail",
-				map[string]any{"has_token": bearerToken(r) != ""}, clientIP(r), "fail"); err != nil {
+				map[string]any{"has_token": bearerToken(r) != ""}, ip, "fail"); err != nil {
 				slog.Warn("api: аудит admin_auth_fail не записан", "error", err)
+			}
+			if a.f2b != nil {
+				a.f2b.Fail(r.Context(), ip, "login_fail")
+			}
+			if a.rlAdmin != nil && !a.rlAdmin.Allow("ip:"+ip) {
+				w.Header().Set("Retry-After", strconv.Itoa(rlRetryAfterSec))
+				writeError(w, http.StatusTooManyRequests, "rate_limited")
+				return
 			}
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// adminTokenFrom возвращает admin-токен запроса: заголовок Authorization —
+// всегда; ?admin_token= — ТОЛЬКО для WS/SSE (Upgrade / text/event-stream):
+// браузерные EventSource и WebSocket не умеют заголовок, а query-строка
+// оседает в логах прокси и истории браузера (аудит раунд-2, N4/N7).
+func adminTokenFrom(r *http.Request) string {
+	if tok := bearerToken(r); tok != "" {
+		return tok
+	}
+	if isStreamRequest(r) {
+		return r.URL.Query().Get("admin_token")
+	}
+	return ""
 }
 
 // bearerToken извлекает токен из заголовка Authorization: Bearer <token>.
@@ -431,12 +476,6 @@ func (a *AdminAPI) handleUserPatch(w http.ResponseWriter, r *http.Request) {
 		if b := a.box(); b != nil {
 			u.PasswordEnc = b.EncryptAAD(u.Username, []byte(*req.Password))
 		}
-	} else if req.Username != nil && *req.Username != oldUsername && len(u.PasswordEnc) > 0 {
-		if b := a.box(); b != nil {
-			if raw, err := b.DecryptAAD(oldUsername, u.PasswordEnc); err == nil {
-				u.PasswordEnc = b.EncryptAAD(u.Username, raw)
-			}
-		}
 	}
 	if req.Email != nil {
 		u.Email = *req.Email
@@ -466,6 +505,22 @@ func (a *AdminAPI) handleUserPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SupportRoles != nil {
 		u.SupportRoles = *req.SupportRoles
+	}
+	// Смена имени: оба AAD-привязанных секрета (password_enc и
+	// totp_secrets.secret_enc) перешифровываются; ошибка расшифровки —
+	// 400 с диагностикой, а не тихая порча (аудит раунд-2). Вызов ПОСЛЕ
+	// всех валидаций и НЕПОСРЕДСТВЕННО перед UserUpdate: перешифровка TOTP
+	// пишется в БД сразу, а пользователь при позднем отказе должен остаться
+	// со старым именем (иначе секрет остался бы под новым AAD).
+	if u.Username != oldUsername {
+		var passEnc []byte
+		if req.Password == nil {
+			passEnc = u.PasswordEnc // свежего шифротекста (req.Password) перешифровка не нужна
+		}
+		if err := renameReencryptSecrets(r.Context(), a.st, a.box(), u, oldUsername, passEnc); err != nil {
+			a.rejectRename(w, err)
+			return
+		}
 	}
 	if err := a.st.UserUpdate(r.Context(), u); err != nil {
 		var pgErr *pgconn.PgError
@@ -544,6 +599,61 @@ func replaceBackupCodes(ctx context.Context, st *store.Store, userID uuid.UUID) 
 	return codes, nil
 }
 
+// Ошибки переименования пользователя: секрет не расшифровывается старым
+// AAD — перешифровка невозможна, тихий пропуск навсегда портил бы PEAP
+// (password_enc) или TOTP (аудит раунд-2: rename «глотал» ошибку).
+var (
+	errRenamePasswordEnc = errors.New("password_enc не расшифровывается старым username")
+	errRenameTOTP        = errors.New("totp-секрет не расшифровывается старым username")
+)
+
+// renameReencryptSecrets перешифровывает ОБА AAD-привязанных секрета
+// пользователя при смене username (u.Username уже новое, oldUsername —
+// прежнее): users.password_enc (AAD=username; passEnc — текущий шифротекст,
+// nil/пусто — пароль только что задан заново, свежий AAD, пропуск) и
+// totp_secrets.secret_enc (AAD="totp:"+username, отдельным запросом с
+// сохранением подтверждённости и replay-счётчика). Вызывать после всех
+// валидаций и непосредственно перед UserUpdate: любая ошибка возвращается
+// ДО записи, пользователь остаётся со старым именем.
+func renameReencryptSecrets(ctx context.Context, st *store.Store, box *secrets.Box, u *store.User, oldUsername string, passEnc []byte) error {
+	if box == nil {
+		return nil // Box недоступен — перешифровывать нечем, секретов с AAD нет
+	}
+	if len(passEnc) > 0 {
+		raw, err := box.DecryptAAD(oldUsername, passEnc)
+		if err != nil {
+			return fmt.Errorf("%w: %v", errRenamePasswordEnc, err)
+		}
+		u.PasswordEnc = box.EncryptAAD(u.Username, raw)
+	}
+	secretEnc, _, _, _, _, err := st.TOTPGet(ctx, u.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil // TOTP не выдан — перешифровывать нечего
+	}
+	if err != nil {
+		return fmt.Errorf("чтение TOTP-секрета: %w", err)
+	}
+	raw, err := box.DecryptAAD(auth.AADTOTP(oldUsername), secretEnc)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errRenameTOTP, err)
+	}
+	return st.TOTPUpdateSecret(ctx, u.ID, box.EncryptAAD(auth.AADTOTP(u.Username), raw))
+}
+
+// rejectRename отвечает на ошибку переименования точным кодом: битый
+// password_enc (диагностика PEAP) и битый TOTP (сначала сбросьте TOTP).
+func (a *AdminAPI) rejectRename(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errRenameTOTP):
+		writeError(w, http.StatusBadRequest, "totp_reset_required")
+	case errors.Is(err, errRenamePasswordEnc):
+		writeError(w, http.StatusBadRequest, "password_enc_undecryptable")
+	default:
+		slog.Error("api: admin переименование", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+	}
+}
+
 // handleResetWebauthn — POST .../reset-webauthn: удаляет все passkeys.
 func (a *AdminAPI) handleResetWebauthn(w http.ResponseWriter, r *http.Request) {
 	id := userByIDParam(w, r)
@@ -583,7 +693,9 @@ func (a *AdminAPI) handleUnlinkTelegram(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleDeleteDevices — DELETE .../devices: отзыв всех доверенных устройств.
+// handleDeleteDevices — DELETE .../devices: отзыв всех доверенных устройств
+// И app-устройств пользователя (device-токен даёт approve-права push-челленджей —
+// отзыв должен покрывать и его; аудит раунд-2, N2).
 func (a *AdminAPI) handleDeleteDevices(w http.ResponseWriter, r *http.Request) {
 	id := userByIDParam(w, r)
 	if id == uuid.Nil {
@@ -595,6 +707,11 @@ func (a *AdminAPI) handleDeleteDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.st.DeviceDeleteAllForUser(r.Context(), u.ID); err != nil {
 		slog.Error("api: admin devices", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	if err := a.st.AppDeviceRevokeAllForUser(r.Context(), u.ID); err != nil {
+		slog.Error("api: admin app-devices revoke", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal")
 		return
 	}
@@ -718,8 +835,11 @@ func (a *AdminAPI) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 // «не менять это поле» (спека §7: «пустое/маскированное значение = не
 // менять»). Атомарность: СНАЧАЛА валидируются все ключи — неизвестный
 // отклоняет запрос целиком (400 unknown_key) БЕЗ применения остальных;
-// затем применяются все годные. Маскированные значения пропускаются как
-// раньше.
+// затем применяются все годные. Ключи, управляемые отдельными
+// эндпоинтами (master_key, admin_token, oidc.keys, radius.eap_cert —
+// симметрия запрета импорта), к перезаписи PUT'ом запрещены: маска/пустое
+// значение (= «не менять») проходит, реальное значение — 400 protected_key
+// (аудит раунд-2: перезапись master_key молча разрушала всю криптографию).
 func (a *AdminAPI) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 	var body map[string]json.RawMessage
 	if !decodeJSON(w, r, &body) {
@@ -730,10 +850,17 @@ func (a *AdminAPI) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 	// Первый проход — валидация всех ключей ДО записи любого значения:
 	// ни один ключ не применяется, пока весь запрос не признан корректным.
 	keys := make([]string, 0, len(body))
-	for key := range body {
+	for key, val := range body {
 		if !settings.IsKnownKey(key) {
 			writeJSON(w, http.StatusBadRequest,
 				map[string]string{"error": "unknown_key", "key": key})
+			return
+		}
+		// Защищённый ключ нельзя перезаписать PUT'ом (регенерация/выдача —
+		// отдельными эндпоинтами); маска и пустое значение — «не менять».
+		if settings.IsImportExcluded(key) && !isNoChangeValue(val) {
+			writeJSON(w, http.StatusBadRequest,
+				map[string]string{"error": "protected_key", "key": key})
 			return
 		}
 		keys = append(keys, key)
@@ -1113,7 +1240,7 @@ func (a *AdminAPI) handleOIDCClientCreate(w http.ResponseWriter, r *http.Request
 	}
 	resp := map[string]any{
 		"id": "", "client_id": c.ClientID, "name": c.Name,
-		"redirect_uris":  uris, "is_public": c.IsPublic,
+		"redirect_uris": uris, "is_public": c.IsPublic,
 		"allowed_users":  c.AllowedUsers,
 		"allowed_groups": c.AllowedGroups,
 	}
@@ -1755,17 +1882,16 @@ func (a *AdminAPI) handleAdminSupportSessionConnect(w http.ResponseWriter, r *ht
 		adminName = "Инженер техподдержки"
 	}
 
-	// Генерируем 2-значное число (10..99) для Zero-Trust Number Matching, если еще не задано
-	numberMatch := session.NumberMatch
-	if numberMatch == "" {
-		nBig, err := rand.Int(rand.Reader, big.NewInt(90))
-		num := 42
-		if err == nil {
-			num = int(nBig.Int64()) + 10
-		}
-		numberMatch = fmt.Sprintf("%02d", num)
-		session.NumberMatch = numberMatch
+	// Number Matching: код генерируется ЗАНОВО на каждый connect (аудит
+	// раунд-2, находка A) — переиспользование подсмотренного кода и
+	// «вечная» пара цифр исключены.
+	nBig, err := rand.Int(rand.Reader, big.NewInt(90))
+	num := 42
+	if err == nil {
+		num = int(nBig.Int64()) + 10
 	}
+	numberMatch := fmt.Sprintf("%02d", num)
+	session.NumberMatch = numberMatch
 
 	if err := a.st.SupportSessionUpdateStatus(r.Context(), session.ID, "connecting", nil, numberMatch); err != nil {
 		slog.Error("api: ошибка обновления статуса сессии", "error", err)
@@ -1996,13 +2122,11 @@ func (a *AdminAPI) handleAdminSupportSessionsCleanup(w http.ResponseWriter, r *h
 
 // checkAdminOrSupport проверяет права администратора или специалиста техподдержки
 // (Bearer admin_token либо web-сессия с ролью admin или support_*).
+// ?admin_token= принимается только для WS/SSE (adminTokenFrom).
 func (a *AdminAPI) checkAdminOrSupport(r *http.Request) bool {
-	// 1. Bearer admin_token или query ?admin_token=...
+	// 1. Bearer admin_token (query — только WS/SSE-запросы)
 	want := sha256.Sum256([]byte(a.m.Get().AdminToken))
-	tok := bearerToken(r)
-	if tok == "" {
-		tok = r.URL.Query().Get("admin_token")
-	}
+	tok := adminTokenFrom(r)
 	if tok != "" {
 		got := sha256.Sum256([]byte(tok))
 		if subtle.ConstantTimeCompare(want[:], got[:]) == 1 {
@@ -2042,15 +2166,13 @@ func (a *AdminAPI) checkAdminOrSupport(r *http.Request) bool {
 }
 
 // checkOperatorAuth проверяет авторизацию для работы с сессией удаленной помощи.
-// Разрешено: Bearer admin_token, transfer-токен сессии (?token=... или заголовок X-Transfer-Token),
-// либо web-сессия (роль admin, специалист поддержки, либо переданный коллега).
+// Разрешено: Bearer admin_token (query — только WS/SSE), transfer-токен
+// сессии (?token=... или заголовок X-Transfer-Token), либо web-сессия
+// (роль admin, специалист поддержки, либо переданный коллега).
 func (a *AdminAPI) checkOperatorAuth(r *http.Request, sessionID uuid.UUID) bool {
-	// 1. Bearer admin_token или query ?admin_token=...
+	// 1. Bearer admin_token (query — только WS/SSE-запросы)
 	want := sha256.Sum256([]byte(a.m.Get().AdminToken))
-	tok := bearerToken(r)
-	if tok == "" {
-		tok = r.URL.Query().Get("admin_token")
-	}
+	tok := adminTokenFrom(r)
 	if tok != "" {
 		got := sha256.Sum256([]byte(tok))
 		if subtle.ConstantTimeCompare(want[:], got[:]) == 1 {
@@ -2275,6 +2397,3 @@ func (a *AdminAPI) handleAdminSupportMessageSend(w http.ResponseWriter, r *http.
 		"message": msg,
 	})
 }
-
-
-

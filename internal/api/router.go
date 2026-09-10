@@ -139,19 +139,19 @@ func NewRouter() http.Handler {
 // Deps — зависимости полной HTTP-композиции; заполняется main (и
 // интеграционными тестами).
 type Deps struct {
-	Core *auth.Core
-	WA   *webauthn.Svc // nil — WebAuthn выключен (роуты отвечают 503)
-	St   *store.Store
-	Box  *secrets.Box
-	PV   auth.PasswordVerifier
-	M    *settings.M
-	Rend *web.Renderer
-	Lic  *license.Manager // nil — лицензирование не смонтировано
-	FW     *firewall.Guard      // nil — файрвол/fail2ban выключен
-	Oidc   *oidc.Manager        // nil — OIDC не смонтирован (роуты отвечают 503); main всегда инициализирует
-	ACME   *acme.Manager        // nil — ACME выключен
-	Radius *radiusserver.Server // nil — RADIUS не смонтирован
-	AppHub *delivery.AppHub     // nil — push в мобильные/десктопные приложения отключен
+	Core            *auth.Core
+	WA              *webauthn.Svc // nil — WebAuthn выключен (роуты отвечают 503)
+	St              *store.Store
+	Box             *secrets.Box
+	PV              auth.PasswordVerifier
+	M               *settings.M
+	Rend            *web.Renderer
+	Lic             *license.Manager          // nil — лицензирование не смонтировано
+	FW              *firewall.Guard           // nil — файрвол/fail2ban выключен
+	Oidc            *oidc.Manager             // nil — OIDC не смонтирован (роуты отвечают 503); main всегда инициализирует
+	ACME            *acme.Manager             // nil — ACME выключен
+	Radius          *radiusserver.Server      // nil — RADIUS не смонтирован
+	AppHub          *delivery.AppHub          // nil — push в мобильные/десктопные приложения отключен
 	SupportNotifier *delivery.SupportNotifier // nil — оповещения техподдержки
 }
 
@@ -220,6 +220,9 @@ func BuildRouter(d Deps) *Router {
 	admin := NewAdminAPI(d.St, d.M, d.Lic)
 	if d.FW != nil {
 		admin.SetFirewall(d.FW)
+		// Неудачные проверки admin-токена кормят fail2ban
+		// (аудит раунд-2, N7: онлайн-брут статического секрета).
+		admin.SetFail2ban(d.FW)
 	}
 	if d.Radius != nil {
 		admin.SetRadius(d.Radius)
@@ -247,6 +250,11 @@ func BuildRouter(d Deps) *Router {
 	d.Oidc.Register(r) // nil-безопасно: маршруты остаются, отвечают 503
 
 	appAPI := NewAppAPI(d.Core, d.St, d.PV, d.M, d.AppHub, d.Oidc)
+	if d.FW != nil {
+		// Неудачные app-логины кормят fail2ban наравне с web-входом
+		// (аудит раунд-2: app-путь был невидим guard'у).
+		appAPI.SetFirewall(d.FW)
+	}
 	if d.AppHub != nil {
 		admin.SetAppHub(d.AppHub)
 	}
@@ -261,7 +269,7 @@ func BuildRouter(d Deps) *Router {
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(web.Static())))
 	r.NotFound(pages.NotFound)
 
-	return &Router{Handler: r, stops: []func(){pub.Stop, sess.Stop}}
+	return &Router{Handler: r, stops: []func(){pub.Stop, sess.Stop, admin.Stop, appAPI.Stop}}
 }
 
 func caCertDownloadHandler(radius *radiusserver.Server, m *settings.M) http.HandlerFunc {

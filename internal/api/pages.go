@@ -535,6 +535,10 @@ func (p *PagesAPI) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !p.sess.consumePushApproved(ctx, user, chID) {
+			// Неудачный claim аудируется (аудит раунд-2, N10): брут
+			// push-подтверждений виден в журнале, как и брут кодов.
+			p.auditPage(ctx, user.Username, "push_claim_fail", clientIP(r), "fail",
+				map[string]any{"reason": "bad_challenge", "challenge_id": chID.String()})
 			fail(http.StatusUnauthorized, "bad_code")
 			return
 		}
@@ -1742,10 +1746,6 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 			if p.box != nil {
 				u.PasswordEnc = p.box.EncryptAAD(u.Username, []byte(pwd))
 			}
-		} else if u.Username != oldUsername && len(u.PasswordEnc) > 0 && p.box != nil {
-			if raw, err := p.box.DecryptAAD(oldUsername, u.PasswordEnc); err == nil {
-				u.PasswordEnc = p.box.EncryptAAD(u.Username, raw)
-			}
 		}
 		reply, ok := radiusReplyFromForm(r.PostFormValue("radius_reply"))
 		if !ok {
@@ -1767,6 +1767,31 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 			}
 		}
 		u.RadiusReply = reply
+		// Смена имени: оба AAD-привязанных секрета (password_enc и
+		// totp_secrets.secret_enc) перешифровываются; ошибка расшифровки —
+		// отказ с диагностикой, а не тихая порча PEAP/TOTP (аудит раунд-2).
+		// Вызов после всех валидаций и непосредственно перед UserUpdate:
+		// перешифровка TOTP пишется в БД сразу, пользователь при отказе
+		// остаётся со старым именем.
+		if u.Username != oldUsername {
+			var passEnc []byte
+			if pwd == "" {
+				passEnc = u.PasswordEnc // свежего шифротекста (пароль из формы) перешифровка не нужна
+			}
+			if err := renameReencryptSecrets(ctx, p.st, p.box, u, oldUsername, passEnc); err != nil {
+				switch {
+				case errors.Is(err, errRenameTOTP):
+					redirectFlash(w, r, back,
+						"Не удалось перешифровать TOTP-секрет (ключ не сходится). Сначала сбросьте TOTP пользователя, затем переименуйте.", false)
+				case errors.Is(err, errRenamePasswordEnc):
+					redirectFlash(w, r, back,
+						"Не удалось перешифровать сохранённый пароль (password_enc). Проверьте master_key или задайте новый пароль вместе с именем.", false)
+				default:
+					flash500(w, r, back, err)
+				}
+				return
+			}
+		}
 		if err := p.st.UserUpdate(ctx, u); err != nil {
 			if isUniqueViolation(err) {
 				redirectFlash(w, r, back, "Это имя пользователя уже занято.", false)
@@ -1830,6 +1855,12 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 
 	case "revoke-devices":
 		if err := p.st.DeviceDeleteAllForUser(ctx, u.ID); err != nil {
+			flash500(w, r, "/admin/users", err)
+			return
+		}
+		// App-устройства отзываются вместе с доверенными web-устройствами:
+		// device-токен даёт approve-права push-челленджей (аудит раунд-2, N2).
+		if err := p.st.AppDeviceRevokeAllForUser(ctx, u.ID); err != nil {
 			flash500(w, r, "/admin/users", err)
 			return
 		}
@@ -2298,6 +2329,8 @@ var settingsForm = map[string][]settingsField{
 		{name: "radius.max_fail_per_user", key: "radius.max_fail_per_user", kind: 'i'},
 		{name: "radius.fail_window", key: "radius.fail_window"},
 		{name: "radius.push_wait", key: "radius.push_wait"},
+		{name: "radius.require_message_authenticator", key: "radius.require_message_authenticator", kind: 'b'},
+		{name: "radius.rate_limit_pps", key: "radius.rate_limit_pps", kind: 'i'},
 		{name: "radius.reply_attributes", key: "radius.reply_attributes", kind: 'j'},
 		{name: "radius.vlan_profiles", key: "radius.vlan_profiles", kind: 'j'},
 		{name: "radius.nas_inventory", key: "radius.nas_inventory", kind: 'j'},
@@ -2447,7 +2480,6 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 		p.render(w, http.StatusOK, "admin_settings", d)
 		return
 	}
-
 
 	fields, ok := settingsForm[r.PostFormValue("section")]
 	if !ok {
@@ -3412,4 +3444,3 @@ func (p *PagesAPI) handleAdminSupportViewer(w http.ResponseWriter, r *http.Reque
 	}
 	p.render(w, http.StatusOK, "admin_support_viewer", data)
 }
-
