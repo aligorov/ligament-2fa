@@ -17,7 +17,11 @@ struct WebAuthnBeginResult {
 
 class HttpApiClient {
 public:
-    HttpApiClient(const std::wstring& serverUrl, bool allowSelfSigned = false);
+    // receiveTimeoutMs ограничивает блокировку вызывающего потока одним
+    // запросом; фоновый push-polling использует короткий таймаут, чтобы
+    // остановка потока (и, значит, join в LogonUI) занимала секунды, а
+    // не до 45 c дефолтного receive-таймаута.
+    HttpApiClient(const std::wstring& serverUrl, bool allowSelfSigned = false, int receiveTimeoutMs = 45000);
     ~HttpApiClient();
 
     // 1. Push authentication (server /api/v1/auth/start requires

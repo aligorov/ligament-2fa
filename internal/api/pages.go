@@ -1770,10 +1770,13 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 		// Смена имени: оба AAD-привязанных секрета (password_enc и
 		// totp_secrets.secret_enc) перешифровываются; ошибка расшифровки —
 		// отказ с диагностикой, а не тихая порча PEAP/TOTP (аудит раунд-2).
-		// Вызов после всех валидаций и непосредственно перед UserUpdate:
-		// перешифровка TOTP пишется в БД сразу, пользователь при отказе
-		// остаётся со старым именем.
+		// Порядок: пре-чек занятости → перешифровка TOTP → UserUpdate с
+		// компенсирующим откатом TOTP при позднем отказе.
 		if u.Username != oldUsername {
+			if existing, err := p.st.UserByUsername(ctx, u.Username); err == nil && existing.ID != u.ID {
+				redirectFlash(w, r, back, "Это имя пользователя уже занято.", false)
+				return
+			}
 			var passEnc []byte
 			if pwd == "" {
 				passEnc = u.PasswordEnc // свежего шифротекста (пароль из формы) перешифровка не нужна
@@ -1793,6 +1796,15 @@ func (p *PagesAPI) handleAdminUserAction(w http.ResponseWriter, r *http.Request)
 			}
 		}
 		if err := p.st.UserUpdate(ctx, u); err != nil {
+			if u.Username != oldUsername {
+				if cerr := rollbackRenameTOTP(ctx, p.st, p.box, u, oldUsername); cerr != nil {
+					slog.Error("pages: rename: компенсация TOTP не удалась — необходим reset-totp",
+						"user_id", u.ID.String(), "error", cerr)
+					redirectFlash(w, r, back,
+						"Имя не изменено, но откат TOTP не удался: сбросьте TOTP пользователя (reset-totp) перед повтором.", false)
+					return
+				}
+			}
 			if isUniqueViolation(err) {
 				redirectFlash(w, r, back, "Это имя пользователя уже занято.", false)
 				return

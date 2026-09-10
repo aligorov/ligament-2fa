@@ -41,7 +41,7 @@ const maxBodyBytes = 1 << 20
 // весь срок кода, поэтому корзина щадящая: burst 30, затем 2/с по IP —
 // окно перебора UUID у атакующего ограничено, poll-цикл браузера проходит.
 const (
-	pollRLRate  = rate.Limit(2)
+	pollRLRate  = rate.Limit(5)
 	pollRLBurst = 30
 )
 
@@ -377,9 +377,10 @@ type pollReq struct {
 
 // handlePoll — статус push-челленджа (клиент опрашивает, пока пользователь
 // решает: «Подтвердить»/«Это не я» в Telegram). Эндпоинт без аутентификации
-// (статус-оракул по UUID), поэтому ограничен по IP щадящей корзиной
-// pollRLRate/pollRLBurst — poll-цикл браузера (раз в ~1.5 с) проходит,
-// массовый перебор UUID — нет (аудит раунд-2, N6).
+// (статус-оракул по UUID), поэтому ограничен щадящей корзиной
+// pollRLRate/pollRLBurst по паре IP+challenge_id — poll-цикл браузера (раз
+// в ~1.5 с) проходит даже с офисного NAT при нескольких параллельных
+// входах, массовый перебор UUID — нет (аудит раунд-2, N6).
 func (p *PublicAPI) handlePoll(w http.ResponseWriter, r *http.Request) {
 	if !p.rlPoll.Allow("ip:" + clientIP(r)) {
 		w.Header().Set("Retry-After", strconv.Itoa(rlRetryAfterSec))
@@ -389,6 +390,12 @@ func (p *PublicAPI) handlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 	var req pollReq
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !p.rlPoll.Allow("poll:"+clientIP(r)+"|"+req.ChallengeID) {
+		w.Header().Set("Retry-After", strconv.Itoa(rlRetryAfterSec))
+		writeJSON(w, http.StatusTooManyRequests,
+			map[string]any{"error": "rate_limited", "retry_after": rlRetryAfterSec})
 		return
 	}
 	id, err := uuid.Parse(req.ChallengeID)

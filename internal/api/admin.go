@@ -508,11 +508,16 @@ func (a *AdminAPI) handleUserPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	// Смена имени: оба AAD-привязанных секрета (password_enc и
 	// totp_secrets.secret_enc) перешифровываются; ошибка расшифровки —
-	// 400 с диагностикой, а не тихая порча (аудит раунд-2). Вызов ПОСЛЕ
-	// всех валидаций и НЕПОСРЕДСТВЕННО перед UserUpdate: перешифровка TOTP
-	// пишется в БД сразу, а пользователь при позднем отказе должен остаться
-	// со старым именем (иначе секрет остался бы под новым AAD).
+	// 400 с диагностикой, а не тихая порча (аудит раунд-2). Порядок:
+	// пре-чек занятости имени → перешифровка TOTP → UserUpdate; при
+	// позднем отказе UserUpdate TOTP откатывается под старый AAD
+	// (компенсация) — иначе секрет остался бы под новым AAD при старом
+	// username (детерминированная порча TOTP).
 	if u.Username != oldUsername {
+		if existing, err := a.st.UserByUsername(r.Context(), u.Username); err == nil && existing.ID != u.ID {
+			writeError(w, http.StatusConflict, "username_taken")
+			return
+		}
 		var passEnc []byte
 		if req.Password == nil {
 			passEnc = u.PasswordEnc // свежего шифротекста (req.Password) перешифровка не нужна
@@ -523,6 +528,14 @@ func (a *AdminAPI) handleUserPatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := a.st.UserUpdate(r.Context(), u); err != nil {
+		if u.Username != oldUsername {
+			if cerr := rollbackRenameTOTP(r.Context(), a.st, a.box(), u, oldUsername); cerr != nil {
+				// TOTP остался под новым AAD при старом username — сломан
+				// до reset-totp; логируем громко, чтобы админ узнал сразу.
+				slog.Error("api: rename: компенсация TOTP не удалась — необходим reset-totp",
+					"user_id", u.ID.String(), "error", cerr)
+			}
+		}
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			writeError(w, http.StatusConflict, "username_taken")
@@ -638,6 +651,28 @@ func renameReencryptSecrets(ctx context.Context, st *store.Store, box *secrets.B
 		return fmt.Errorf("%w: %v", errRenameTOTP, err)
 	}
 	return st.TOTPUpdateSecret(ctx, u.ID, box.EncryptAAD(auth.AADTOTP(u.Username), raw))
+}
+
+// rollbackRenameTOTP — компенсация позднего отказа UserUpdate: перешифровка
+// TOTP уже закоммичена под новый AAD, а username в БД остался старым —
+// возвращаем секрет под старый AAD. Ошибка компенсации означает, что TOTP
+// пользователя сломан до ручного reset-totp (вызывающий обязан залогировать).
+func rollbackRenameTOTP(ctx context.Context, st *store.Store, box *secrets.Box, u *store.User, oldUsername string) error {
+	if box == nil {
+		return nil
+	}
+	secretEnc, _, _, _, _, err := st.TOTPGet(ctx, u.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("чтение TOTP-секрета: %w", err)
+	}
+	raw, err := box.DecryptAAD(auth.AADTOTP(u.Username), secretEnc)
+	if err != nil {
+		return fmt.Errorf("расшифровка под новым AAD: %w", err)
+	}
+	return st.TOTPUpdateSecret(ctx, u.ID, box.EncryptAAD(auth.AADTOTP(oldUsername), raw))
 }
 
 // rejectRename отвечает на ошибку переименования точным кодом: битый

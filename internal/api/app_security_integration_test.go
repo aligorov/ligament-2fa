@@ -305,6 +305,43 @@ func TestAdminRenameReencryptsTOTP(t *testing.T) {
 		t.Fatal("имя изменилось несмотря на ошибку перешифровки TOTP")
 	}
 
+	// Rename на ЗАНЯТОЕ имя: 409 ДО перешифровки — TOTP жертвы и
+	// переименуемого остаются рабочими под своими (старыми) AAD
+	// (ревью-фикс: детерминированная порча TOTP при позднем 23505).
+	user4 := mkUser(t, ctx, st, "apprenametaken", nil)
+	secret4 := "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+	if err := st.TOTPSave(ctx, user4.ID, box.EncryptAAD(auth.AADTOTP(user4.Username), []byte(secret4)), 6, 30); err != nil {
+		t.Fatalf("TOTPSave(user4): %v", err)
+	}
+	if err := st.TOTPConfirm(ctx, user4.ID); err != nil {
+		t.Fatalf("TOTPConfirm(user4): %v", err)
+	}
+	body4, _ := json.Marshal(map[string]any{"username": "apptorename2"}) // занято первым кейсом
+	req4 := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/users/"+user4.ID.String(), bytes.NewReader(body4))
+	req4.Header.Set("Authorization", "Bearer "+set.Get().AdminToken)
+	req4.Header.Set("Content-Type", "application/json")
+	rec4 := httptest.NewRecorder()
+	rt.Handler.ServeHTTP(rec4, req4)
+	wantStatus(t, rec4, http.StatusConflict)
+	if jsonBody(t, rec4)["error"] != "username_taken" {
+		t.Fatalf("rename на занятое имя: body = %s", rec4.Body.String())
+	}
+	if _, err := st.UserByUsername(ctx, "apprenametaken"); err != nil {
+		t.Fatalf("имя изменилось при 409: %v", err)
+	}
+	// TOTP переименуемого по-прежнему расшифровывается под СТАРЫМ AAD.
+	enc4, _, _, confirmed4, _, err := st.TOTPGet(ctx, user4.ID)
+	if err != nil {
+		t.Fatalf("TOTPGet(user4) после 409: %v", err)
+	}
+	dec4, err := box.DecryptAAD(auth.AADTOTP("apprenametaken"), enc4)
+	if err != nil {
+		t.Fatalf("расшифровка под старым AAD после 409: %v", err)
+	}
+	if string(dec4) != secret4 || !confirmed4 {
+		t.Fatalf("TOTP после 409: %q confirmed=%v, want исходный/true", dec4, confirmed4)
+	}
+
 	// Битый password_enc: rename → 400 password_enc_undecryptable (диагностика
 	// вместо тихой порчи PEAP), имя не меняется.
 	user3 := mkUser(t, ctx, st, "appbadenc", nil)

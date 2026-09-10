@@ -4,7 +4,7 @@
 namespace ligament {
 
 
-HttpApiClient::HttpApiClient(const std::wstring& serverUrl, bool allowSelfSigned)
+HttpApiClient::HttpApiClient(const std::wstring& serverUrl, bool allowSelfSigned, int receiveTimeoutMs)
     : m_serverUrl(serverUrl), m_allowSelfSigned(allowSelfSigned) {
     ParseUrl(serverUrl);
     m_hSession = WinHttpOpen(
@@ -15,8 +15,9 @@ HttpApiClient::HttpApiClient(const std::wstring& serverUrl, bool allowSelfSigned
         0
     );
     if (m_hSession) {
-        // Set timeouts: resolve 5s, connect 10s, send 15s, receive 45s
-        WinHttpSetTimeouts(m_hSession, 5000, 10000, 15000, 45000);
+        // Set timeouts: resolve 5s, connect 10s, send 15s, receive per ctor
+        if (receiveTimeoutMs < 1000) receiveTimeoutMs = 1000;
+        WinHttpSetTimeouts(m_hSession, 5000, 10000, 15000, receiveTimeoutMs);
     }
 }
 

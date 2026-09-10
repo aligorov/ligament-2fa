@@ -363,7 +363,10 @@ void LigamentCredential::RunPushPolling() {
     }
     Config cfg = m_config; // stable after Initialize; read-only here
 
-    HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned);
+    // Короткий receive-таймаут: один запрос блокирует поток не дольше ~8 c,
+    // поэтому остановка (stop-флаг проверяется между запросами) и join в
+    // LogonUI занимают секунды — это же ограничивает ожидание в деструкторе.
+    HttpApiClient client(cfg.serverUrl, cfg.allowSelfSigned, 8000);
 
     int maxPolls = cfg.pushTimeoutSec;
     for (int i = 0; i < maxPolls; ++i) {
@@ -417,12 +420,17 @@ void LigamentCredential::StopPollThread() {
 
 void LigamentCredential::JoinPollThread() {
     if (m_hPollThread) {
-        // The worker exits quickly on the stop flag; the bounded wait only
-        // guards against a request already in flight.
-        WaitForSingleObject(m_hPollThread, 5000);
+        // Ждём ЗАВЕРШЕНИЯ потока без ограниченного таймаута: bounded-wait
+        // против долгого WinHTTP-вызова приводил к освобождению объекта при
+        // живом воркере (use-after-free в winlogon). Ожидание конечно по
+        // построению: receive-таймаут poll-клиента 8 c, stop-флаг воркер
+        // проверяет между запросами и в срезах ожидания.
+        WaitForSingleObject(m_hPollThread, INFINITE);
         CloseHandle(m_hPollThread);
         m_hPollThread = nullptr;
     }
+    // Старый воркер гарантированно завершён — состояние безопасно сбрасывать
+    // и новый запуск не скрестится со старым результатом.
     EnterCriticalSection(&m_csPoll);
     m_pollState.status.clear();
     m_pollState.done = false;

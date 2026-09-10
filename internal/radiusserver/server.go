@@ -124,7 +124,7 @@ func (s *Server) buildAuth() (*radius.PacketServer, error) {
 		return nil, ErrNoSecret
 	}
 	return &radius.PacketServer{
-		Handler:      radius.HandlerFunc(s.handleAuth),
+		Handler:      radius.HandlerFunc(s.safeHandleAuth),
 		SecretSource: settingsSecretSource{m: s.m},
 		ErrorLog:     slogBridge(),
 	}, nil
@@ -135,10 +135,33 @@ func (s *Server) buildAcct() (*radius.PacketServer, error) {
 		return nil, ErrNoSecret
 	}
 	return &radius.PacketServer{
-		Handler:      radius.HandlerFunc(s.handleAcct),
+		Handler:      radius.HandlerFunc(s.safeHandleAcct),
 		SecretSource: settingsSecretSource{m: s.m},
 		ErrorLog:     slogBridge(),
 	}, nil
+}
+
+// safeHandleAuth/safeHandleAcct — recover-обёртки: layeh/radius исполняет
+// хендлер в горутине на пакет БЕЗ recover, поэтому любая паника роняла бы
+// весь процесс (HTTP-стек net/http паники изолирует сам). Паника логируется,
+// клиенту — Access-Reject (auth) / тишина (acct).
+func (s *Server) safeHandleAuth(w radius.ResponseWriter, r *radius.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("radius: panic в handleAuth (recover)", "panic", rec, "remote", r.RemoteAddr)
+			_ = w.Write(r.Response(radius.CodeAccessReject))
+		}
+	}()
+	s.handleAuth(w, r)
+}
+
+func (s *Server) safeHandleAcct(w radius.ResponseWriter, r *radius.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("radius: panic в handleAcct (recover)", "panic", rec, "remote", r.RemoteAddr)
+		}
+	}()
+	s.handleAcct(w, r)
 }
 
 // ListenAndServe поднимает оба сервера на listen.radius_auth /
