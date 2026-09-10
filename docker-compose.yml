@@ -1,11 +1,14 @@
-# twofa + PostgreSQL: docker compose up -d && docker compose logs twofa |
-# grep "ADMIN PASSWORD" (пароль первого администратора печатается один раз).
+# twofa + PostgreSQL: экспортируйте пароль БД (без дефолта — осознанно):
+#   export TWOFA_PG_PASSWORD='...'   # или .env рядом с compose-файлом
+#   docker compose up -d && docker compose logs twofa | grep "ADMIN PASSWORD"
+# Пароль первого администратора — в ./admin_password.txt внутри контейнера
+# (см. README «Быстрый старт»).
 services:
   db:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: twofa
-      POSTGRES_PASSWORD: ${TWOFA_PG_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: "${TWOFA_PG_PASSWORD:?Ошибка: задайте TWOFA_PG_PASSWORD (пароль БД) перед запуском}"
       POSTGRES_DB: twofa
     volumes:
       - twofa_pgdata:/var/lib/postgresql/data
@@ -22,7 +25,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      TWOFA_DB_DSN: postgres://twofa:${TWOFA_PG_PASSWORD:-changeme}@db:5432/twofa
+      TWOFA_DB_DSN: "postgres://twofa:${TWOFA_PG_PASSWORD:?Ошибка: задайте TWOFA_PG_PASSWORD (пароль БД) перед запуском}@db:5432/twofa"
       # TRUSTED_PROXIES: "127.0.0.0/8,::1/128,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
       # ACME_DOMAIN: auth.example.com
       # ACME_EMAIL: admin@example.com

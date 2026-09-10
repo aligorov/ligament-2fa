@@ -1,12 +1,15 @@
 # КЛИЕНТСКИЙ compose: готовый образ из Docker Hub, исходники не нужны.
+#   export TWOFA_PG_PASSWORD='...'   # пароль БД обязателен (без дефолта)
 #   docker compose -f docker-compose.client.yml up -d
 #   docker compose -f docker-compose.client.yml logs twofa | grep "ADMIN PASSWORD"
+# Пароль первого администратора — в admin_password.txt внутри контейнера:
+#   docker cp $(docker compose -f docker-compose.client.yml ps -q twofa):/home/nonroot/admin_password.txt .
 services:
   db:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: twofa
-      POSTGRES_PASSWORD: ${TWOFA_PG_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: "${TWOFA_PG_PASSWORD:?Ошибка: задайте TWOFA_PG_PASSWORD (пароль БД) перед запуском}"
       POSTGRES_DB: twofa
     volumes:
       - twofa_pgdata:/var/lib/postgresql/data
@@ -23,7 +26,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      TWOFA_DB_DSN: postgres://twofa:${TWOFA_PG_PASSWORD:-changeme}@db:5432/twofa
+      TWOFA_DB_DSN: "postgres://twofa:${TWOFA_PG_PASSWORD:?Ошибка: задайте TWOFA_PG_PASSWORD (пароль БД) перед запуском}@db:5432/twofa"
       # Доверенные подсети обратного прокси (NPM/nginx/Caddy/Traefik).
       # По умолчанию доверены локальные/Docker сети (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
       # TRUSTED_PROXIES: "127.0.0.0/8,::1/128,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"

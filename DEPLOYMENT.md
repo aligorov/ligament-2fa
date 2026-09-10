@@ -60,10 +60,14 @@ GitHub Actions:
 # 1. Скачать готовый compose файл
 curl -fsSL https://raw.githubusercontent.com/aligorov/ligament-2fa/main/docker-compose.client.yml -o docker-compose.yml
 
-# 2. Запустить контейнеры с загрузкой свежего образа из Docker Hub
+# 2. Задать пароль PostgreSQL (обязателен, дефолтного значения нет)
+export TWOFA_PG_PASSWORD='свой-пароль-БД'   # или записать в .env рядом с compose
+
+# 3. Запустить контейнеры с загрузкой свежего образа из Docker Hub
 docker compose pull
 docker compose up -d
 
-# 3. Проверить логи и пароль первичного администратора
-docker compose logs twofa | grep "ADMIN PASSWORD"
+# 4. Забрать пароль первичного администратора (в логе он не печатается —
+#    только файл admin_password.txt внутри контейнера)
+docker cp $(docker compose ps -q twofa):/home/nonroot/admin_password.txt . && cat admin_password.txt
 ```

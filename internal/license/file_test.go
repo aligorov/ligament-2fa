@@ -31,6 +31,19 @@ func withTestKeys(t *testing.T, kid string) (ed25519.PublicKey, ed25519.PrivateK
 	return pub, priv
 }
 
+// TestProdBuildExcludesDevKey: в дефолтной сборке kid=dev-1 ОТСУТСТВУЕТ
+// в trustedKeys (dev-ключ уезжает из prod-бинарника под build tag dev —
+// audit P1), боевой ключ aligorov-2026-09 — присутствует всегда. В сборке
+// с -tags dev (make build-dev) dev-1, наоборот, есть.
+func TestProdBuildExcludesDevKey(t *testing.T) {
+	if _, ok := trustedKeys["dev-1"]; ok != devKeysEnabled {
+		t.Fatalf("dev-1 в trustedKeys = %v, devKeysEnabled = %v (набор не соответствует build tag)", ok, devKeysEnabled)
+	}
+	if _, ok := trustedKeys["aligorov-2026-09"]; !ok {
+		t.Fatal("боевой ключ aligorov-2026-09 отсутствует в trustedKeys")
+	}
+}
+
 // TestSignVerifyRoundtrip: подпись приватным ключом → ParseLicense тем же
 // kid проверяется и возвращает payload.
 func TestSignVerifyRoundtrip(t *testing.T) {

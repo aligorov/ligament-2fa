@@ -48,12 +48,27 @@ func mustPubKey(hexKey string) ed25519.PublicKey {
 }
 
 // trustedKeys — публичные ключи вендора, зашитые в бинарник (ротация по
-// kid). ЗДЕСЬ ПЛЕЙСХОЛДЕР для разработки: вендор перед релизом обязан
+// kid). Собираются из двух частей: боевой набор prodTrustedKeys (все
+// сборки) + devTrustedKeys (НЕПУСТ только в -tags dev — make build-dev;
+// в продовые бинарники dev-ключи физически не попадают, см.
+// devkeys_dev.go / devkeys_prod.go). Вендор перед релизом обязан
 // сгенерировать свою пару (cmd/licgen -genkey), вшить hex публичного ключа
-// и хранить приватный офлайн (см. README «Лицензирование» → «Ключи
-// выпуска»). Подмена в рантайме — только через SetTrustedKeys (тесты).
-var trustedKeys = map[string]ed25519.PublicKey{
-	"dev-1":            mustPubKey("335571483eb7a56d0ea0eb4afab5b74b7df3d9239d8862cc1066a987d63919ca"),
+// в prodTrustedKeys и хранить приватный офлайн (см. README
+// «Лицензирование» → «Ключи выпуска»). Подмена в рантайме — только через
+// SetTrustedKeys (тесты).
+var trustedKeys = func() map[string]ed25519.PublicKey {
+	keys := make(map[string]ed25519.PublicKey, len(prodTrustedKeys)+len(devTrustedKeys))
+	for kid, k := range prodTrustedKeys {
+		keys[kid] = k
+	}
+	for kid, k := range devTrustedKeys {
+		keys[kid] = k
+	}
+	return keys
+}()
+
+// prodTrustedKeys — боевые ключи вендора: присутствуют в каждой сборке.
+var prodTrustedKeys = map[string]ed25519.PublicKey{
 	"aligorov-2026-09": mustPubKey("5b3832181a5881426544a4e7eca6a75cdc8f59ecfb143d063b40b7671cdbcb10"),
 }
 

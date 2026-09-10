@@ -26,13 +26,15 @@ MikroTik/RouterOS** (L2TP/PPTP/PPPoE/вход в роутер), **REST API** и
 
 ## Быстрый старт для клиента (готовый образ)
 
-Клиенту не нужны исходники — только `docker-compose.client.yml`:
+Клиенту не нужны исходники — только `docker-compose.client.yml`.
+`TWOFA_PG_PASSWORD` (пароль PostgreSQL) обязателен — дефолтного значения нет:
 
 ```sh
 mkdir ligament && cd ligament
 # положите сюда docker-compose.client.yml (из репозитория)
 TWOFA_PG_PASSWORD=свой-пароль-БД docker compose -f docker-compose.client.yml up -d
-docker compose -f docker-compose.client.yml logs twofa | grep "ADMIN PASSWORD"
+# пароль первого администратора — в admin_password.txt ВНУТРИ контейнера:
+docker cp $(docker compose -f docker-compose.client.yml ps -q twofa):/home/nonroot/admin_password.txt .
 ```
 
 Дальше: <http://localhost:8080> → вход админом → загрузка лицензии
@@ -40,15 +42,23 @@ docker compose -f docker-compose.client.yml logs twofa | grep "ADMIN PASSWORD"
 
 ## Быстрый старт (Docker, из исходников)
 
+`TWOFA_PG_PASSWORD` (пароль PostgreSQL) обязателен — дефолтного значения
+`changeme` больше нет:
+
 ```sh
 cp .env.example .env         # укажите TWOFA_PG_PASSWORD
 docker compose up -d
-docker compose logs twofa 2>&1 | grep "ADMIN PASSWORD"
+docker compose logs twofa 2>&1 | grep "ADMIN PASSWORD"  # подсказка, где пароль
 ```
 
-При **первом** старте на пустой базе создаётся администратор `admin`, его
-пароль печатается в лог **один раз** (`ADMIN PASSWORD: ...`) и больше не
-показывается. Вход в web-интерфейс: <http://localhost:8080> (логин/пароль →
+При **первом** старте на пустой базе создаётся администратор `admin`; его
+пароль записывается в файл `admin_password.txt` (права 0600) в рабочий
+каталог процесса и в лог **не печатается** (в логе — только однострочная
+подсказка `ADMIN PASSWORD: записан в ./admin_password.txt`). В Docker
+рабочий каталог — `/home/nonroot`: забрать пароль можно командой
+`docker cp <контейнер>:/home/nonroot/admin_password.txt .`. Файл
+создаётся только при первой генерации; **удалите его после первого
+входа**. Вход в web-интерфейс: <http://localhost:8080> (логин/пароль →
 код не требуется, второй фактор у админа ещё не настроен).
 
 Сразу после первого входа: **/admin → Настройки** задайте `radius.secret`
@@ -719,14 +729,24 @@ go list ./... | grep licgen   # пусто — licgen вне корневого 
 docker run --rm --entrypoint / twofa:latest ls /   # в образе только /twofa
 ```
 
+Для локальных демо есть `make build-dev` (`go build -tags dev`): такой
+бинарник дополнительно доверяет dev-ключу `dev-1` (см. ниже). Он
+предназначен ТОЛЬКО для локальных демонстраций — не поставляйте его
+клиентам и не публикуйте.
+
 ### Ключи выпуска
 
-В `internal/license/file.go` зашит ПЛЕЙСХОЛДЕР (`dev-1`) для разработки.
+Боевой набор зашит в `prodTrustedKeys` (`internal/license/file.go`).
+Dev-ключ `dev-1` в дефолтной сборке НЕ доверяется: он вынесен под build
+tag `dev` (`internal/license/devkeys_dev.go` / `devkeys_prod.go`) и
+попадает в бинарник только флагом `-tags dev` (`make build-dev`).
 Перед релизом вендор обязан: (1) `licgen -genkey` — сгенерировать пару,
-(2) hex публичного ключа вписать в `trustedKeys` с новым `kid` (можно 2–3
-ключа для ротации), (3) приватный ключ — офлайн-хранилище (HSM/шифрованный
-носитель), НЕ в репозиторий. Сгенерированные ранее плейсхолдером лицензии
-перестанут проходить проверку — это ожидаемо.
+(2) hex публичного ключа вписать в `prodTrustedKeys` с новым `kid`
+(можно 2–3 ключа для ротации), (3) приватный ключ — офлайн-хранилище
+(HSM/шифрованный носитель), НЕ в репозиторий. Сгенерированные ранее
+dev-ключом лицензии в продовых сборках перестают проходить проверку —
+это ожидаемо (перевыпустите боевым ключом; в `-tags dev`-сборках они
+продолжают работать).
 
 ### LDAP-провижининг
 
@@ -787,11 +807,12 @@ docker run --rm --entrypoint / twofa:latest ls /   # в образе тольк�
 ## Сборка и разработка
 
 ```sh
-make build   # go build -o twofa ./cmd/twofa
-make test    # юнит-тесты
-make lint    # go vet
-make docker  # docker build -t twofa:latest .
-make e2e     # E2E-сценарий (Docker): testcontainer PG + HTTP + RADIUS
+make build      # go build -o twofa ./cmd/twofa
+make build-dev  # то же + -tags dev (dev-ключ лицензий; только локальные демо)
+make test       # юнит-тесты
+make lint       # go vet
+make docker     # docker build -t twofa:latest .
+make e2e        # E2E-сценарий (Docker): testcontainer PG + HTTP + RADIUS
 ```
 
 Структура репозитория:

@@ -1,6 +1,12 @@
 # Клиентский docker-образ: только сервер. Вендорский инструмент
 # генерации лицензий в контекст сборки не попадает (см. cmd/licgen/go.mod).
 cmd/licgen
+# Секретные/локальные файлы в build-контекст не едут (audit P1:
+# lic.pem — лицензия, tinytuya.json — Tuya-креды, snapshot.json — LAN-снимок).
+lic.pem
+tinytuya.json
+snapshot.json
+admin_password.txt
 .git
 .gitignore
 README.md

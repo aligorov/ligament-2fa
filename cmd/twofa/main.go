@@ -462,8 +462,10 @@ func openBackupOutput(out string) (io.Writer, func(), error) {
 }
 
 // bootstrapAdmin создаёт первого администратора на пустой базе: пароль
-// RandomToken(12) печатается в лог ОДИН раз (повторно не восстанавливается —
-// только сброс через БД или другого админа).
+// RandomToken(12) записывается в admin_password.txt (0600) в рабочем
+// каталоге и НЕ печатается в лог (повторно не восстанавливается — только
+// сброс через БД или другого админа). Файл создаётся только здесь, при
+// первой генерации; после первого входа его нужно удалить.
 func bootstrapAdmin(ctx context.Context, st *store.Store, box *secrets.Box) error {
 	n, err := st.UserCount(ctx)
 	if err != nil {
@@ -485,7 +487,13 @@ func bootstrapAdmin(ctx context.Context, st *store.Store, box *secrets.Box) erro
 	if err := st.UserCreate(ctx, u); err != nil {
 		return fmt.Errorf("создание администратора: %w", err)
 	}
-	slog.Info("ADMIN PASSWORD: " + pwd + " (сохраните, больше не покажется)")
+	// Пароль — только в файл с правами 0600 (секретен; логи читаются
+	// шире — journald/docker logs). Недоступный на запись рабочий каталог
+	// — ошибка старта: пароль терять нельзя, в лог печатать нельзя.
+	if err := os.WriteFile("admin_password.txt", []byte(pwd+"\n"), 0o600); err != nil {
+		return fmt.Errorf("запись admin_password.txt: %w (каталог должен быть доступен на запись)", err)
+	}
+	slog.Info("ADMIN PASSWORD: записан в ./admin_password.txt (удалите после первого входа)")
 	return nil
 }
 

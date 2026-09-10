@@ -6,6 +6,16 @@
 .env
 *.local.yaml
 
+# Секретные/локальные артефакты (audit P1: никогда не коммитить —
+# lic.pem — выданная лицензия, tinytuya.json — Tuya-креды,
+# snapshot.json — LAN-снимок, cmd/licgen/licgen — вендорский бинарник)
+lic.pem
+tinytuya.json
+snapshot.json
+cmd/licgen/licgen
+# Пароль первого администратора (bootstrap, main.go)
+admin_password.txt
+
 # Go
 /bin/
 *.test

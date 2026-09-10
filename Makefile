@@ -1,4 +1,4 @@
-.PHONY: build test lint docker e2e licgen
+.PHONY: build build-dev test lint docker e2e licgen
 
 # Клиентская сборка: только сервер twofa. Генерация лицензий (cmd/licgen) —
 # отдельный вложенный Go-модуль и в ./... / docker-образ НЕ входит.
@@ -12,6 +12,12 @@ ADSLD := $(if $(ADS_CONFIG),-X main.VendorAdsJSON=$(ADS_CONFIG),)
 
 build:
 	go build -ldflags "-X main.BuildDate=$(shell date +%F) $(ADSLD)" -o twofa ./cmd/twofa
+
+# ДЕВ-сборка — ТОЛЬКО ДЛЯ ЛОКАЛЬНЫХ ДЕМО: добавляет в trustedKeys ключ
+# dev-1 (лицензии старых демо-файлов). Никогда не поставлять клиентам,
+# не собирать в CI и не публиковать (см. internal/license/devkeys_dev.go).
+build-dev:
+	go build -tags dev -ldflags "-X main.BuildDate=$(shell date +%F) $(ADSLD)" -o twofa ./cmd/twofa
 
 test:
 	go test ./...
