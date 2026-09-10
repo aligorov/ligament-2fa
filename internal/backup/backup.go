@@ -47,6 +47,7 @@ type tableSpec struct {
 // конфигурация (oidc_clients) переносится, in-flight входы истекают.
 var tables = []tableSpec{
 	{name: "users", order: "id"},
+	{name: "app_devices", order: "created_at"},
 	{name: "groups", order: "id"},
 	{name: "user_groups", order: "user_id, group_id"},
 	{name: "totp_secrets", order: "user_id"},
@@ -58,6 +59,10 @@ var tables = []tableSpec{
 	{name: "trusted_devices", order: "id"},
 	{name: "webauthn_credentials", order: "id"},
 	{name: "oidc_clients", order: "client_id"},
+	{name: "ip_lists", order: "id"},
+	{name: "ip_bans", order: "ip"},
+	{name: "support_sessions", order: "created_at"},
+	{name: "support_messages", order: "created_at"},
 	{name: "schema_migrations", order: "version"},
 }
 
@@ -263,9 +268,31 @@ func sqlLiteral(v any) (string, error) {
 		return quoteString(x.Format(time.RFC3339Nano)), nil
 	case [16]byte: // UUID из pgx v5
 		return quoteString(uuidString(x)), nil
+	case []string: // TEXT[] (ldap_groups, support_roles, …)
+		return arrayLiteral(len(x), func(i int) string { return quoteString(x[i]) }), nil
+	case []any: // массивы pgx без типизации элемента
+		parts := make([]string, len(x))
+		for i, el := range x {
+			lit, err := sqlLiteral(el)
+			if err != nil {
+				return "", fmt.Errorf("элемент массива %d: %w", i, err)
+			}
+			parts[i] = lit
+		}
+		return arrayLiteral(len(parts), func(i int) string { return parts[i] }), nil
 	default:
 		return "", fmt.Errorf("неподдерживаемый тип значения %T", v)
 	}
+}
+
+// arrayLiteral собирает ARRAY[...]::text[]: без ::text[] пустой ARRAY[]
+// выводится как unknown и не вставляется в TEXT[]-колонку.
+func arrayLiteral(n int, elem func(i int) string) string {
+	parts := make([]string, n)
+	for i := 0; i < n; i++ {
+		parts[i] = elem(i)
+	}
+	return "ARRAY[" + strings.Join(parts, ", ") + "]::text[]"
 }
 
 // uuidString — [16]byte в канонической форме UUID.

@@ -488,7 +488,9 @@ func parseSettingsForm(block string) (section string, fields map[string]string) 
 	}
 	for _, m := range inputRe.FindAllStringSubmatch(block, -1) {
 		name, tag := m[1], m[0]
-		if name == "csrf_token" || name == "section" || name == "regenerate" {
+		if name == "csrf_token" || name == "section" || name == "regenerate" || name == "ldap_test_username" {
+			// ldap_test_username — параметр действия «проверить пользователя»
+			// (ldap_action=test_user), не ключ настроек.
 			continue
 		}
 		if strings.Contains(tag, `type="checkbox"`) {
