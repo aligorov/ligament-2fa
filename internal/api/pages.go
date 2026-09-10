@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -198,6 +199,14 @@ func (p *PagesAPI) requirePage(next http.Handler) http.Handler {
 					_ = r.ParseForm()
 				}
 				token = r.PostFormValue("csrf_token")
+				if token == "" && r.MultipartForm != nil {
+					if vals := r.MultipartForm.Value["csrf_token"]; len(vals) > 0 {
+						token = vals[0]
+					}
+				}
+				if token == "" {
+					token = r.FormValue("csrf_token")
+				}
 			}
 			if subtle.ConstantTimeCompare([]byte(token), []byte(csrf)) != 1 {
 				http.Error(w, "запрос без CSRF-токена сессии", http.StatusForbidden)
@@ -3101,15 +3110,41 @@ func (p *PagesAPI) handleAdminSupport(w http.ResponseWriter, r *http.Request) {
 // handleAdminSupportAction — POST /admin/support: сохранение настроек категорий, удаление или очистка сессий.
 func (p *PagesAPI) handleAdminSupportAction(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	action := strings.TrimSpace(r.PostFormValue("action"))
+	_ = r.ParseMultipartForm(32 << 20)
+	_ = r.ParseForm()
+
+	getVals := func(key string) []string {
+		if vs := r.PostForm[key]; len(vs) > 0 {
+			return vs
+		}
+		if vs := r.Form[key]; len(vs) > 0 {
+			return vs
+		}
+		if r.MultipartForm != nil {
+			if vs := r.MultipartForm.Value[key]; len(vs) > 0 {
+				return vs
+			}
+		}
+		return nil
+	}
+	getVal := func(key string) string {
+		if vs := getVals(key); len(vs) > 0 {
+			return strings.TrimSpace(vs[0])
+		}
+		return ""
+	}
+
+	action := getVal("action")
 	back := "/admin/support"
 	if cat := r.URL.Query().Get("category"); cat != "" {
 		back += "?category=" + url.QueryEscape(cat)
 	}
 
+	isAjax := r.Header.Get("X-Requested-With") == "XMLHttpRequest" || strings.Contains(r.Header.Get("Accept"), "application/json")
+
 	switch action {
 	case "delete":
-		idStr := strings.TrimSpace(r.PostFormValue("id"))
+		idStr := getVal("id")
 		id, err := uuid.Parse(idStr)
 		if err != nil {
 			redirectFlash(w, r, back, "Некорректный идентификатор обращения.", false)
@@ -3134,25 +3169,25 @@ func (p *PagesAPI) handleAdminSupportAction(w http.ResponseWriter, r *http.Reque
 	case "save_settings":
 		cur := p.m.Get().Support
 
-		catIDs := r.PostForm["cat_id[]"]
+		catIDs := getVals("cat_id[]")
 		if len(catIDs) == 0 {
-			catIDs = r.PostForm["cat_id"]
+			catIDs = getVals("cat_id")
 		}
-		catTitles := r.PostForm["cat_title[]"]
+		catTitles := getVals("cat_title[]")
 		if len(catTitles) == 0 {
-			catTitles = r.PostForm["cat_title"]
+			catTitles = getVals("cat_title")
 		}
-		catIcons := r.PostForm["cat_icon[]"]
+		catIcons := getVals("cat_icon[]")
 		if len(catIcons) == 0 {
-			catIcons = r.PostForm["cat_icon"]
+			catIcons = getVals("cat_icon")
 		}
-		catEmails := r.PostForm["cat_emails[]"]
+		catEmails := getVals("cat_emails[]")
 		if len(catEmails) == 0 {
-			catEmails = r.PostForm["cat_emails"]
+			catEmails = getVals("cat_emails")
 		}
-		catTelegrams := r.PostForm["cat_telegram[]"]
+		catTelegrams := getVals("cat_telegram[]")
 		if len(catTelegrams) == 0 {
-			catTelegrams = r.PostForm["cat_telegram"]
+			catTelegrams = getVals("cat_telegram")
 		}
 
 		var newCats []settings.SupportCategory
@@ -3171,16 +3206,26 @@ func (p *PagesAPI) handleAdminSupportAction(w http.ResponseWriter, r *http.Reque
 			}
 			var emails []string
 			if i < len(catEmails) {
-				for _, em := range strings.Split(catEmails[i], ",") {
+				fields := strings.FieldsFunc(catEmails[i], func(r rune) bool {
+					return r == ',' || r == ';' || unicode.IsSpace(r)
+				})
+				for _, em := range fields {
 					em = strings.TrimSpace(em)
-					if em != "" {
+					if em != "" && strings.Contains(em, "@") {
 						emails = append(emails, em)
 					}
 				}
 			}
 			var tgChatID int64
 			if i < len(catTelegrams) && strings.TrimSpace(catTelegrams[i]) != "" {
-				if val, err := strconv.ParseInt(strings.TrimSpace(catTelegrams[i]), 10, 64); err == nil {
+				rawTg := strings.TrimSpace(catTelegrams[i])
+				rawTg = strings.ReplaceAll(rawTg, " ", "")
+				rawTg = strings.ReplaceAll(rawTg, "\u00a0", "")
+				rawTg = strings.ReplaceAll(rawTg, "\t", "")
+				rawTg = strings.TrimPrefix(rawTg, "https://t.me/")
+				rawTg = strings.TrimPrefix(rawTg, "t.me/")
+				rawTg = strings.TrimPrefix(rawTg, "@")
+				if val, err := strconv.ParseInt(rawTg, 10, 64); err == nil {
 					tgChatID = val
 				}
 			}
@@ -3194,31 +3239,57 @@ func (p *PagesAPI) handleAdminSupportAction(w http.ResponseWriter, r *http.Reque
 		}
 		if len(newCats) > 0 {
 			cur.Categories = newCats
+			for _, c := range newCats {
+				if strings.EqualFold(c.ID, "it") {
+					cur.EmailsIT = c.Emails
+					cur.TelegramChatIT = c.TelegramChat
+				} else if strings.EqualFold(c.ID, "1c") {
+					cur.Emails1C = c.Emails
+					cur.TelegramChat1C = c.TelegramChat
+				}
+			}
 		}
 
-		if val, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("disk_warning_percent"))); err == nil && val >= 0 && val <= 100 {
+		if val, err := strconv.Atoi(getVal("disk_warning_percent")); err == nil && val >= 0 && val <= 100 {
 			cur.DiskWarningPercent = val
 		}
-		if val, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("disk_warning_min_gb"))); err == nil && val >= 0 {
+		if val, err := strconv.Atoi(getVal("disk_warning_min_gb")); err == nil && val >= 0 {
 			cur.DiskWarningMinGB = val
 		}
-		if val, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("cpu_warning_percent"))); err == nil && val >= 0 && val <= 100 {
+		if val, err := strconv.Atoi(getVal("cpu_warning_percent")); err == nil && val >= 0 && val <= 100 {
 			cur.CpuWarningPercent = val
 		}
-		if val, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("cpu_spike_duration_sec"))); err == nil && val >= 0 {
+		if val, err := strconv.Atoi(getVal("cpu_spike_duration_sec")); err == nil && val >= 0 {
 			cur.CpuSpikeDurationSec = val
 		}
 
 		rawJSON, err := json.Marshal(cur)
 		if err != nil {
+			if isAjax {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+				return
+			}
 			flash500(w, r, back, err)
 			return
 		}
 		if err := p.m.Put(ctx, "support", rawJSON); err != nil {
+			if isAjax {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+				return
+			}
 			flash500(w, r, back, err)
 			return
 		}
 		p.admin.audit(ctx, "support_settings_update", map[string]any{"categories_count": len(cur.Categories)})
+		if isAjax {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			return
+		}
 		redirectFlash(w, r, back, "Настройки удаленной помощи и категории успешно сохранены.", true)
 
 	default:

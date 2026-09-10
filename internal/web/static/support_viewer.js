@@ -80,6 +80,75 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnCloseSupportSettings) btnCloseSupportSettings.addEventListener("click", closeSupportSettings);
   if (btnCancelSupportSettings) btnCancelSupportSettings.addEventListener("click", closeSupportSettings);
 
+  if (supportSettingsModal) {
+    supportSettingsModal.addEventListener("click", (e) => {
+      if (e.target === supportSettingsModal) {
+        closeSupportSettings();
+      }
+    });
+  }
+
+  const supportSettingsForm = supportSettingsModal ? supportSettingsModal.querySelector("form") : null;
+  if (supportSettingsForm) {
+    supportSettingsForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const submitBtn = supportSettingsForm.querySelector("button[type='submit']");
+      const origText = submitBtn ? submitBtn.innerHTML : "💾 Сохранить настройки";
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = "⏳ Сохранение...";
+      }
+
+      try {
+        const formData = new FormData(supportSettingsForm);
+        const params = new URLSearchParams(formData);
+        const csrfToken = formData.get("csrf_token");
+        const headers = {
+          "Accept": "application/json",
+          "X-Requested-With": "XMLHttpRequest"
+        };
+        if (csrfToken) {
+          headers["X-CSRF-Token"] = csrfToken;
+        }
+
+        const res = await fetch("/admin/support", {
+          method: "POST",
+          headers: headers,
+          body: params
+        });
+
+        if (res.ok) {
+          if (submitBtn) {
+            submitBtn.innerHTML = "✅ Сохранено!";
+            submitBtn.classList.remove("primary");
+            submitBtn.classList.add("ok");
+          }
+          setTimeout(() => {
+            closeSupportSettings();
+            location.reload();
+          }, 500);
+        } else {
+          let errMsg = "Ошибка сохранения настроек";
+          try {
+            const data = await res.json();
+            if (data && data.error) errMsg = data.error;
+          } catch (_) {}
+          alert(errMsg);
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = origText;
+          }
+        }
+      } catch (err) {
+        alert("Ошибка сети при сохранении: " + err.message);
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = origText;
+        }
+      }
+    });
+  }
+
   if (btnAddCategoryRow && categoriesTbody) {
     btnAddCategoryRow.addEventListener("click", () => {
       const tr = document.createElement("tr");
@@ -92,6 +161,8 @@ document.addEventListener("DOMContentLoaded", () => {
         <td style="text-align: center;"><button type="button" class="btn ghost sm danger cat-row-del" title="Удалить">✕</button></td>
       `;
       categoriesTbody.appendChild(tr);
+      const firstInp = tr.querySelector("input");
+      if (firstInp) firstInp.focus();
     });
   }
 

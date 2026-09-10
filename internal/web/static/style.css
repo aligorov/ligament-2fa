@@ -1667,11 +1667,21 @@ button.select-chip.partial .ad-group-count {
 }
 
 .support-modal-window {
-  width: 820px;
+  width: 880px;
   max-width: 95vw;
-  max-height: 90vh;
-  overflow-y: auto;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
   padding: 24px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.support-modal-scroll-body {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-right: 4px;
 }
 
 /* ==========================================================================

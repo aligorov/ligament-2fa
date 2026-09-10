@@ -20,11 +20,18 @@ document.addEventListener("DOMContentLoaded", () => {
   const refreshEl = document.querySelector("[data-auto-refresh]");
   if (refreshEl) {
     const sec = parseInt(refreshEl.dataset.autoRefresh, 10) || 6;
-    setTimeout(() => {
-      if (!document.hidden) {
+    const checkAndReload = () => {
+      // Не перезагружать страницу, если открыто модальное окно или фокус в поле ввода
+      const modalOpen = document.querySelector(".viewer-modal-backdrop.visible, .modal.visible, [id$='-modal'].visible");
+      const activeEl = document.activeElement;
+      const isTyping = activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA" || activeEl.tagName === "SELECT");
+      if (!document.hidden && !modalOpen && !isTyping) {
         location.reload();
+      } else {
+        setTimeout(checkAndReload, sec * 1000);
       }
-    }, sec * 1000);
+    };
+    setTimeout(checkAndReload, sec * 1000);
   }
 
   for (const btn of document.querySelectorAll("[data-copy]")) {
