@@ -16,6 +16,7 @@ class WebSocketService {
   PushPromptCallback? onSupportPrompt;
   PushPromptCallback? onSupportSignal;
   PushPromptCallback? onSupportEnded;
+  PushPromptCallback? onSupportIncoming;
   VoidCallback? onConnected;
   VoidCallback? onDisconnected;
 
@@ -79,6 +80,8 @@ class WebSocketService {
         onSupportSignal?.call(data);
       } else if (data['type'] == 'support_ended') {
         onSupportEnded?.call(data);
+      } else if (data['type'] == 'support_incoming_request' || data['type'] == 'support_queue_update') {
+        onSupportIncoming?.call(data);
       }
     } catch (e) {
       debugPrint('ws_service: ошибка парсинга сообщения: $e');

@@ -13,10 +13,34 @@ class SupportDialog extends StatefulWidget {
 class _SupportDialogState extends State<SupportDialog> {
   final _formKey = GlobalKey<FormState>();
   final _summaryController = TextEditingController();
-  String _category = 'it'; // 'it' | '1c'
+  String _category = 'it';
   String _accessMode = 'full_control'; // 'full_control' | 'view_only'
   bool _submitting = false;
   String? _errorMessage;
+
+  List<Map<String, dynamic>> _categories = [
+    {'id': 'it', 'name': 'IT-служба', 'icon': '🖥'},
+    {'id': '1c', 'name': 'Поддержка 1С', 'icon': '📊'},
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final auth = context.read<AuthState>();
+      try {
+        final cats = await auth.api?.getSupportCategories();
+        if (cats != null && cats.isNotEmpty && mounted) {
+          setState(() {
+            _categories = cats;
+            if (!_categories.any((c) => c['id'] == _category)) {
+              _category = _categories.first['id']?.toString() ?? 'it';
+            }
+          });
+        }
+      } catch (_) {}
+    });
+  }
 
   @override
   void dispose() {
@@ -42,14 +66,14 @@ class _SupportDialogState extends State<SupportDialog> {
 
       if (mounted) {
         Navigator.of(context).pop(true);
+        final catName = _categories.firstWhere(
+          (c) => c['id'] == _category,
+          orElse: () => {'name': _category},
+        )['name'];
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             backgroundColor: const Color(0xFF0284C7),
-            content: Text(
-              _category == '1c'
-                  ? 'Запрос передан консультантам 1С. Ожидайте подключения.'
-                  : 'Запрос передан дежурному инженеру IT. Ожидайте подключения.',
-            ),
+            content: Text('Запрос передан в службу: $catName. Ожидайте подключения инженера.'),
           ),
         );
       }
@@ -70,7 +94,7 @@ class _SupportDialogState extends State<SupportDialog> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Container(
         padding: const EdgeInsets.all(24),
-        constraints: const BoxConstraints(maxWidth: 480),
+        constraints: const BoxConstraints(maxWidth: 520),
         child: Form(
           key: _formKey,
           child: SingleChildScrollView(
@@ -83,7 +107,7 @@ class _SupportDialogState extends State<SupportDialog> {
                     Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFEF4444).withOpacity(0.15),
+                        color: const Color(0xFFEF4444).withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: const Icon(Icons.support_agent, color: Color(0xFFEF4444), size: 28),
@@ -117,9 +141,9 @@ class _SupportDialogState extends State<SupportDialog> {
                     margin: const EdgeInsets.only(bottom: 16),
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFEF4444).withOpacity(0.15),
+                      color: const Color(0xFFEF4444).withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: const Color(0xFFEF4444).withOpacity(0.4)),
+                      border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.4)),
                     ),
                     child: Text(
                       _errorMessage!,
@@ -127,104 +151,59 @@ class _SupportDialogState extends State<SupportDialog> {
                     ),
                   ),
 
-                // Выбор категории поддержки
+                // Выбор категории поддержки (динамический)
                 const Text(
                   'Выберите службу поддержки:',
                   style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: InkWell(
-                        onTap: () => setState(() => _category = 'it'),
-                        borderRadius: BorderRadius.circular(12),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-                          decoration: BoxDecoration(
-                            color: _category == 'it'
-                                ? const Color(0xFF0284C7).withOpacity(0.2)
-                                : const Color(0xFF0F172A),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: _category == 'it'
-                                  ? const Color(0xFF38BDF8)
-                                  : const Color(0xFF334155),
-                              width: 1.5,
-                            ),
-                          ),
-                          child: Column(
-                            children: [
-                              Icon(
-                                Icons.computer,
-                                color: _category == 'it' ? const Color(0xFF38BDF8) : const Color(0xFF94A3B8),
-                                size: 24,
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                'IT-служба',
-                                style: TextStyle(
-                                  color: _category == 'it' ? Colors.white : const Color(0xFF94A3B8),
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              const Text(
-                                'ПК, сеть, доступ',
-                                style: TextStyle(color: Color(0xFF64748B), fontSize: 11),
-                              ),
-                            ],
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _categories.map((cat) {
+                    final id = cat['id']?.toString() ?? '';
+                    final name = cat['name']?.toString() ?? id;
+                    final icon = cat['icon']?.toString() ?? '🛠';
+                    final isSelected = _category == id;
+                    final is1C = id == '1c';
+
+                    return InkWell(
+                      onTap: () => setState(() => _category = id),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? (is1C
+                                  ? const Color(0xFFF59E0B).withValues(alpha: 0.2)
+                                  : const Color(0xFF0284C7).withValues(alpha: 0.2))
+                              : const Color(0xFF0F172A),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isSelected
+                                ? (is1C ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8))
+                                : const Color(0xFF334155),
+                            width: 1.5,
                           ),
                         ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: InkWell(
-                        onTap: () => setState(() => _category = '1c'),
-                        borderRadius: BorderRadius.circular(12),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-                          decoration: BoxDecoration(
-                            color: _category == '1c'
-                                ? const Color(0xFFF59E0B).withOpacity(0.2)
-                                : const Color(0xFF0F172A),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: _category == '1c'
-                                  ? const Color(0xFFF59E0B)
-                                  : const Color(0xFF334155),
-                              width: 1.5,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(icon, style: const TextStyle(fontSize: 16)),
+                            const SizedBox(width: 8),
+                            Text(
+                              name,
+                              style: TextStyle(
+                                color: isSelected ? Colors.white : const Color(0xFF94A3B8),
+                                fontSize: 13,
+                                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                              ),
                             ),
-                          ),
-                          child: Column(
-                            children: [
-                              Icon(
-                                Icons.analytics_outlined,
-                                color: _category == '1c' ? const Color(0xFFF59E0B) : const Color(0xFF94A3B8),
-                                size: 24,
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                'Поддержка 1С',
-                                style: TextStyle(
-                                  color: _category == '1c' ? Colors.white : const Color(0xFF94A3B8),
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              const Text(
-                                'Базы, ошибки, учет',
-                                style: TextStyle(color: Color(0xFF64748B), fontSize: 11),
-                              ),
-                            ],
-                          ),
+                          ],
                         ),
                       ),
-                    ),
-                  ],
+                    );
+                  }).toList(),
                 ),
                 const SizedBox(height: 18),
 

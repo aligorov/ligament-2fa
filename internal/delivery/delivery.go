@@ -23,6 +23,11 @@ type AlertSender interface {
 	SendAlert(ctx context.Context, to, subject, body string) error
 }
 
+// AlertSenderReplyTo — канал отправки уведомлений с явным указанием Reply-To.
+type AlertSenderReplyTo interface {
+	SendAlertWithReplyTo(ctx context.Context, to, replyTo, subject, body string) error
+}
+
 // BodyTemplate — встроенный дефолт текста сообщения, если настройка
 // messages.* пуста: плейсхолдер {code} заменяется на одноразовый код.
 const BodyTemplate = "Ваш код подтверждения: {code}"

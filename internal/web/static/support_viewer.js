@@ -15,6 +15,8 @@ document.addEventListener("DOMContentLoaded", () => {
   let peerConnection = null;
   let inputChannel = null;
   let isControlEnabled = false;
+  let isClientInputBlocked = false;
+  let currentZoom = 1.0;
 
   const statusBadge = document.getElementById("session-status-badge");
   const numberMatchCard = document.getElementById("number-match-card");
@@ -26,6 +28,25 @@ document.addEventListener("DOMContentLoaded", () => {
   const transferModal = document.getElementById("transfer-modal");
   const transferUserSelect = document.getElementById("transfer-user-select");
   const transferLinkInput = document.getElementById("transfer-link-input");
+
+  const viewerScreenSelect = document.getElementById("viewer-screen-select");
+  const btnScaleFit = document.getElementById("btn-scale-fit");
+  const btnScaleOrig = document.getElementById("btn-scale-orig");
+  const btnScaleIn = document.getElementById("btn-scale-in");
+  const btnScaleOut = document.getElementById("btn-scale-out");
+  const viewerHotkeySelect = document.getElementById("viewer-hotkey-select");
+  const btnBlockInput = document.getElementById("btn-block-input");
+  const btnClipboardToggle = document.getElementById("btn-clipboard-toggle");
+  const clipboardDrawer = document.getElementById("viewer-clipboard-drawer");
+  const btnClipboardClose = document.getElementById("btn-clipboard-close");
+  const clipboardSendText = document.getElementById("clipboard-send-text");
+  const btnClipboardSend = document.getElementById("btn-clipboard-send");
+  const btnClipboardRead = document.getElementById("btn-clipboard-read");
+  const clipboardReadResult = document.getElementById("clipboard-read-result");
+  const clipboardReadVal = document.getElementById("clipboard-read-val");
+  const telCpuBadge = document.getElementById("tel-cpu-badge");
+  const telDiskBadge = document.getElementById("tel-disk-badge");
+  const viewerAccessMode = document.getElementById("viewer-access-mode");
 
   function tokenQuery() {
     return transferToken ? "?token=" + encodeURIComponent(transferToken) : "";
@@ -180,16 +201,78 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     peerConnection.ondatachannel = (event) => {
-      inputChannel = event.channel;
+      attachInputChannel(event.channel);
       console.log("Support WebRTC: Input DataChannel received from client");
     };
 
     // Создаем DataChannel для отправки команд ввода оператора
     try {
-      inputChannel = peerConnection.createDataChannel("input", { ordered: true });
-      inputChannel.onopen = () => console.log("Support WebRTC: Input DataChannel open");
+      const dc = peerConnection.createDataChannel("input", { ordered: true });
+      attachInputChannel(dc);
     } catch (e) {
       console.warn("Support WebRTC: DataChannel creation note:", e);
+    }
+  }
+
+  function attachInputChannel(ch) {
+    if (!ch) return;
+    inputChannel = ch;
+    ch.onopen = () => console.log("Support WebRTC: Input DataChannel open");
+    ch.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        handleControlMessage(msg);
+      } catch (e) {
+        console.error("DataChannel parse error:", e);
+      }
+    };
+  }
+
+  function handleControlMessage(msg) {
+    if (!msg || !msg.type) return;
+
+    if (msg.type === "screen_list" && msg.screens && Array.isArray(msg.screens)) {
+      if (viewerScreenSelect) {
+        viewerScreenSelect.innerHTML = "";
+        msg.screens.forEach((scr) => {
+          const opt = document.createElement("option");
+          opt.value = scr.id;
+          opt.textContent = scr.name || `Монитор ${scr.id}`;
+          if (scr.primary) opt.selected = true;
+          viewerScreenSelect.appendChild(opt);
+        });
+      }
+    } else if (msg.type === "telemetry") {
+      if (telCpuBadge && msg.cpu_percent !== undefined) {
+        telCpuBadge.textContent = `⚡ CPU: ${msg.cpu_percent}%`;
+        if (msg.cpu_warning || msg.cpu_percent >= 95) {
+          telCpuBadge.className = "badge danger";
+        } else {
+          telCpuBadge.className = "badge ok";
+        }
+      }
+      if (telDiskBadge && msg.disk_free_gb !== undefined) {
+        telDiskBadge.textContent = `💾 Диск: ${msg.disk_free_gb} ГБ (${msg.disk_percent}%)`;
+        if (msg.disk_warning || msg.disk_free_gb < 10) {
+          telDiskBadge.className = "badge danger";
+        } else {
+          telDiskBadge.className = "badge ok";
+        }
+      }
+    } else if (msg.type === "clipboard_data") {
+      if (clipboardReadVal && clipboardReadResult) {
+        clipboardReadVal.textContent = msg.text || "(буфер обмена пуст)";
+        clipboardReadResult.style.display = "block";
+      }
+    }
+  }
+
+  function sendControlMessage(obj) {
+    const payload = JSON.stringify(obj);
+    if (inputChannel && inputChannel.readyState === "open") {
+      inputChannel.send(payload);
+    } else if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "input_control", data: obj }));
     }
   }
 
@@ -254,6 +337,10 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (msg.type === "support_ended") {
       alert("Сеанс удаленной поддержки завершен.");
       location.href = "/admin/support";
+    } else if (msg.type === "input_control" && msg.data) {
+      handleControlMessage(msg.data);
+    } else {
+      handleControlMessage(msg);
     }
   }
 
@@ -294,37 +381,220 @@ document.addEventListener("DOMContentLoaded", () => {
       btnToggleControl.className = "btn ok sm";
       btnToggleControl.textContent = "✓ Управление активно";
       setupInputCapture();
+      if (viewerAccessMode) viewerAccessMode.textContent = "Полное управление";
     } else {
       btnToggleControl.className = "btn secondary sm";
       btnToggleControl.textContent = "🎮 Включить управление";
       removeInputCapture();
+      if (viewerAccessMode) viewerAccessMode.textContent = "Только просмотр";
     }
+  }
+
+  function onContextMenu(e) {
+    if (isControlEnabled) {
+      e.preventDefault();
+    }
+  }
+
+  function onMouseMove(e) {
+    if (!isControlEnabled) return;
+    const rect = remoteVideo.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    sendControlMessage({ type: "mouse_move", action: "mouse_move", x, y });
+  }
+
+  function onMouseDown(e) {
+    if (!isControlEnabled) return;
+    e.preventDefault();
+    const rect = remoteVideo.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    sendControlMessage({ type: "mouse_down", action: "mouse_down", button: e.button, x, y });
+  }
+
+  function onMouseUp(e) {
+    if (!isControlEnabled) return;
+    e.preventDefault();
+    const rect = remoteVideo.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    sendControlMessage({ type: "mouse_up", action: "mouse_up", button: e.button, x, y });
+  }
+
+  function onWheel(e) {
+    if (!isControlEnabled) return;
+    e.preventDefault();
+    sendControlMessage({ type: "mouse_wheel", deltaX: e.deltaX, deltaY: e.deltaY });
+  }
+
+  function onKeyDown(e) {
+    if (!isControlEnabled) return;
+    const active = document.activeElement;
+    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT")) {
+      return;
+    }
+    if (e.key === "Tab" || e.key === "Alt" || e.key === "Meta" || e.key.startsWith("F") || (e.ctrlKey && e.key !== "r")) {
+      e.preventDefault();
+    }
+    sendControlMessage({
+      type: "key_down",
+      action: "key_down",
+      key: e.key,
+      code: e.code,
+      keyCode: e.keyCode,
+      ctrl: e.ctrlKey,
+      alt: e.altKey,
+      shift: e.shiftKey,
+      meta: e.metaKey
+    });
+  }
+
+  function onKeyUp(e) {
+    if (!isControlEnabled) return;
+    const active = document.activeElement;
+    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT")) {
+      return;
+    }
+    sendControlMessage({
+      type: "key_up",
+      action: "key_up",
+      key: e.key,
+      code: e.code,
+      keyCode: e.keyCode,
+      ctrl: e.ctrlKey,
+      alt: e.altKey,
+      shift: e.shiftKey,
+      meta: e.metaKey
+    });
   }
 
   function setupInputCapture() {
     if (!remoteVideo) return;
-    remoteVideo.onmousemove = (e) => {
-      if (!isControlEnabled || !inputChannel || inputChannel.readyState !== "open") return;
-      const rect = remoteVideo.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / rect.width;
-      const y = (e.clientY - rect.top) / rect.height;
-      inputChannel.send(JSON.stringify({ type: "mouse_move", action: "mouse_move", x, y }));
-    };
-    remoteVideo.onmousedown = (e) => {
-      if (!isControlEnabled || !inputChannel || inputChannel.readyState !== "open") return;
-      inputChannel.send(JSON.stringify({ type: "mouse_down", action: "mouse_down", button: e.button }));
-    };
-    remoteVideo.onmouseup = (e) => {
-      if (!isControlEnabled || !inputChannel || inputChannel.readyState !== "open") return;
-      inputChannel.send(JSON.stringify({ type: "mouse_up", action: "mouse_up", button: e.button }));
-    };
+    remoteVideo.addEventListener("contextmenu", onContextMenu);
+    remoteVideo.addEventListener("mousemove", onMouseMove);
+    remoteVideo.addEventListener("mousedown", onMouseDown);
+    remoteVideo.addEventListener("mouseup", onMouseUp);
+    remoteVideo.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
   }
 
   function removeInputCapture() {
     if (!remoteVideo) return;
-    remoteVideo.onmousemove = null;
-    remoteVideo.onmousedown = null;
-    remoteVideo.onmouseup = null;
+    remoteVideo.removeEventListener("contextmenu", onContextMenu);
+    remoteVideo.removeEventListener("mousemove", onMouseMove);
+    remoteVideo.removeEventListener("mousedown", onMouseDown);
+    remoteVideo.removeEventListener("mouseup", onMouseUp);
+    remoteVideo.removeEventListener("wheel", onWheel);
+    window.removeEventListener("keydown", onKeyDown);
+    window.removeEventListener("keyup", onKeyUp);
+  }
+
+  // Масштабирование видео
+  if (btnScaleFit && remoteVideo) {
+    btnScaleFit.addEventListener("click", () => {
+      currentZoom = 1.0;
+      remoteVideo.style.objectFit = "contain";
+      remoteVideo.style.width = "100%";
+      remoteVideo.style.height = "auto";
+      remoteVideo.style.maxHeight = "80vh";
+      remoteVideo.style.transform = "none";
+      btnScaleFit.className = "btn primary sm";
+      if (btnScaleOrig) btnScaleOrig.className = "btn ghost sm";
+    });
+  }
+
+  if (btnScaleOrig && remoteVideo) {
+    btnScaleOrig.addEventListener("click", () => {
+      currentZoom = 1.0;
+      remoteVideo.style.objectFit = "none";
+      remoteVideo.style.width = "auto";
+      remoteVideo.style.height = "auto";
+      remoteVideo.style.maxHeight = "none";
+      remoteVideo.style.transform = "none";
+      btnScaleOrig.className = "btn primary sm";
+      if (btnScaleFit) btnScaleFit.className = "btn ghost sm";
+    });
+  }
+
+  if (btnScaleIn && remoteVideo) {
+    btnScaleIn.addEventListener("click", () => {
+      currentZoom = Math.min(currentZoom + 0.2, 3.0);
+      remoteVideo.style.transform = `scale(${currentZoom})`;
+    });
+  }
+
+  if (btnScaleOut && remoteVideo) {
+    btnScaleOut.addEventListener("click", () => {
+      currentZoom = Math.max(currentZoom - 0.2, 0.4);
+      remoteVideo.style.transform = `scale(${currentZoom})`;
+    });
+  }
+
+  // Переключение монитора
+  if (viewerScreenSelect) {
+    viewerScreenSelect.addEventListener("change", () => {
+      const scrID = viewerScreenSelect.value;
+      sendControlMessage({ type: "switch_screen", screen_id: scrID });
+    });
+  }
+
+  // Блокировка клавиатуры и мыши клиента
+  if (btnBlockInput) {
+    btnBlockInput.addEventListener("click", () => {
+      isClientInputBlocked = !isClientInputBlocked;
+      sendControlMessage({ type: "block_input", enabled: isClientInputBlocked });
+      if (isClientInputBlocked) {
+        btnBlockInput.className = "btn err sm";
+        btnBlockInput.textContent = "🔓 Разблок ввода";
+        btnBlockInput.title = "Разблокировать клавиатуру и мышь клиента";
+      } else {
+        btnBlockInput.className = "btn secondary sm";
+        btnBlockInput.textContent = "🔒 Блок ввода клиента";
+        btnBlockInput.title = "Заблокировать локальную клавиатуру и мышь у клиента";
+      }
+    });
+  }
+
+  // Горячие клавиши
+  if (viewerHotkeySelect) {
+    viewerHotkeySelect.addEventListener("change", () => {
+      const hotkey = viewerHotkeySelect.value;
+      if (!hotkey) return;
+      sendControlMessage({ type: "hotkey", key: hotkey });
+      viewerHotkeySelect.value = "";
+    });
+  }
+
+  // Буфер обмена
+  if (btnClipboardToggle && clipboardDrawer) {
+    btnClipboardToggle.addEventListener("click", () => {
+      const isHidden = clipboardDrawer.style.display === "none";
+      clipboardDrawer.style.display = isHidden ? "block" : "none";
+    });
+  }
+
+  if (btnClipboardClose && clipboardDrawer) {
+    btnClipboardClose.addEventListener("click", () => {
+      clipboardDrawer.style.display = "none";
+    });
+  }
+
+  if (btnClipboardSend && clipboardSendText) {
+    btnClipboardSend.addEventListener("click", () => {
+      const text = clipboardSendText.value;
+      if (!text) return;
+      sendControlMessage({ type: "clipboard_set", text: text });
+      alert("Текст отправлен в буфер обмена клиента.");
+    });
+  }
+
+  if (btnClipboardRead) {
+    btnClipboardRead.addEventListener("click", () => {
+      sendControlMessage({ type: "clipboard_get" });
+    });
   }
 
   async function endSession() {

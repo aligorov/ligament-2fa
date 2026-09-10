@@ -3609,6 +3609,51 @@ paths:
         '200':
           description: Сессия завершена.
 
+  /api/v1/app/support/categories:
+    get:
+      tags: [Support]
+      summary: "Получить список активных категорий поддержки"
+      description: "Возвращает список доступных категорий SOS-запросов (IT, 1C и др.) с их названиями и иконками."
+      operationId: appSupportCategoriesGet
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Список категорий.
+
+  /api/v1/app/support/queue:
+    get:
+      tags: [Support]
+      summary: "Очередь запросов поддержки для инженера"
+      description: "Возвращает список входящих SOS-запросов для инженера с учетом его назначенных ролей поддержки."
+      operationId: appSupportQueueGet
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Очередь запросов.
+
+  /api/v1/app/support/{id}/connect:
+    post:
+      tags: [Support]
+      summary: "Подключиться к сессии поддержки из приложения инженера"
+      description: "Инициирует подключение инженера к сессии из мобильного или десктопного приложения."
+      operationId: appSupportConnectPost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Подключение инициировано, отправлен 2FA push пользователю.
+        '404':
+          description: Сессия не найдена.
+
   /api/v1/admin/support/sessions:
     get:
       tags: [Support]
@@ -3639,6 +3684,37 @@ paths:
       responses:
         '200':
           description: Данные сессии.
+    delete:
+      tags: [Support]
+      summary: "Удалить сессию удаленной помощи"
+      description: "Удаляет запись сессии поддержки и связанные события аудита."
+      operationId: adminSupportSessionDelete
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Сессия успешно удалена.
+        '404':
+          description: Сессия не найдена.
+
+  /api/v1/admin/support/sessions/cleanup:
+    post:
+      tags: [Support]
+      summary: "Очистить завершенные сессии поддержки"
+      description: "Удаляет все завершенные, отклоненные или отмененные сессии удаленной помощи."
+      operationId: adminSupportSessionsCleanupPost
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Завершенные сессии очищены.
 
   /api/v1/admin/support/sessions/{id}/connect:
     post:

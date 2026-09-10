@@ -28,6 +28,7 @@ class AuthState extends ChangeNotifier {
   List<Map<String, dynamic>> pendingChallenges = [];
   List<Map<String, dynamic>> allowedApps = [];
   List<Map<String, dynamic>> history = [];
+  List<Map<String, dynamic>> supportQueue = [];
   Map<String, dynamic>? currentPosture;
   bool isCompliant = true;
   bool isOnline = false;
@@ -38,6 +39,29 @@ class AuthState extends ChangeNotifier {
   final Set<String> _resolvedChallengeIds = {};
 
   bool get isLoggedIn => token != null && currentUser != null;
+
+  bool get isAdmin => currentUser?['role'] == 'admin';
+
+  List<String> get supportRoles {
+    final raw = currentUser?['support_roles'];
+    if (raw is List) {
+      return raw.map((e) => e.toString().toLowerCase()).toList();
+    }
+    return [];
+  }
+
+  bool get isITEngineer => isAdmin || supportRoles.contains('it');
+  bool get is1CEngineer => isAdmin || supportRoles.contains('1c');
+  bool get isEngineer => isAdmin || supportRoles.isNotEmpty;
+
+  String? get engineerBadge {
+    if (isAdmin) return '👑 Администратор';
+    if (isITEngineer && is1CEngineer) return '🛠 IT / 1С-инженер';
+    if (is1CEngineer) return '📊 1С-инженер';
+    if (isITEngineer) return '🖥 IT-инженер';
+    if (supportRoles.isNotEmpty) return '🛠 Инженер (${supportRoles.join(", ")})';
+    return null;
+  }
 
   void dismissPrompt([String? challengeId]) {
     if (challengeId != null && challengeId.isNotEmpty) {
@@ -124,6 +148,17 @@ class AuthState extends ChangeNotifier {
       notifyListeners();
     };
 
+    ws.onSupportIncoming = (msg) {
+      if (isEngineer) {
+        loadSupportQueue();
+        alert.triggerAlert(
+          title: 'Новое SOS-обращение: ${msg['category'] == '1c' ? '1С' : 'IT'}',
+          body: '${msg['employee_name'] ?? msg['username'] ?? 'Пользователь'}: ${msg['problem_summary'] ?? ''}',
+          challengeId: msg['session_id']?.toString(),
+        );
+      }
+    };
+
     ws.onConnected = () {
       isOnline = true;
       notifyListeners();
@@ -145,6 +180,9 @@ class AuthState extends ChangeNotifier {
       if (isLoggedIn) {
         await loadPendingChallenges();
         await checkSupportSession();
+        if (isEngineer) {
+          await loadSupportQueue();
+        }
       }
     });
   }
@@ -206,7 +244,7 @@ class AuthState extends ChangeNotifier {
       deviceName: deviceName,
       platform: platform,
       osVersion: osVersion,
-      appVersion: '1.0.1',
+      appVersion: '1.0.1+5',
       securityPosture: initialPosture,
     );
 
@@ -243,6 +281,7 @@ class AuthState extends ChangeNotifier {
     pendingChallenges.clear();
     allowedApps.clear();
     history.clear();
+    supportQueue.clear();
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auth_token');
@@ -251,13 +290,37 @@ class AuthState extends ChangeNotifier {
 
   Future<void> refreshAll() async {
     if (!isLoggedIn) return;
-    await Future.wait([
+    final tasks = <Future>[
       loadPendingChallenges(),
       loadAllowedApps(),
       loadHistory(),
       checkPosture(),
       checkSupportSession(),
-    ]);
+    ];
+    if (isEngineer) {
+      tasks.add(loadSupportQueue());
+    }
+    await Future.wait(tasks);
+  }
+
+  /// Загрузка очереди входящих обращений на поддержку (для инженеров)
+  Future<void> loadSupportQueue() async {
+    if (api == null || !isEngineer) return;
+    try {
+      supportQueue = await api!.getSupportQueue();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('auth_state: ошибка загрузки очереди поддержки: $e');
+    }
+  }
+
+  /// Подключение инженера к удаленной сессии пользователя
+  Future<Map<String, dynamic>> connectToSupportSession(String sessionId) async {
+    if (api == null) throw Exception('API не инициализирован');
+    final adminName = currentUser?['display_name'] ?? currentUser?['username'] ?? 'Инженер поддержки';
+    final res = await api!.connectToSupport(sessionId: sessionId, adminName: adminName);
+    await loadSupportQueue();
+    return res;
   }
 
   Future<void> loadPendingChallenges() async {

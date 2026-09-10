@@ -1,36 +1,156 @@
 {{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
 <div class="page-head">
-  <div class="page-title-row">
+  <div class="page-title-row" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
     <div>
       <h1 class="page-title">🛟 Удаленная помощь (SOS)</h1>
-      <p class="page-sub">Очередь экстренных обращений сотрудников компании за помощью по IT-инфраструктуре и 1С.</p>
+      <p class="page-sub">Очередь экстренных обращений сотрудников компании за помощью и удаленное подключение к рабочим местам.</p>
+    </div>
+    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+      <button type="button" class="btn secondary sm" id="btn-toggle-support-settings">
+        ⚙️ Категории и пороги
+      </button>
+      <form action="/admin/support" method="post" style="display: inline;">
+        {{csrf .CSRF}}
+        <input type="hidden" name="action" value="cleanup">
+        <button type="submit" class="btn ghost sm danger" data-confirm="Удалить все завершенные, отклоненные и отмененные обращения?">
+          🧹 Очистить завершенные
+        </button>
+      </form>
     </div>
   </div>
 </div>
 
-<div class="support-tabs">
-  <a class="btn {{if or (eq .CategoryFilter "") (eq .CategoryFilter "all")}}primary{{else}}ghost{{end}} sm" href="/admin/support?category=all{{if .StatusFilter}}&status={{.StatusFilter}}{{end}}">
-    Все категории
-  </a>
-  <a class="btn {{if eq .CategoryFilter "it"}}primary{{else}}ghost{{end}} sm" href="/admin/support?category=it{{if .StatusFilter}}&status={{.StatusFilter}}{{end}}">
-    🖥 IT-служба
-  </a>
-  <a class="btn {{if eq .CategoryFilter "1c"}}primary{{else}}ghost{{end}} sm" href="/admin/support?category=1c{{if .StatusFilter}}&status={{.StatusFilter}}{{end}}">
-    📊 Поддержка 1С
-  </a>
+<!-- Панель настроек категорий и порогов телеметрии (скрыта по умолчанию) -->
+<div id="support-settings-panel" class="card" style="display: none; margin-bottom: 1.5rem; border: 2px solid var(--primary);">
+  <div class="card-head" style="display: flex; justify-content: space-between; align-items: center;">
+    <div>
+      <h3>⚙️ Настройки категорий SOS и порогов телеметрии</h3>
+      <p class="muted">Укажите список категорий для пересылки обращений, email-адреса, Telegram-чаты и пороги предупреждений ПК.</p>
+    </div>
+    <button type="button" class="btn ghost sm" id="btn-close-support-settings">✕ Закрыть</button>
+  </div>
+
+  <form action="/admin/support" method="post" class="form wide" style="margin-top: 1rem;">
+    {{csrf .CSRF}}
+    <input type="hidden" name="action" value="save_settings">
+
+    <div style="margin-bottom: 1.5rem;">
+      <h4 style="margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between;">
+        <span>Категории обращений и маршрутизация</span>
+        <button type="button" class="btn ghost sm" id="btn-add-category-row">+ Добавить категорию</button>
+      </h4>
+      <div class="table-wrap">
+        <table class="table" id="categories-table">
+          <thead>
+            <tr>
+              <th style="width: 120px;">Идентификатор (id)</th>
+              <th style="width: 160px;">Название</th>
+              <th style="width: 70px;">Иконка</th>
+              <th>Email-адреса пересылки (через запятую)</th>
+              <th style="width: 160px;">Telegram Chat ID</th>
+              <th style="width: 50px;"></th>
+            </tr>
+          </thead>
+          <tbody id="categories-tbody">
+            {{range .Categories}}
+            <tr>
+              <td>
+                <input type="text" name="cat_id[]" class="input sm mono" value="{{.ID}}" required placeholder="например: it">
+              </td>
+              <td>
+                <input type="text" name="cat_title[]" class="input sm" value="{{.Name}}" required placeholder="IT-служба">
+              </td>
+              <td>
+                <input type="text" name="cat_icon[]" class="input sm" value="{{.Icon}}" style="text-align: center;" placeholder="🖥">
+              </td>
+              <td>
+                <input type="text" name="cat_emails[]" class="input sm" value="{{join .Emails ", "}}" placeholder="support@corp.ru, it@corp.ru">
+              </td>
+              <td>
+                <input type="text" name="cat_telegram[]" class="input sm mono" value="{{if .TelegramChat}}{{.TelegramChat}}{{end}}" placeholder="-100...">
+              </td>
+              <td style="text-align: center;">
+                <button type="button" class="btn ghost sm danger cat-row-del" title="Удалить категорию">✕</button>
+              </td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      <span class="help">Письмо с заявкой приходит на указанные адреса с полем <code>Reply-To</code> сотрудника, ФИО, именем ПК, IP и описанием проблемы.</span>
+    </div>
+
+    <div style="margin-bottom: 1.5rem; padding: 1rem; background: var(--bg); border-radius: var(--radius);">
+      <h4 style="margin-bottom: 0.8rem;">Пороги предупреждений телеметрии (Диски и 100% CPU)</h4>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem;">
+        <label class="field">
+          <span class="field-label">Порог заполнения диска (%)</span>
+          <input type="number" name="disk_warning_percent" class="input sm" value="{{if .Settings.DiskWarningPercent}}{{.Settings.DiskWarningPercent}}{{else}}90{{end}}" min="1" max="100">
+          <span class="help">Предупреждение при занятости диска выше N%</span>
+        </label>
+        <label class="field">
+          <span class="field-label">Мин. свободного места на диске (ГБ)</span>
+          <input type="number" name="disk_warning_min_gb" class="input sm" value="{{if .Settings.DiskWarningMinGB}}{{.Settings.DiskWarningMinGB}}{{else}}10{{end}}" min="1">
+          <span class="help">Предупреждение при свободном месте менее N ГБ</span>
+        </label>
+        <label class="field">
+          <span class="field-label">Порог загрузки CPU (%)</span>
+          <input type="number" name="cpu_warning_percent" class="input sm" value="{{if .Settings.CpuWarningPercent}}{{.Settings.CpuWarningPercent}}{{else}}95{{end}}" min="1" max="100">
+          <span class="help">Фиксировать перегрузку CPU выше N%</span>
+        </label>
+        <label class="field">
+          <span class="field-label">Длительность пика 100% CPU (сек)</span>
+          <input type="number" name="cpu_spike_duration_sec" class="input sm" value="{{if .Settings.CpuSpikeDurationSec}}{{.Settings.CpuSpikeDurationSec}}{{else}}30{{end}}" min="5">
+          <span class="help">Тревога при 100% нагрузке дольше N сек</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="actions" style="display: flex; justify-content: flex-end; gap: 8px;">
+      <button type="submit" class="btn primary">💾 Сохранить настройки</button>
+    </div>
+  </form>
+</div>
+
+<!-- Фильтры по категориям и статусам -->
+<div class="support-tabs" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+  <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
+    <a class="btn {{if or (eq .CategoryFilter "") (eq .CategoryFilter "all")}}primary{{else}}ghost{{end}} sm" href="/admin/support?category=all{{if .StatusFilter}}&status={{.StatusFilter}}{{end}}">
+      Все категории
+    </a>
+    {{range .Categories}}
+    <a class="btn {{if eq $.CategoryFilter .ID}}primary{{else}}ghost{{end}} sm" href="/admin/support?category={{.ID}}{{if $.StatusFilter}}&status={{$.StatusFilter}}{{end}}">
+      {{.Icon}} {{.Name}}
+    </a>
+    {{end}}
+  </div>
+
+  <div style="display: flex; gap: 6px; align-items: center;">
+    <span class="muted" style="font-size: 0.85rem;">Статус:</span>
+    <a class="btn {{if or (eq .StatusFilter "") (eq .StatusFilter "all")}}secondary{{else}}ghost{{end}} sm" href="/admin/support?{{if .CategoryFilter}}category={{.CategoryFilter}}&{{end}}status=all">
+      Все
+    </a>
+    <a class="btn {{if eq .StatusFilter "active"}}ok{{else}}ghost{{end}} sm" href="/admin/support?{{if .CategoryFilter}}category={{.CategoryFilter}}&{{end}}status=active">
+      Активные {{if .ActiveCount}}<span class="badge ok sm" style="margin-left: 4px;">{{.ActiveCount}}</span>{{end}}
+    </a>
+    <a class="btn {{if eq .StatusFilter "closed"}}neutral{{else}}ghost{{end}} sm" href="/admin/support?{{if .CategoryFilter}}category={{.CategoryFilter}}&{{end}}status=closed">
+      Завершенные
+    </a>
+  </div>
 </div>
 
 {{if not .Sessions}}
 <div class="card support-empty">
   <div class="support-empty-icon">🎉</div>
   <h3>Нет обращений в очереди</h3>
-  <p class="muted">В данный момент никто из сотрудников не запрашивал удаленной помощи.</p>
+  <p class="muted">В данный момент никто из сотрудников не запрашивал удаленной помощи по выбранным фильтрам.</p>
 </div>
 {{else}}
 <div class="support-list" data-auto-refresh="6">
   {{range .Sessions}}
-  <div class="card support-item {{if eq .Category "1c"}}support-item-1c{{else}}support-item-it{{end}}">
+  {{$isClosed := or (eq .Status "completed") (eq .Status "ended_by_admin") (eq .Status "rejected") (eq .Status "cancelled")}}
+  <div class="card support-item {{if $isClosed}}support-item-closed{{else if eq .Category "1c"}}support-item-1c{{else}}support-item-it{{end}}" style="{{if $isClosed}}opacity: 0.85; border-left: 4px solid var(--muted);{{end}}">
     <div class="support-item-head">
       <div class="support-user-info">
         <div class="user-avatar" data-avatar-bg="{{.Username}}">
@@ -42,13 +162,13 @@
             {{if and .DisplayName (ne .DisplayName .Username)}}
               <span class="muted support-user-sub">@{{.Username}}</span>
             {{end}}
-            {{if eq .Category "1c"}}
-              <span class="badge warn">📊 1С</span>
-            {{else}}
-              <span class="badge info">🖥 IT</span>
-            {{end}}
-            <span class="badge {{if eq .Status "active"}}ok{{else if eq .Status "requested"}}warn{{else if eq .Status "transferred"}}info{{else}}neutral{{end}}">
-              {{if eq .Status "requested"}}Ожидает инженера{{else if eq .Status "connecting"}}2FA авторизация{{else if eq .Status "active"}}Сессия активна{{else if eq .Status "transferred"}}Переадресована{{else}}{{.Status}}{{end}}
+            
+            <span class="badge {{if eq .Category "1c"}}warn{{else if eq .Category "it"}}info{{else}}neutral{{end}}">
+              {{if eq .Category "1c"}}📊 1С{{else if eq .Category "it"}}🖥 IT{{else}}🛟 {{.Category}}{{end}}
+            </span>
+            
+            <span class="badge {{if eq .Status "active"}}ok{{else if eq .Status "requested"}}warn{{else if eq .Status "connecting"}}info{{else if eq .Status "transferred"}}info{{else if eq .Status "rejected"}}danger{{else}}neutral{{end}}">
+              {{if eq .Status "requested"}}🟡 Ожидает инженера{{else if eq .Status "connecting"}}🔵 2FA авторизация{{else if eq .Status "active"}}🟢 Сессия активна{{else if eq .Status "transferred"}}🟣 Переадресована{{else if eq .Status "completed"}}⚪ Завершена{{else if eq .Status "ended_by_admin"}}⚪ Завершена инженером{{else if eq .Status "rejected"}}🔴 Отклонена{{else if eq .Status "cancelled"}}⚪ Отменена{{else}}{{.Status}}{{end}}
             </span>
           </div>
           <div class="support-meta">
@@ -57,14 +177,29 @@
             <span>🌐 IP: {{.LastIP}}</span>
             <span class="dot-sep">•</span>
             <span>🕒 {{dt .CreatedAt}}</span>
+            {{if .EndedAt}}
+              <span class="dot-sep">•</span>
+              <span>🏁 Завершено: {{dt .EndedAt}}</span>
+            {{end}}
           </div>
         </div>
       </div>
 
       <div class="support-actions">
-        <a class="btn primary sm" href="/admin/support/{{.ID}}/viewer">
-          {{if eq .Status "active"}}Перейти к экрану 🖥{{else}}Подключиться ⚡{{end}}
-        </a>
+        {{if not $isClosed}}
+          <a class="btn primary sm" href="/admin/support/{{.ID}}/viewer">
+            {{if eq .Status "active"}}Перейти к экрану 🖥{{else}}Подключиться ⚡{{end}}
+          </a>
+        {{else}}
+          <span class="muted" style="font-size: 0.85rem; margin-right: 6px;">Сессия закрыта</span>
+        {{end}}
+
+        <form action="/admin/support" method="post" style="display: inline;">
+          {{csrf $.CSRF}}
+          <input type="hidden" name="action" value="delete">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button type="submit" class="btn ghost sm danger" data-confirm="Удалить запись об этом обращении?" title="Удалить обращение">🗑</button>
+        </form>
       </div>
     </div>
 

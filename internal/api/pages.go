@@ -148,6 +148,7 @@ func (p *PagesAPI) Register(r chi.Router) {
 
 	support := r.With(p.requirePage, p.requireSupportOrAdmin)
 	support.Get("/admin/support", p.handleAdminSupport)
+	support.Post("/admin/support", p.handleAdminSupportAction)
 	r.With(p.requirePage).Get("/admin/support/{id}/viewer", p.handleAdminSupportViewer)
 }
 
@@ -1421,6 +1422,7 @@ func (p *PagesAPI) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		InheritedVLAN:      inheritedVLAN,
 		InheritedVLANGroup: inheritedVLANGroup,
 		InheritedPushGroup: inheritedPushGroup,
+		SupportCategories:  p.m.Get().Support.Categories,
 	})
 }
 
@@ -1458,11 +1460,26 @@ func (p *PagesAPI) userFormFields(r *http.Request, u *store.User) string {
 	}
 	u.RadiusPush = r.PostFormValue("radius_push") != ""
 	var supRoles []string
-	if r.PostFormValue("support_role_it") != "" {
-		supRoles = append(supRoles, "it")
+	for _, role := range r.PostForm["support_roles"] {
+		role = strings.ToLower(strings.TrimSpace(role))
+		if role != "" {
+			supRoles = append(supRoles, role)
+		}
 	}
-	if r.PostFormValue("support_role_1c") != "" {
-		supRoles = append(supRoles, "1c")
+	for k, vals := range r.PostForm {
+		if strings.HasPrefix(k, "support_role_") && len(vals) > 0 && vals[0] != "" {
+			cat := strings.ToLower(strings.TrimPrefix(k, "support_role_"))
+			found := false
+			for _, sr := range supRoles {
+				if sr == cat {
+					found = true
+					break
+				}
+			}
+			if !found && cat != "" {
+				supRoles = append(supRoles, cat)
+			}
+		}
 	}
 	u.SupportRoles = supRoles
 	return strings.TrimSpace(r.PostFormValue("password"))
@@ -1615,6 +1632,7 @@ func (p *PagesAPI) handleAdminUserEdit(w http.ResponseWriter, r *http.Request) {
 		EditInheritedVLAN:  editVLAN,
 		EditInheritedGroup: editGroup,
 		EditAppDevices:     appDevices,
+		SupportCategories:  p.m.Get().Support.Categories,
 	})
 }
 
@@ -3044,13 +3062,152 @@ func (p *PagesAPI) handleAdminSupport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	supSettings := p.m.Get().Support
+	activeCount := 0
+	for _, s := range sessions {
+		if s.Status == "requested" || s.Status == "connecting" || s.Status == "active" || s.Status == "transferred" {
+			activeCount++
+		}
+	}
+
 	data := web.AdminSupportData{
 		BaseData:       p.baseData(r, "Удаленная помощь (SOS)", "admin-support"),
 		CategoryFilter: category,
 		StatusFilter:   status,
 		Sessions:       sessions,
+		Categories:     supSettings.Categories,
+		Settings:       supSettings,
+		ActiveCount:    activeCount,
 	}
 	p.render(w, http.StatusOK, "admin_support", data)
+}
+
+// handleAdminSupportAction — POST /admin/support: сохранение настроек категорий, удаление или очистка сессий.
+func (p *PagesAPI) handleAdminSupportAction(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	action := strings.TrimSpace(r.PostFormValue("action"))
+	back := "/admin/support"
+	if cat := r.URL.Query().Get("category"); cat != "" {
+		back += "?category=" + url.QueryEscape(cat)
+	}
+
+	switch action {
+	case "delete":
+		idStr := strings.TrimSpace(r.PostFormValue("id"))
+		id, err := uuid.Parse(idStr)
+		if err != nil {
+			redirectFlash(w, r, back, "Некорректный идентификатор обращения.", false)
+			return
+		}
+		if err := p.st.SupportSessionDelete(ctx, id); err != nil {
+			flash500(w, r, back, err)
+			return
+		}
+		p.admin.audit(ctx, "support_session_delete", map[string]any{"session_id": id.String()})
+		redirectFlash(w, r, back, "Обращение успешно удалено.", true)
+
+	case "cleanup":
+		count, err := p.st.SupportSessionCleanupClosed(ctx)
+		if err != nil {
+			flash500(w, r, back, err)
+			return
+		}
+		p.admin.audit(ctx, "support_sessions_cleanup", map[string]any{"deleted_count": count})
+		redirectFlash(w, r, back, fmt.Sprintf("Завершенные обращения очищены (удалено: %d).", count), true)
+
+	case "save_settings":
+		cur := p.m.Get().Support
+
+		catIDs := r.PostForm["cat_id[]"]
+		if len(catIDs) == 0 {
+			catIDs = r.PostForm["cat_id"]
+		}
+		catTitles := r.PostForm["cat_title[]"]
+		if len(catTitles) == 0 {
+			catTitles = r.PostForm["cat_title"]
+		}
+		catIcons := r.PostForm["cat_icon[]"]
+		if len(catIcons) == 0 {
+			catIcons = r.PostForm["cat_icon"]
+		}
+		catEmails := r.PostForm["cat_emails[]"]
+		if len(catEmails) == 0 {
+			catEmails = r.PostForm["cat_emails"]
+		}
+		catTelegrams := r.PostForm["cat_telegram[]"]
+		if len(catTelegrams) == 0 {
+			catTelegrams = r.PostForm["cat_telegram"]
+		}
+
+		var newCats []settings.SupportCategory
+		for i, rawID := range catIDs {
+			id := strings.ToLower(strings.TrimSpace(rawID))
+			if id == "" {
+				continue
+			}
+			title := id
+			if i < len(catTitles) && strings.TrimSpace(catTitles[i]) != "" {
+				title = strings.TrimSpace(catTitles[i])
+			}
+			icon := "🛟"
+			if i < len(catIcons) && strings.TrimSpace(catIcons[i]) != "" {
+				icon = strings.TrimSpace(catIcons[i])
+			}
+			var emails []string
+			if i < len(catEmails) {
+				for _, em := range strings.Split(catEmails[i], ",") {
+					em = strings.TrimSpace(em)
+					if em != "" {
+						emails = append(emails, em)
+					}
+				}
+			}
+			var tgChatID int64
+			if i < len(catTelegrams) && strings.TrimSpace(catTelegrams[i]) != "" {
+				if val, err := strconv.ParseInt(strings.TrimSpace(catTelegrams[i]), 10, 64); err == nil {
+					tgChatID = val
+				}
+			}
+			newCats = append(newCats, settings.SupportCategory{
+				ID:           id,
+				Name:         title,
+				Icon:         icon,
+				Emails:       emails,
+				TelegramChat: tgChatID,
+			})
+		}
+		if len(newCats) > 0 {
+			cur.Categories = newCats
+		}
+
+		if val, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("disk_warning_percent"))); err == nil && val >= 0 && val <= 100 {
+			cur.DiskWarningPercent = val
+		}
+		if val, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("disk_warning_min_gb"))); err == nil && val >= 0 {
+			cur.DiskWarningMinGB = val
+		}
+		if val, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("cpu_warning_percent"))); err == nil && val >= 0 && val <= 100 {
+			cur.CpuWarningPercent = val
+		}
+		if val, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("cpu_spike_duration_sec"))); err == nil && val >= 0 {
+			cur.CpuSpikeDurationSec = val
+		}
+
+		rawJSON, err := json.Marshal(cur)
+		if err != nil {
+			flash500(w, r, back, err)
+			return
+		}
+		if err := p.m.Put(ctx, "support", rawJSON); err != nil {
+			flash500(w, r, back, err)
+			return
+		}
+		p.admin.audit(ctx, "support_settings_update", map[string]any{"categories_count": len(cur.Categories)})
+		redirectFlash(w, r, back, "Настройки удаленной помощи и категории успешно сохранены.", true)
+
+	default:
+		redirectFlash(w, r, back, "Неизвестное действие.", false)
+	}
 }
 
 // handleAdminSupportViewer — GET /admin/support/{id}/viewer.

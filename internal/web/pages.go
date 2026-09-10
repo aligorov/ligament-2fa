@@ -158,6 +158,7 @@ type AdminUsersData struct {
 	EditInheritedVLAN  string
 	EditInheritedGroup string
 	EditAppDevices     []*store.AppDevice
+	SupportCategories  []settings.SupportCategory
 }
 
 // AdminGroupsData — /admin/groups: список локальных групп и форма создания/редактирования.
@@ -201,6 +202,9 @@ type AdminSupportData struct {
 	CategoryFilter string
 	StatusFilter   string
 	Sessions       []store.SupportSession
+	Categories     []settings.SupportCategory
+	Settings       settings.SupportSettings
+	ActiveCount    int
 }
 
 // AdminSupportViewerData — /admin/support/{id}/viewer: веб-консоль удаленного доступа к ПК.

@@ -44,7 +44,9 @@ func (n *SupportNotifier) NotifyNewSession(ctx context.Context, ss *store.Suppor
 	}
 
 	categoryLabel := "🖥 IT-поддержка"
-	if strings.EqualFold(ss.Category, "1c") {
+	if catObj := snap.Support.CategoryByID(ss.Category); catObj != nil {
+		categoryLabel = catObj.Icon + " " + catObj.Name
+	} else if strings.EqualFold(ss.Category, "1c") {
 		categoryLabel = "📊 Помощь по 1С"
 	}
 
@@ -64,31 +66,40 @@ func (n *SupportNotifier) NotifyNewSession(ctx context.Context, ss *store.Suppor
 		deviceName = device.Platform
 	}
 
-	// 1. Email-оповещения на адреса из настроек
-	var emails []string
-	if strings.EqualFold(ss.Category, "1c") {
-		emails = snap.Support.Emails1C
-		if len(emails) == 0 {
-			emails = snap.Support.EmailsIT
+	// Сводка телеметрии устройства (диски, CPU)
+	telemetrySummary := "Телеметрия: в норме"
+	if device != nil && device.SecurityPosture != nil {
+		var parts []string
+		if diskAlert, ok := device.SecurityPosture["disk_alert"].(bool); ok && diskAlert {
+			parts = append(parts, "⚠️ ВНИМАНИЕ: Заполнен диск!")
 		}
-	} else {
-		emails = snap.Support.EmailsIT
-		if len(emails) == 0 {
-			emails = snap.Support.Emails1C
+		if cpuAlert, ok := device.SecurityPosture["cpu_alert"].(bool); ok && cpuAlert {
+			parts = append(parts, "🚨 ВНИМАНИЕ: Пиковая 100% нагрузка CPU!")
+		} else if cpuLoad, ok := device.SecurityPosture["cpu_load_percent"]; ok {
+			parts = append(parts, fmt.Sprintf("Нагрузка CPU: %v%%", cpuLoad))
+		}
+		if len(parts) > 0 {
+			telemetrySummary = strings.Join(parts, "\n")
 		}
 	}
 
+	// 1. Email-оповещения на адреса из настроек категории
+	emails := snap.Support.EmailsForCategory(ss.Category)
+
 	if n.emailSender != nil && len(emails) > 0 {
-		subject := fmt.Sprintf("[SOS-%s] %s: %s", strings.ToUpper(ss.Category), userName, truncateText(ss.ProblemSummary, 60))
+		subject := fmt.Sprintf("[SOS] %s | %s (%s): %s", categoryLabel, userName, deviceName, truncateText(ss.ProblemSummary, 60))
 		body := fmt.Sprintf(
 			"🚨 Поступил новый экстренный запрос удаленной помощи!\n\n"+
 				"Категория: %s\n"+
-				"Сотрудник: %s (%s)\n"+
-				"Устройство: %s (ОС: %s, платформа: %s)\n"+
+				"Сотрудник: %s (логин: @%s, email: %s, телефон: %s)\n"+
+				"Компьютер: %s (ОС: %s, платформа: %s)\n"+
 				"IP-адрес: %s\n\n"+
+				"ДИАГНОСТИКА СИСТЕМЫ:\n%s\n\n"+
 				"СУТЬ ПРОБЛЕМЫ:\n\"%s\"\n\n"+
 				"Ссылка для подключения в веб-консоли:\n%s\n",
-			categoryLabel, userName, user.Username, deviceName, device.OSVersion, device.Platform, ss.LastIP,
+			categoryLabel, userName, user.Username, user.Email, user.Phone,
+			deviceName, device.OSVersion, device.Platform, ss.LastIP,
+			telemetrySummary,
 			ss.ProblemSummary, viewerURL,
 		)
 
@@ -98,7 +109,13 @@ func (n *SupportNotifier) NotifyNewSession(ctx context.Context, ss *store.Suppor
 				continue
 			}
 			go func(addr string) {
-				if err := n.emailSender.SendAlert(context.Background(), addr, subject, body); err != nil {
+				var err error
+				if replySender, ok := n.emailSender.(AlertSenderReplyTo); ok && user.Email != "" {
+					err = replySender.SendAlertWithReplyTo(context.Background(), addr, user.Email, subject, body)
+				} else {
+					err = n.emailSender.SendAlert(context.Background(), addr, subject, body)
+				}
+				if err != nil {
 					slog.Warn("support_notifier: ошибка отправки email", "to", addr, "error", err)
 				} else {
 					slog.Info("support_notifier: email успешно отправлен", "to", addr, "session_id", ss.ID)
@@ -108,18 +125,7 @@ func (n *SupportNotifier) NotifyNewSession(ctx context.Context, ss *store.Suppor
 	}
 
 	// 2. Telegram-оповещения в чат дежурной группы
-	var tgChatID int64
-	if strings.EqualFold(ss.Category, "1c") {
-		tgChatID = snap.Support.TelegramChat1C
-		if tgChatID == 0 {
-			tgChatID = snap.Support.TelegramChatIT
-		}
-	} else {
-		tgChatID = snap.Support.TelegramChatIT
-		if tgChatID == 0 {
-			tgChatID = snap.Support.TelegramChat1C
-		}
-	}
+	tgChatID := snap.Support.TelegramChatForCategory(ss.Category)
 
 	if n.tgSender != nil && tgChatID != 0 {
 		tgMsg := fmt.Sprintf(

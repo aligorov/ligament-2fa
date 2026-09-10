@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,10 +41,13 @@ type SupportSession struct {
 
 // SupportFilter — фильтры для списка сессий поддержки.
 type SupportFilter struct {
-	Category string
-	Status   string
-	UserID   *uuid.UUID
-	Limit    int
+	Category   string
+	Categories []string
+	Status     string
+	Statuses   []string
+	UserID     *uuid.UUID
+	ActiveOnly bool
+	Limit      int
 }
 
 // SupportSessionCreate создаёт новую сессию поддержки.
@@ -214,11 +218,25 @@ func (s *Store) SupportSessionList(ctx context.Context, f SupportFilter) ([]Supp
 	argIdx := 1
 
 	if f.Category != "" && f.Category != "all" {
-		query += fmt.Sprintf(" AND s.category = $%d", argIdx)
-		args = append(args, f.Category)
+		query += fmt.Sprintf(" AND LOWER(s.category) = $%d", argIdx)
+		args = append(args, strings.ToLower(strings.TrimSpace(f.Category)))
+		argIdx++
+	} else if len(f.Categories) > 0 {
+		cats := make([]string, len(f.Categories))
+		for i, c := range f.Categories {
+			cats[i] = strings.ToLower(strings.TrimSpace(c))
+		}
+		query += fmt.Sprintf(" AND LOWER(s.category) = ANY($%d)", argIdx)
+		args = append(args, cats)
 		argIdx++
 	}
-	if f.Status != "" {
+	if f.ActiveOnly {
+		query += " AND s.status IN ('requested', 'connecting', 'authorizing', 'approved', 'active', 'transferred')"
+	} else if len(f.Statuses) > 0 {
+		query += fmt.Sprintf(" AND s.status = ANY($%d)", argIdx)
+		args = append(args, f.Statuses)
+		argIdx++
+	} else if f.Status != "" && f.Status != "all" {
 		query += fmt.Sprintf(" AND s.status = $%d", argIdx)
 		args = append(args, f.Status)
 		argIdx++
@@ -346,3 +364,25 @@ func (s *Store) SupportSessionEnd(ctx context.Context, id uuid.UUID, finalStatus
 	}
 	return nil
 }
+
+// SupportSessionDelete удаляет сессию удаленного доступа по ID.
+func (s *Store) SupportSessionDelete(ctx context.Context, id uuid.UUID) error {
+	ct, err := s.Pool().Exec(ctx, `DELETE FROM support_sessions WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("store: удалить support_session %s: %w", id, err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SupportSessionCleanupClosed удаляет все завершенные, отклоненные или отмененные сессии.
+func (s *Store) SupportSessionCleanupClosed(ctx context.Context) (int64, error) {
+	ct, err := s.Pool().Exec(ctx, `DELETE FROM support_sessions WHERE status IN ('completed', 'ended_by_admin', 'ended_by_user', 'rejected', 'cancelled')`)
+	if err != nil {
+		return 0, fmt.Errorf("store: очистить завершенные support_sessions: %w", err)
+	}
+	return ct.RowsAffected(), nil
+}
+

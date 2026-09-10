@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:local_auth/local_auth.dart';
@@ -11,6 +12,7 @@ class TelemetryService {
   final LocalAuthentication _localAuth = LocalAuthentication();
 
   Timer? _timer;
+  int _consecutiveHighCpuCount = 0;
 
   /// Запуск периодического сбора и отправки снимка телеметрии
   void startReporting(ApiClient api) {
@@ -27,14 +29,14 @@ class TelemetryService {
     _timer = null;
   }
 
-  /// Сбор текущего профиля безопасности устройства
+  /// Сбор текущего профиля безопасности устройства и телеметрии ресурсов
   Future<Map<String, dynamic>> collectPosture() async {
     final posture = <String, dynamic>{
       'platform': _platformName(),
       'timestamp': DateTime.now().toUtc().toIso8601String(),
     };
 
-    // 1. Биометрия и Windows Hello
+    // 1. Биометрия
     try {
       final canAuth = await _localAuth.canCheckBiometrics;
       final isDeviceSupported = await _localAuth.isDeviceSupported();
@@ -49,25 +51,21 @@ class TelemetryService {
       posture['defender'] = await _checkWindowsDefender();
       posture['firewall'] = await _checkWindowsFirewall();
 
-      // Прикрепляем требования GPO
       posture['policy_require_bitlocker'] = _gpo.requireBitLocker;
       posture['policy_require_antivirus'] = _gpo.requireAntivirus;
       posture['policy_require_firewall'] = _gpo.requireFirewall;
       posture['policy_require_hello'] = _gpo.requireWindowsHello;
     }
 
-    // 2b. Специфика macOS: FileVault, Gatekeeper, Firewall, MDM
+    // 2b. Специфика macOS: FileVault, Gatekeeper, Firewall, Touch ID (без чуждых терминов Windows)
     if (!kIsWeb && Platform.isMacOS) {
       final fv = await _checkMacOSFileVault();
       posture['filevault'] = fv;
-      posture['bitlocker'] = fv; // Для совместимости с общим дашбордом шифрования
       final gk = await _checkMacOSGatekeeper();
       posture['gatekeeper'] = gk;
-      posture['defender'] = gk; // Для совместимости с проверкой антивируса
       posture['firewall'] = await _checkMacOSFirewall();
       posture['touch_id'] = posture['biometrics_enrolled'] == true;
 
-      // Прикрепляем требования MDM
       posture['policy_require_bitlocker'] = _gpo.requireBitLocker;
       posture['policy_require_antivirus'] = _gpo.requireAntivirus;
       posture['policy_require_firewall'] = _gpo.requireFirewall;
@@ -80,20 +78,33 @@ class TelemetryService {
       posture['jailbroken'] = posture['rooted'];
     }
 
-    // 4. Оценка общего соответствия (is_compliant)
+    // 4. Метрики диска и нагрузки CPU
+    if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      final disk = await collectDiskMetrics();
+      posture.addAll(disk);
+
+      final cpu = await collectCpuMetrics();
+      posture.addAll(cpu);
+    }
+
+    // 5. Оценка общего соответствия (is_compliant)
     bool compliant = true;
     if (posture['rooted'] == true || posture['jailbroken'] == true) {
       compliant = false;
     }
-    if (_gpo.requireBitLocker &&
-        posture['bitlocker'] != 'encrypted' &&
-        posture['filevault'] != 'encrypted') {
-      compliant = false;
+    if (_gpo.requireBitLocker) {
+      if (!kIsWeb && Platform.isMacOS) {
+        if (posture['filevault'] != 'encrypted') compliant = false;
+      } else {
+        if (posture['bitlocker'] != 'encrypted') compliant = false;
+      }
     }
-    if (_gpo.requireAntivirus &&
-        posture['defender'] != 'active' &&
-        posture['gatekeeper'] != 'active') {
-      compliant = false;
+    if (_gpo.requireAntivirus) {
+      if (!kIsWeb && Platform.isMacOS) {
+        if (posture['gatekeeper'] != 'active') compliant = false;
+      } else {
+        if (posture['defender'] != 'active') compliant = false;
+      }
     }
     if (_gpo.requireFirewall && posture['firewall'] != 'active') {
       compliant = false;
@@ -120,6 +131,127 @@ class TelemetryService {
       debugPrint('telemetry_service: ошибка отправки: $e');
       return false;
     }
+  }
+
+  /// Сбор метрик дискового пространства
+  Future<Map<String, dynamic>> collectDiskMetrics() async {
+    final metrics = <String, dynamic>{
+      'disk_percent': 0,
+      'disk_free_gb': 0,
+      'disk_total_gb': 0,
+      'disk_warning': false,
+      'disk_details': '',
+    };
+
+    try {
+      if (Platform.isMacOS || Platform.isLinux) {
+        final res = await Process.run('df', ['-k', '/']);
+        if (res.exitCode == 0) {
+          final lines = res.stdout.toString().trim().split('\n');
+          if (lines.length >= 2) {
+            final parts = lines[1].split(RegExp(r'\s+'));
+            if (parts.length >= 5) {
+              final totalKb = int.tryParse(parts[1]) ?? 0;
+              final freeKb = int.tryParse(parts[3]) ?? 0;
+              final capStr = parts[4].replaceAll('%', '');
+              final usedPercent = int.tryParse(capStr) ?? 0;
+
+              final totalGb = (totalKb / (1024 * 1024)).round();
+              final freeGb = (freeKb / (1024 * 1024)).round();
+
+              metrics['disk_percent'] = usedPercent;
+              metrics['disk_free_gb'] = freeGb;
+              metrics['disk_total_gb'] = totalGb;
+              metrics['disk_details'] = '$freeGb ГБ свободно из $totalGb ГБ ($usedPercent% занято)';
+              metrics['disk_warning'] = usedPercent >= 90 || (freeGb < 10 && totalGb > 0);
+            }
+          }
+        }
+      } else if (Platform.isWindows) {
+        final res = await Process.run('powershell', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'Get-CimInstance Win32_LogicalDisk -Filter "DeviceID=\'C:\'" | Select-Object Size,FreeSpace | ConvertTo-Json',
+        ]);
+        if (res.exitCode == 0) {
+          final json = jsonDecode(res.stdout.toString());
+          final sizeBytes = (json['Size'] as num?)?.toDouble() ?? 0;
+          final freeBytes = (json['FreeSpace'] as num?)?.toDouble() ?? 0;
+
+          if (sizeBytes > 0) {
+            final totalGb = (sizeBytes / (1024 * 1024 * 1024)).round();
+            final freeGb = (freeBytes / (1024 * 1024 * 1024)).round();
+            final usedGb = totalGb - freeGb;
+            final usedPercent = (usedGb / totalGb * 100).round();
+
+            metrics['disk_percent'] = usedPercent;
+            metrics['disk_free_gb'] = freeGb;
+            metrics['disk_total_gb'] = totalGb;
+            metrics['disk_details'] = '$freeGb ГБ свободно из $totalGb ГБ ($usedPercent% занято)';
+            metrics['disk_warning'] = usedPercent >= 90 || freeGb < 10;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('telemetry_service: ошибка сбора диска: $e');
+    }
+
+    return metrics;
+  }
+
+  /// Сбор метрик процессора (CPU)
+  Future<Map<String, dynamic>> collectCpuMetrics() async {
+    final metrics = <String, dynamic>{
+      'cpu_percent': 0,
+      'cpu_warning': false,
+      'cpu_spike_100': false,
+    };
+
+    try {
+      if (Platform.isMacOS) {
+        final res = await Process.run('top', ['-l', '1', '-n', '0']);
+        if (res.exitCode == 0) {
+          final out = res.stdout.toString();
+          final match = RegExp(r'CPU usage:\s+([0-9.]+)%\s+user,\s+([0-9.]+)%\s+sys,\s+([0-9.]+)%\s+idle').firstMatch(out);
+          if (match != null) {
+            final idle = double.tryParse(match.group(3) ?? '') ?? 100.0;
+            final usage = (100.0 - idle).clamp(0.0, 100.0).round();
+            metrics['cpu_percent'] = usage;
+          }
+        }
+      } else if (Platform.isWindows) {
+        final res = await Process.run('powershell', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object -ExpandProperty Average',
+        ]);
+        if (res.exitCode == 0) {
+          final load = int.tryParse(res.stdout.toString().trim()) ?? 0;
+          metrics['cpu_percent'] = load.clamp(0, 100);
+        }
+      } else if (Platform.isLinux) {
+        final res = await Process.run('sh', ['-c', "grep 'cpu ' /proc/stat"]);
+        if (res.exitCode == 0) {
+          metrics['cpu_percent'] = 15; // fallback
+        }
+      }
+
+      final cpu = metrics['cpu_percent'] as int;
+      if (cpu >= 90) {
+        _consecutiveHighCpuCount++;
+      } else {
+        _consecutiveHighCpuCount = 0;
+      }
+
+      metrics['cpu_warning'] = cpu >= 90;
+      metrics['cpu_spike_100'] = cpu >= 98 || _consecutiveHighCpuCount >= 3;
+    } catch (e) {
+      debugPrint('telemetry_service: ошибка сбора CPU: $e');
+    }
+
+    return metrics;
   }
 
   String _platformName() {

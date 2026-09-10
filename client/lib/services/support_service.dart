@@ -2,9 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../api/client.dart';
+import 'input_injector.dart';
+import 'telemetry_service.dart';
 
 enum SupportSessionState {
   idle,
@@ -27,12 +30,19 @@ class SupportService extends ChangeNotifier {
   RTCDataChannel? _dataChannel;
   ApiClient? _api;
 
+  List<Map<String, dynamic>> _screens = [];
+  String? _currentScreenId;
+  Timer? _telemetryTimer;
+  final TelemetryService _telemetry = TelemetryService();
+
   SupportSessionState get state => _state;
   String? get activeSessionId => _activeSessionId;
   String? get category => _category;
   String? get problemSummary => _problemSummary;
   String get accessMode => _accessMode;
   bool get isSharing => _state == SupportSessionState.active;
+  List<Map<String, dynamic>> get screens => _screens;
+  String? get currentScreenId => _currentScreenId;
 
   /// Установка локального состояния запроса
   void setRequested({
@@ -106,6 +116,7 @@ class SupportService extends ChangeNotifier {
         debugPrint('support_service: WebRTC connection state: $state');
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
           _state = SupportSessionState.active;
+          _startPeriodicTelemetry();
           notifyListeners();
         } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
             state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
@@ -125,20 +136,23 @@ class SupportService extends ChangeNotifier {
         _setupDataChannel(channel);
       };
 
-      // Захват экрана: на десктопе нужно получить источник через DesktopCapturer
+      // Захват экрана: получение списка всех мониторов на десктопе
       MediaStream screenStream;
       if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
-        // На десктопных платформах getDisplayMedia требует явный sourceId
         final sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
         if (sources.isEmpty) {
           throw Exception('Не найдены источники экрана для захвата');
         }
-        debugPrint('support_service: найдено ${sources.length} экранов, используем: ${sources.first.name}');
+        _screens = sources.map((s) => {'id': s.id, 'name': s.name}).toList();
+        final selectedSource = sources.first;
+        _currentScreenId = selectedSource.id;
+
+        debugPrint('support_service: найдено ${_screens.length} экранов, активен: ${selectedSource.name}');
         screenStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
           'audio': false,
           'video': {
-            'deviceId': {'exact': sources.first.id},
-            'mandatory': {'frameRate': 15.0},
+            'deviceId': {'exact': selectedSource.id},
+            'mandatory': {'frameRate': 25.0},
           },
         });
       } else {
@@ -226,6 +240,12 @@ class SupportService extends ChangeNotifier {
 
   void _setupDataChannel(RTCDataChannel channel) {
     _dataChannel = channel;
+    channel.onDataChannelState = (RTCDataChannelState st) {
+      if (st == RTCDataChannelState.RTCDataChannelOpen) {
+        _sendScreenList();
+        _sendCurrentTelemetry();
+      }
+    };
     channel.onMessage = (RTCDataChannelMessage msg) {
       if (msg.isBinary) return;
       try {
@@ -237,55 +257,158 @@ class SupportService extends ChangeNotifier {
     };
   }
 
-  /// Эмуляция пользовательского ввода от оператора (мышь/клавиатура)
-  void _handleRemoteInput(Map<String, dynamic> input) {
-    if (_accessMode != 'full_control') {
-      // Режим «Только просмотр» игнорирует входящие команды управления
-      return;
-    }
+  void _sendScreenList() {
+    if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) return;
+    try {
+      _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
+        'type': 'screen_list',
+        'screens': _screens,
+        'selected_id': _currentScreenId,
+      })));
+    } catch (_) {}
+  }
 
-    final type = (input['type'] ?? input['action'])?.toString();
-    if (type == null) return;
+  /// Переключение транслируемого монитора на лету
+  Future<void> switchScreen(String screenId) async {
+    if (kIsWeb || _peerConnection == null) return;
+    try {
+      final newStream = await navigator.mediaDevices.getDisplayMedia(<String, dynamic>{
+        'audio': false,
+        'video': {
+          'deviceId': {'exact': screenId},
+          'mandatory': {'frameRate': 25.0},
+        },
+      });
 
-    // Ввод обрабатывается в зависимости от платформы (Windows / macOS / Linux / Android)
-    if (!kIsWeb && Platform.isWindows) {
-      _handleWindowsInput(type, input);
-    } else {
-      debugPrint('support_service: input event ($type): $input');
+      final newVideoTracks = newStream.getVideoTracks();
+      if (newVideoTracks.isEmpty) return;
+      final newTrack = newVideoTracks.first;
+
+      final senders = await _peerConnection!.getSenders();
+      for (final sender in senders) {
+        if (sender.track?.kind == 'video') {
+          await sender.replaceTrack(newTrack);
+          break;
+        }
+      }
+
+      _localStream?.getVideoTracks().forEach((t) => t.stop());
+      _localStream?.dispose();
+      _localStream = newStream;
+      _currentScreenId = screenId;
+
+      _sendScreenList();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('support_service: ошибка переключения экрана: $e');
     }
   }
 
-  void _handleWindowsInput(String type, Map<String, dynamic> input) {
-    // Безопасная диспетчеризация событий мыши и клавиатуры
+  void _startPeriodicTelemetry() {
+    _telemetryTimer?.cancel();
+    _telemetryTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      _sendCurrentTelemetry();
+    });
+  }
+
+  Future<void> _sendCurrentTelemetry() async {
+    if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) return;
+    try {
+      final cpu = await _telemetry.collectCpuMetrics();
+      final disk = await _telemetry.collectDiskMetrics();
+      final payload = {
+        'type': 'telemetry',
+        ...cpu,
+        ...disk,
+      };
+      _dataChannel!.send(RTCDataChannelMessage(jsonEncode(payload)));
+    } catch (_) {}
+  }
+
+  /// Эмуляция пользовательского ввода от оператора (мышь/клавиатура/хоткеи/буфер)
+  void _handleRemoteInput(Map<String, dynamic> input) async {
+    final type = (input['type'] ?? input['action'])?.toString();
+    if (type == null) return;
+
+    // Команды, разрешенные даже в режиме просмотра (например, запрос списка экранов или буфер обмена)
+    if (type == 'screen_list') {
+      _sendScreenList();
+      return;
+    } else if (type == 'switch_screen') {
+      final sId = input['screen_id']?.toString();
+      if (sId != null && sId.isNotEmpty) {
+        await switchScreen(sId);
+      }
+      return;
+    } else if (type == 'clipboard_set') {
+      final text = input['text']?.toString() ?? '';
+      await Clipboard.setData(ClipboardData(text: text));
+      return;
+    } else if (type == 'clipboard_get') {
+      final clip = await Clipboard.getData(Clipboard.kTextPlain);
+      if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+        _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
+          'type': 'clipboard_data',
+          'text': clip?.text ?? '',
+        })));
+      }
+      return;
+    }
+
+    if (_accessMode != 'full_control') {
+      // Режим «Только просмотр» блокирует все команды управления
+      return;
+    }
+
     try {
       switch (type) {
         case 'mouse_move':
-          final x = (input['x'] as num?)?.toDouble() ?? 0;
-          final y = (input['y'] as num?)?.toDouble() ?? 0;
-          debugPrint('support_service: mouse move -> ($x, $y)');
+          final x = (input['x'] as num?)?.toDouble() ?? 0.0;
+          final y = (input['y'] as num?)?.toDouble() ?? 0.0;
+          InputInjector.instance.moveMouse(x, y);
           break;
         case 'mouse_down':
         case 'mouse_up':
-          final btn = input['button'] ?? 0;
-          debugPrint('support_service: mouse button $btn -> $type');
+        case 'mouse_click':
+          final btn = (input['button'] as num?)?.toInt() ?? 0;
+          final x = (input['x'] as num?)?.toDouble() ?? 0.0;
+          final y = (input['y'] as num?)?.toDouble() ?? 0.0;
+          final act = type == 'mouse_down' ? 'down' : (type == 'mouse_up' ? 'up' : 'click');
+          InputInjector.instance.mouseAction(action: act, button: btn, normX: x, normY: y);
           break;
         case 'wheel':
-          final dy = input['deltaY'] ?? 0;
-          debugPrint('support_service: wheel -> $dy');
+          final dy = (input['deltaY'] as num?)?.toDouble() ?? 0.0;
+          InputInjector.instance.mouseWheel(dy);
           break;
         case 'key_down':
         case 'key_up':
-          final key = input['key'] ?? '';
-          debugPrint('support_service: key $key -> $type');
+          final key = input['key']?.toString() ?? '';
+          final code = (input['keyCode'] as num?)?.toInt();
+          final act = type == 'key_down' ? 'down' : 'up';
+          InputInjector.instance.keyAction(action: act, key: key, keyCode: code);
+          break;
+        case 'block_input':
+          final blocked = input['blocked'] == true || input['enabled'] == true;
+          InputInjector.instance.setInputBlocked(blocked);
+          break;
+        case 'hotkey':
+          final hotkey = (input['action'] ?? input['hotkey'])?.toString() ?? '';
+          if (hotkey.isNotEmpty) {
+            await InputInjector.instance.triggerHotkey(hotkey);
+          }
           break;
       }
     } catch (e) {
-      debugPrint('support_service: ошибка эмуляции ввода Windows: $e');
+      debugPrint('support_service: ошибка выполнения ввода: $e');
     }
   }
 
   /// Остановка трансляции экрана и освобождение ресурсов
   void stopScreenSharing() {
+    _telemetryTimer?.cancel();
+    _telemetryTimer = null;
+    InputInjector.instance.setInputBlocked(false);
+
     _pendingCandidates.clear();
     try {
       _dataChannel?.close();
@@ -310,6 +433,8 @@ class SupportService extends ChangeNotifier {
     _activeSessionId = null;
     _category = null;
     _problemSummary = null;
+    _screens.clear();
+    _currentScreenId = null;
     _api = null;
     notifyListeners();
   }

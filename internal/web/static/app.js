@@ -915,7 +915,58 @@ function initGroupsMemberSelector() {
     updateCounter();
     syncAdButtons();
   });
-}
+
+  // Панель настроек удаленной поддержки (категории и пороги телеметрии)
+  const supportPanel = document.getElementById("support-settings-panel");
+  const btnToggleSupport = document.getElementById("btn-toggle-support-settings");
+  const btnCloseSupport = document.getElementById("btn-close-support-settings");
+  const btnAddCat = document.getElementById("btn-add-category-row");
+  const catTbody = document.getElementById("categories-tbody");
+
+  if (btnToggleSupport && supportPanel) {
+    btnToggleSupport.addEventListener("click", () => {
+      const isHidden = supportPanel.style.display === "none" || !supportPanel.style.display;
+      supportPanel.style.display = isHidden ? "block" : "none";
+      if (isHidden) {
+        supportPanel.scrollIntoView({ behavior: "smooth" });
+      }
+    });
+  }
+
+  if (btnCloseSupport && supportPanel) {
+    btnCloseSupport.addEventListener("click", () => {
+      supportPanel.style.display = "none";
+    });
+  }
+
+  if (btnAddCat && catTbody) {
+    btnAddCat.addEventListener("click", () => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><input type="text" name="cat_id[]" class="input sm mono" required placeholder="например: buh"></td>
+        <td><input type="text" name="cat_title[]" class="input sm" required placeholder="Бухгалтерия"></td>
+        <td><input type="text" name="cat_icon[]" class="input sm" style="text-align: center;" value="💼"></td>
+        <td><input type="text" name="cat_emails[]" class="input sm" placeholder="buh@corp.ru"></td>
+        <td><input type="text" name="cat_telegram[]" class="input sm mono" placeholder="-100..."></td>
+        <td style="text-align: center;"><button type="button" class="btn ghost sm danger cat-row-del" title="Удалить категорию">✕</button></td>
+      `;
+      catTbody.appendChild(tr);
+    });
+  }
+
+  if (catTbody) {
+    catTbody.addEventListener("click", (e) => {
+      if (e.target && e.target.classList.contains("cat-row-del")) {
+        const row = e.target.closest("tr");
+        if (row && catTbody.querySelectorAll("tr").length > 1) {
+          row.remove();
+        } else {
+          alert("Нельзя удалить единственную оставшуюся категорию.");
+        }
+      }
+    });
+  }
+});
 
 
 

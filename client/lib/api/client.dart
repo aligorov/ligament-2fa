@@ -300,4 +300,52 @@ class ApiClient {
       throw ApiException(res.statusCode, 'end_support_failed');
     }
   }
+
+  /// Получение активных категорий поддержки (IT, 1C и др.)
+  Future<List<Map<String, dynamic>>> getSupportCategories() async {
+    final res = await http.get(
+      Uri.parse(_cleanUrl('/api/v1/app/support/categories')),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final list = data['categories'] as List<dynamic>? ?? [];
+      return list.cast<Map<String, dynamic>>();
+    }
+    return [];
+  }
+
+  /// Получение очереди входящих SOS-обращений для инженера
+  Future<List<Map<String, dynamic>>> getSupportQueue() async {
+    final res = await http.get(
+      Uri.parse(_cleanUrl('/api/v1/app/support/queue')),
+      headers: _headers(),
+    );
+    if (res.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final list = data['queue'] as List<dynamic>? ?? [];
+      return list.cast<Map<String, dynamic>>();
+    }
+    return [];
+  }
+
+  /// Инициация подключения инженера к удаленной сессии из приложения
+  Future<Map<String, dynamic>> connectToSupport({
+    required String sessionId,
+    String? adminName,
+  }) async {
+    final payload = <String, dynamic>{};
+    if (adminName != null && adminName.isNotEmpty) {
+      payload['admin_name'] = adminName;
+    }
+    final res = await http.post(
+      Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/connect')),
+      headers: _headers(),
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 200) {
+      return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    }
+    throw ApiException(res.statusCode, 'connect_failed');
+  }
 }

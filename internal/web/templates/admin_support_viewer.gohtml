@@ -20,12 +20,64 @@
           <span class="dot-sep">•</span>
           <span>IP: {{.Session.LastIP}}</span>
           <span class="dot-sep">•</span>
-          <span>Режим: {{if eq .Session.AccessMode "full_control"}}Полное управление{{else}}Только просмотр{{end}}</span>
+          <span>Режим: <b id="viewer-access-mode">{{if eq .Session.AccessMode "full_control"}}Полное управление{{else}}Только просмотр{{end}}</b></span>
         </div>
       </div>
     </div>
 
-    <!-- Actions -->
+    <!-- Telemetry status indicator -->
+    <div id="viewer-telemetry-badges" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+      <span id="tel-cpu-badge" class="badge neutral" title="Загрузка CPU">⚡ CPU: --%</span>
+      <span id="tel-disk-badge" class="badge neutral" title="Дисковое пространство">💾 Диск: --</span>
+    </div>
+  </div>
+
+  <!-- Remote Desktop Toolbar -->
+  <div class="card" style="padding: 10px 16px; display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; background: var(--surface);">
+    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+      <!-- Выбор монитора -->
+      <label style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; margin: 0;">
+        <span class="muted">🖥 Монитор:</span>
+        <select id="viewer-screen-select" class="select sm" style="width: auto; min-width: 150px;">
+          <option value="default">Основной монитор</option>
+        </select>
+      </label>
+
+      <!-- Масштаб -->
+      <div style="display: flex; align-items: center; gap: 2px;">
+        <span class="muted" style="font-size: 0.85rem; margin-right: 4px;">🔍 Масштаб:</span>
+        <button id="btn-scale-fit" type="button" class="btn primary sm" style="padding: 3px 8px; font-size: 0.8rem;" title="Вписать в окно">Вписать</button>
+        <button id="btn-scale-orig" type="button" class="btn ghost sm" style="padding: 3px 8px; font-size: 0.8rem;" title="Оригинал 1:1">1:1</button>
+        <button id="btn-scale-in" type="button" class="btn ghost sm" style="padding: 3px 8px; font-size: 0.8rem;" title="Увеличить">+</button>
+        <button id="btn-scale-out" type="button" class="btn ghost sm" style="padding: 3px 8px; font-size: 0.8rem;" title="Уменьшить">-</button>
+      </div>
+
+      <!-- Горячие клавиши -->
+      <label style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; margin: 0;">
+        <select id="viewer-hotkey-select" class="select sm" style="width: auto;">
+          <option value="">⚡ Горячие клавиши...</option>
+          <option value="ctrl_alt_del">Ctrl + Alt + Del</option>
+          <option value="win_key">Win (Пуск)</option>
+          <option value="win_r">Win + R (Выполнить)</option>
+          <option value="win_d">Win + D (Рабочий стол)</option>
+          <option value="task_mgr">Ctrl + Shift + Esc (Диспетчер задач)</option>
+          <option value="alt_tab">Alt + Tab (Окна)</option>
+          <option value="alt_f4">Alt + F4 (Закрыть)</option>
+          <option value="esc">Esc</option>
+        </select>
+      </label>
+
+      <!-- Блокировка ввода у пользователя -->
+      <button id="btn-block-input" type="button" class="btn secondary sm" title="Заблокировать локальную клавиатуру и мышь у клиента">
+        🔒 Блок ввода клиента
+      </button>
+
+      <!-- Буфер обмена -->
+      <button id="btn-clipboard-toggle" type="button" class="btn secondary sm" title="Синхронизация буфера обмена">
+        📋 Буфер обмена
+      </button>
+    </div>
+
     <div class="viewer-actions">
       <button id="btn-toggle-control" class="btn secondary sm" data-action="toggle-control">
         🎮 Включить управление
@@ -36,6 +88,22 @@
       <button id="btn-end-session" class="btn err sm" data-action="end-session">
         ⏹ Завершить сеанс
       </button>
+    </div>
+  </div>
+
+  <!-- Clipboard Drawer -->
+  <div id="viewer-clipboard-drawer" class="card" style="display: none; padding: 14px 18px; background: var(--bg); border: 1px dashed var(--primary);">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <strong>📋 Синхронизация буфера обмена с удаленным ПК</strong>
+      <button type="button" class="btn ghost sm" id="btn-clipboard-close">✕</button>
+    </div>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <input type="text" id="clipboard-send-text" class="input sm" placeholder="Введите текст для отправки в буфер обмена удаленного ПК..." style="flex: 1;">
+      <button type="button" id="btn-clipboard-send" class="btn primary sm">Отправить в буфер клиента 📤</button>
+      <button type="button" id="btn-clipboard-read" class="btn secondary sm">Прочитать с клиента 📥</button>
+    </div>
+    <div id="clipboard-read-result" style="display: none; margin-top: 8px; font-size: 0.85rem; color: var(--muted); word-break: break-all;">
+      Получено из буфера: <code id="clipboard-read-val" class="mono" style="color: var(--text);"></code>
     </div>
   </div>
 
@@ -66,7 +134,7 @@
   </div>
 
   <!-- Remote Screen Viewport -->
-  <div class="card viewer-screen-card">
+  <div class="card viewer-screen-card" id="viewer-screen-container" tabindex="0" style="outline: none;">
     <video id="remote-video" class="viewer-video" autoplay playsinline muted></video>
     
     <div id="video-placeholder" class="viewer-placeholder">

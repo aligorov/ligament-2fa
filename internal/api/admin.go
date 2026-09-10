@@ -144,10 +144,11 @@ func (a *AdminAPI) Register(r chi.Router) {
 	})
 
 	// Маршруты операторов поддержки: авторизация через checkOperatorAuth и checkAdminOrSupport
-	// (поддерживают cookie twofa_session, Bearer admin_token и ?token=...).
 	r.Route("/api/v1/admin/support", func(r chi.Router) {
 		r.Get("/sessions", a.handleAdminSupportSessionsList)
 		r.Get("/sessions/{id}", a.handleAdminSupportSessionGet)
+		r.Delete("/sessions/{id}", a.handleAdminSupportSessionDelete)
+		r.Post("/sessions/cleanup", a.handleAdminSupportSessionsCleanup)
 		r.Post("/sessions/{id}/connect", a.handleAdminSupportSessionConnect)
 		r.Post("/sessions/{id}/signal", a.handleAdminSupportSessionSignal)
 		r.Post("/sessions/{id}/transfer", a.handleAdminSupportSessionTransfer)
@@ -1950,6 +1951,45 @@ func (a *AdminAPI) handleAdminSupportColleagues(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"colleagues": colleagues})
 }
 
+// handleAdminSupportSessionDelete — DELETE /api/v1/admin/support/sessions/{id}.
+func (a *AdminAPI) handleAdminSupportSessionDelete(w http.ResponseWriter, r *http.Request) {
+	if !a.checkAdminOrSupport(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_id")
+		return
+	}
+	if err := a.st.SupportSessionDelete(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+	a.audit(r.Context(), "support_session_delete", map[string]any{"session_id": id.String()})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleAdminSupportSessionsCleanup — POST /api/v1/admin/support/sessions/cleanup.
+func (a *AdminAPI) handleAdminSupportSessionsCleanup(w http.ResponseWriter, r *http.Request) {
+	if !a.checkAdminOrSupport(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	deleted, err := a.st.SupportSessionCleanupClosed(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+	a.audit(r.Context(), "support_sessions_cleanup", map[string]any{"deleted_count": deleted})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "deleted": deleted})
+}
+
 // checkAdminOrSupport проверяет права администратора или специалиста техподдержки
 // (Bearer admin_token либо web-сессия с ролью admin или support_*).
 func (a *AdminAPI) checkAdminOrSupport(r *http.Request) bool {
@@ -1971,6 +2011,22 @@ func (a *AdminAPI) checkAdminOrSupport(r *http.Request) bool {
 		tokenHash := secrets.SHA256(c.Value)
 		if userID, _, err := a.st.SessionGet(r.Context(), tokenHash); err == nil {
 			if u, err := a.st.UserByID(r.Context(), userID); err == nil && u.Enabled {
+				if u.Role == "admin" || u.IsSupportAny() {
+					return true
+				}
+			}
+		}
+	}
+
+	// 3. App Token авторизованного мобильного/десктопного устройства (Bearer / ?token=)
+	appToken := bearerToken(r)
+	if appToken == "" {
+		appToken = r.URL.Query().Get("token")
+	}
+	if appToken != "" {
+		tokenHash := secrets.SHA256(appToken)
+		if device, err := a.st.AppDeviceGetByTokenHash(r.Context(), tokenHash); err == nil && device.Active {
+			if u, err := a.st.UserByID(r.Context(), device.UserID); err == nil && u.Enabled {
 				if u.Role == "admin" || u.IsSupportAny() {
 					return true
 				}
@@ -2019,6 +2075,22 @@ func (a *AdminAPI) checkOperatorAuth(r *http.Request, sessionID uuid.UUID) bool 
 					return true
 				}
 				if ss, err := a.st.SupportSessionGet(r.Context(), sessionID); err == nil && ss.TransferredToID != nil && *ss.TransferredToID == u.ID {
+					return true
+				}
+			}
+		}
+	}
+
+	// 4. App Token авторизованного мобильного/десктопного устройства (Bearer / ?token=)
+	appToken := bearerToken(r)
+	if appToken == "" {
+		appToken = r.URL.Query().Get("token")
+	}
+	if appToken != "" {
+		tokenHash := secrets.SHA256(appToken)
+		if device, err := a.st.AppDeviceGetByTokenHash(r.Context(), tokenHash); err == nil && device.Active {
+			if u, err := a.st.UserByID(r.Context(), device.UserID); err == nil && u.Enabled {
+				if u.Role == "admin" || u.IsSupportAny() {
 					return true
 				}
 			}

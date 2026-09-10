@@ -335,6 +335,14 @@
               {{else if or (eq .Platform "android") (eq .Platform "ios")}}
                 <span class="badge success" title="Целостность ОС не нарушена">Целостность: OK</span>
               {{end}}
+              {{if index $posture "disk_warning"}}
+                <span class="badge danger" title="{{index $posture "disk_details"}}">💾 Диск: {{index $posture "disk_percent"}}% (своб. {{index $posture "disk_free_gb"}} ГБ)</span>
+              {{else if index $posture "disk_free_gb"}}
+                <span class="badge success" title="{{index $posture "disk_details"}}">💾 Диск: {{index $posture "disk_free_gb"}} ГБ своб.</span>
+              {{end}}
+              {{if index $posture "cpu_warning"}}
+                <span class="badge danger" title="Высокая нагрузка CPU: {{index $posture "cpu_percent"}}%">⚡ CPU: {{index $posture "cpu_percent"}}%</span>
+              {{end}}
             </div>
           </td>
           <td>
@@ -435,18 +443,27 @@
   {{if and .Edit (eq .Edit.Source "ldap")}}<span class="help">Синхронизируется из каталога при каждом входе LDAP-пользователя.</span>{{end}}
 </label>
 <div class="field">
-  <span class="field-label">Специализация технической поддержки</span>
-  <div style="display: flex; gap: 20px; align-items: center; margin-top: 4px; flex-wrap: wrap;">
-    <label class="check">
-      <input type="checkbox" name="support_role_it" value="1"{{if and .Edit .Edit.IsSupportIT}} checked{{end}}>
-      <span>🖥 Инженер IT-поддержки</span>
-    </label>
-    <label class="check">
-      <input type="checkbox" name="support_role_1c" value="1"{{if and .Edit .Edit.IsSupport1C}} checked{{end}}>
-      <span>📊 Специалист по 1С</span>
-    </label>
+  <span class="field-label">Специализация технической поддержки (SOS)</span>
+  <div style="display: flex; gap: 16px; align-items: center; margin-top: 4px; flex-wrap: wrap;">
+    {{if .SupportCategories}}
+      {{range .SupportCategories}}
+      <label class="check">
+        <input type="checkbox" name="support_roles" value="{{.ID}}"{{if and $.Edit (hasStr $.Edit.SupportRoles .ID)}} checked{{end}}>
+        <span>{{.Icon}} {{.Name}}</span>
+      </label>
+      {{end}}
+    {{else}}
+      <label class="check">
+        <input type="checkbox" name="support_roles" value="it"{{if and .Edit (hasStr .Edit.SupportRoles "it")}} checked{{end}}>
+        <span>🖥 Инженер IT-поддержки</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="support_roles" value="1c"{{if and .Edit (hasStr .Edit.SupportRoles "1c")}} checked{{end}}>
+        <span>📊 Специалист по 1С</span>
+      </label>
+    {{end}}
   </div>
-  <span class="help">Специалисты получают доступ к SOS-заявкам и могут подключаться к удаленным ПК пользователей.</span>
+  <span class="help">Специалисты получают доступ к SOS-заявкам и могут подключаться к удаленным ПК пользователей прямо из приложения.</span>
 </div>
 <div class="field">
   <span class="field-label">Локальные группы</span>

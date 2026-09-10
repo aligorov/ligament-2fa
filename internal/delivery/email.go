@@ -129,6 +129,11 @@ func (e *EmailSender) buildMessage(to, code string) []byte {
 
 // SendAlert реализует AlertSender: отправляет произвольное текстовое письмо.
 func (e *EmailSender) SendAlert(ctx context.Context, to, subject, body string) error {
+	return e.SendAlertWithReplyTo(ctx, to, "", subject, body)
+}
+
+// SendAlertWithReplyTo реализует AlertSenderReplyTo: отправляет произвольное текстовое письмо с Reply-To.
+func (e *EmailSender) SendAlertWithReplyTo(ctx context.Context, to, replyTo, subject, body string) error {
 	addr := net.JoinHostPort(e.host, strconv.Itoa(e.port))
 	var auth smtp.Auth
 	if e.user != "" {
@@ -141,7 +146,7 @@ func (e *EmailSender) SendAlert(ctx context.Context, to, subject, body string) e
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- e.sendFn(addr, auth, e.from, []string{to}, e.buildRawMessage(to, subject, body))
+		done <- e.sendFn(addr, auth, e.from, []string{to}, e.buildRawMessage(to, replyTo, subject, body))
 	}()
 
 	timer := time.NewTimer(timeout)
@@ -159,7 +164,7 @@ func (e *EmailSender) SendAlert(ctx context.Context, to, subject, body string) e
 	}
 }
 
-func (e *EmailSender) buildRawMessage(to, subject, body string) []byte {
+func (e *EmailSender) buildRawMessage(to, replyTo, subject, body string) []byte {
 	subj := mime.QEncoding.Encode("UTF-8", sanitizeHeader(subject))
 	if e.adLine != nil {
 		if ad := e.adLine(); ad != "" {
@@ -169,6 +174,9 @@ func (e *EmailSender) buildRawMessage(to, subject, body string) []byte {
 	var b strings.Builder
 	b.WriteString("From: " + sanitizeHeader(e.from) + "\r\n")
 	b.WriteString("To: " + sanitizeHeader(to) + "\r\n")
+	if replyTo != "" {
+		b.WriteString("Reply-To: " + sanitizeHeader(replyTo) + "\r\n")
+	}
 	b.WriteString("Subject: " + subj + "\r\n")
 	b.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")

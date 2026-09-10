@@ -259,6 +259,23 @@ func (h *AppHub) SendSupportEnd(userID uuid.UUID, sessionID uuid.UUID) int {
 	return h.broadcastToUser(userID, b)
 }
 
+// BroadcastSupportRequest оповещает подключенных инженеров о новом SOS-запросе.
+func (h *AppHub) BroadcastSupportRequest(userIDs []uuid.UUID, session any) int {
+	payload := map[string]any{
+		"type":    "support_incoming_request",
+		"session": session,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, uid := range userIDs {
+		count += h.broadcastToUser(uid, b)
+	}
+	return count
+}
+
 // SendSignalToAdmin пересылает WebRTC SDP/ICE от клиента в браузерную консоль оператора.
 func (h *AppHub) SendSignalToAdmin(sessionID uuid.UUID, data map[string]any) int {
 	payload := map[string]any{

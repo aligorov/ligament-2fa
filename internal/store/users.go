@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -338,6 +339,24 @@ func (s *Store) AllUsersBrief(ctx context.Context) ([]BriefUser, error) {
 		list = append(list, b)
 	}
 	return list, nil
+}
+
+// UserIDsBySupportRole возвращает список ID пользователей, у которых назначена данная роль поддержки или роль admin.
+func (s *Store) UserIDsBySupportRole(ctx context.Context, role string) ([]uuid.UUID, error) {
+	query := `SELECT id FROM users WHERE enabled = true AND (role = 'admin' OR $1 = ANY(support_roles))`
+	rows, err := s.Pool().Query(ctx, query, strings.ToLower(strings.TrimSpace(role)))
+	if err != nil {
+		return nil, fmt.Errorf("store: UserIDsBySupportRole: %w", err)
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 // UserDelete удаляет пользователя (каскад затрагивает секреты, челленджи,

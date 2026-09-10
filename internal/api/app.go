@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -80,6 +81,9 @@ func (a *AppAPI) Register(r chi.Router) {
 			// Удаленная поддержка (SOS / Quick Assist)
 			r.Post("/support/request", a.handleSupportRequest)
 			r.Get("/support/current", a.handleSupportCurrent)
+			r.Get("/support/categories", a.handleSupportCategories)
+			r.Get("/support/queue", a.handleSupportQueue)
+			r.Post("/support/{id}/connect", a.handleSupportConnect)
 			r.Post("/support/{id}/decision", a.handleSupportDecision)
 			r.Post("/support/{id}/signal", a.handleSupportSignal)
 			r.Post("/support/{id}/end", a.handleSupportEnd)
@@ -123,10 +127,11 @@ type appLoginResponse struct {
 }
 
 type appUserResponse struct {
-	ID          uuid.UUID `json:"id"`
-	Username    string    `json:"username"`
-	DisplayName string    `json:"display_name"`
-	Role        string    `json:"role"`
+	ID           uuid.UUID `json:"id"`
+	Username     string    `json:"username"`
+	DisplayName  string    `json:"display_name"`
+	Role         string    `json:"role"`
+	SupportRoles []string  `json:"support_roles"`
 }
 
 // handleLogin — авторизация устройства в приложении.
@@ -224,10 +229,11 @@ func (a *AppAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Token:    tokenStr,
 		DeviceID: device.ID,
 		User: appUserResponse{
-			ID:          user.ID,
-			Username:    user.Username,
-			DisplayName: user.DisplayName,
-			Role:        user.Role,
+			ID:           user.ID,
+			Username:     user.Username,
+			DisplayName:  user.DisplayName,
+			Role:         user.Role,
+			SupportRoles: user.SupportRoles,
 		},
 		Posture: req.SecurityPosture,
 	})
@@ -529,6 +535,7 @@ func (a *AppAPI) handleProfile(w http.ResponseWriter, r *http.Request) {
 		"email":          user.Email,
 		"phone":          user.Phone,
 		"role":           user.Role,
+		"support_roles":  user.SupportRoles,
 		"groups":         allGroups,
 		"active_devices": len(devices),
 		"telegram_bound": user.TelegramChatID != nil,
@@ -772,9 +779,14 @@ func (a *AppAPI) handleSupportRequest(w http.ResponseWriter, r *http.Request) {
 	ss.Platform = device.Platform
 	ss.LastIP = clientIP(r)
 
-	// Многоканальное оповещение инженеров (Email / Telegram / Web)
+	// Многоканальное оповещение инженеров (Email / Telegram / Web / WebSocket)
 	if a.notifier != nil {
 		a.notifier.NotifyNewSession(r.Context(), ss, user, device)
+	}
+	if a.hub != nil {
+		if engineers, err := a.st.UserIDsBySupportRole(r.Context(), ss.Category); err == nil && len(engineers) > 0 {
+			a.hub.BroadcastSupportRequest(engineers, ss)
+		}
 	}
 
 	a.audit(r.Context(), user.Username, "support_requested", map[string]any{
@@ -922,4 +934,146 @@ func (a *AppAPI) handleSupportEnd(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// handleSupportCategories возвращает список активных категорий SOS-поддержки.
+func (a *AppAPI) handleSupportCategories(w http.ResponseWriter, r *http.Request) {
+	snap := a.set.Get()
+	if snap == nil || !snap.Support.Enabled {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, snap.Support.Categories)
+}
+
+// handleSupportQueue возвращает очередь вызовов SOS для инженеров поддержки.
+func (a *AppAPI) handleSupportQueue(w http.ResponseWriter, r *http.Request) {
+	user, _ := appUserFromCtx(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	isAdmin := strings.EqualFold(user.Role, "admin")
+	if !isAdmin && len(user.SupportRoles) == 0 {
+		writeError(w, http.StatusForbidden, "not_support_engineer")
+		return
+	}
+
+	var sessions []store.SupportSession
+	var err error
+	if isAdmin {
+		sessions, err = a.st.SupportSessionList(r.Context(), store.SupportFilter{
+			ActiveOnly: true,
+			Limit:      50,
+		})
+	} else {
+		sessions, err = a.st.SupportSessionList(r.Context(), store.SupportFilter{
+			Categories: user.SupportRoles,
+			ActiveOnly: true,
+			Limit:      50,
+		})
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+	if sessions == nil {
+		sessions = []store.SupportSession{}
+	}
+	writeJSON(w, http.StatusOK, sessions)
+}
+
+// handleSupportConnect инициирует подключение инженера к сессии из приложения.
+func (a *AppAPI) handleSupportConnect(w http.ResponseWriter, r *http.Request) {
+	user, _ := appUserFromCtx(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	isAdmin := strings.EqualFold(user.Role, "admin")
+	if !isAdmin && len(user.SupportRoles) == 0 {
+		writeError(w, http.StatusForbidden, "not_support_engineer")
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_id")
+		return
+	}
+
+	session, err := a.st.SupportSessionGet(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+
+	// Проверяем соответствие категории
+	if !isAdmin {
+		matched := false
+		for _, r := range user.SupportRoles {
+			if strings.EqualFold(r, session.Category) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			writeError(w, http.StatusForbidden, "category_forbidden")
+			return
+		}
+	}
+
+	adminName := user.DisplayName
+	if adminName == "" {
+		adminName = user.Username
+	}
+
+	// Генерируем 2-значное число (10..99) для Zero-Trust Number Matching
+	numberMatch := session.NumberMatch
+	if numberMatch == "" {
+		nBig, err := rand.Int(rand.Reader, big.NewInt(90))
+		num := 42
+		if err == nil {
+			num = int(nBig.Int64()) + 10
+		}
+		numberMatch = fmt.Sprintf("%02d", num)
+		session.NumberMatch = numberMatch
+	}
+
+	if err := a.st.SupportSessionUpdateStatus(r.Context(), session.ID, "connecting", &user.ID, numberMatch); err != nil {
+		slog.Error("app_api: ошибка обновления статуса сессии", "error", err)
+	}
+
+	// Отправляем push-запрос на экран пользователя
+	if a.hub != nil {
+		a.hub.SendSupportPrompt(session.UserID, &delivery.SupportPushPrompt{
+			Type:           "support_prompt",
+			SessionID:      session.ID,
+			AdminName:      adminName,
+			Category:       session.Category,
+			NumberMatch:    numberMatch,
+			AccessMode:     session.AccessMode,
+			ProblemSummary: session.ProblemSummary,
+			Timestamp:      time.Now(),
+		})
+	}
+
+	a.audit(r.Context(), user.Username, "support_app_connect", map[string]any{
+		"session_id":   session.ID.String(),
+		"user_id":      session.UserID.String(),
+		"number_match": numberMatch,
+	}, clientIP(r), "ok")
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":       "prompt_sent",
+		"session_id":   session.ID,
+		"number_match": numberMatch,
+		"session":      session,
+	})
+}
+
 

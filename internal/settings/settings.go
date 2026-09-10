@@ -202,13 +202,63 @@ type T struct {
 	Support SupportSettings
 }
 
-// SupportSettings — конфигурация экстренной удаленной помощи и уведомлений (ключ support).
+// SupportCategory — категория экстренной помощи (IT, 1C, ИБ и др.).
+type SupportCategory struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Icon         string   `json:"icon"`
+	Emails       []string `json:"emails"`
+	TelegramChat int64    `json:"telegram_chat"`
+}
+
+// SupportSettings — конфигурация экстренной удаленной помощи, категорий и уведомлений (ключ support).
 type SupportSettings struct {
-	Enabled        bool     `json:"enabled"`
-	EmailsIT       []string `json:"emails_it"`
-	Emails1C       []string `json:"emails_1c"`
-	TelegramChatIT int64    `json:"telegram_chat_it"`
-	TelegramChat1C int64    `json:"telegram_chat_1c"`
+	Enabled             bool              `json:"enabled"`
+	Categories          []SupportCategory `json:"categories"`
+	DiskWarningPercent  int               `json:"disk_warning_percent"`   // по умолчанию 90%
+	DiskWarningMinGB    int               `json:"disk_warning_min_gb"`     // по умолчанию 10 GB
+	CpuWarningPercent   int               `json:"cpu_warning_percent"`    // по умолчанию 95%
+	CpuSpikeDurationSec int               `json:"cpu_spike_duration_sec"` // по умолчанию 15s
+	EmailsIT            []string          `json:"emails_it"`
+	Emails1C            []string          `json:"emails_1c"`
+	TelegramChatIT      int64             `json:"telegram_chat_it"`
+	TelegramChat1C      int64             `json:"telegram_chat_1c"`
+}
+
+// CategoryByID находит категорию по идентификатору (регистронезависимо).
+func (s SupportSettings) CategoryByID(id string) *SupportCategory {
+	target := strings.ToLower(strings.TrimSpace(id))
+	for _, c := range s.Categories {
+		if strings.ToLower(c.ID) == target {
+			return &c
+		}
+	}
+	return nil
+}
+
+// EmailsForCategory возвращает адреса пересылки для указанной категории.
+func (s SupportSettings) EmailsForCategory(cat string) []string {
+	if c := s.CategoryByID(cat); c != nil && len(c.Emails) > 0 {
+		return c.Emails
+	}
+	if strings.EqualFold(cat, "1c") && len(s.Emails1C) > 0 {
+		return s.Emails1C
+	}
+	if len(s.EmailsIT) > 0 {
+		return s.EmailsIT
+	}
+	return nil
+}
+
+// TelegramChatForCategory возвращает Telegram Chat ID для указанной категории.
+func (s SupportSettings) TelegramChatForCategory(cat string) int64 {
+	if c := s.CategoryByID(cat); c != nil && c.TelegramChat != 0 {
+		return c.TelegramChat
+	}
+	if strings.EqualFold(cat, "1c") && s.TelegramChat1C != 0 {
+		return s.TelegramChat1C
+	}
+	return s.TelegramChatIT
 }
 
 // LDAPSettings — конфигурация внешнего каталога LDAP/Active Directory
@@ -328,8 +378,16 @@ func defaultT() *T {
 	t.SMS = json.RawMessage(`{}`)
 	t.SMSPresets = json.RawMessage(`{}`)
 	t.Support.Enabled = true
+	t.Support.DiskWarningPercent = 90
+	t.Support.DiskWarningMinGB = 10
+	t.Support.CpuWarningPercent = 95
+	t.Support.CpuSpikeDurationSec = 15
 	t.Support.EmailsIT = []string{}
 	t.Support.Emails1C = []string{}
+	t.Support.Categories = []SupportCategory{
+		{ID: "it", Name: "IT-служба", Icon: "🖥", Emails: []string{}, TelegramChat: 0},
+		{ID: "1c", Name: "Поддержка 1С", Icon: "📊", Emails: []string{}, TelegramChat: 0},
+	}
 	return t
 }
 
@@ -754,12 +812,33 @@ func buildT(raw map[string]json.RawMessage) *T {
 
 	sup := fields(raw["support"])
 	t.Support.Enabled = parseBool(sup["enabled"], def.Support.Enabled)
+	t.Support.DiskWarningPercent = parseInt(sup["disk_warning_percent"], def.Support.DiskWarningPercent)
+	t.Support.DiskWarningMinGB = parseInt(sup["disk_warning_min_gb"], def.Support.DiskWarningMinGB)
+	t.Support.CpuWarningPercent = parseInt(sup["cpu_warning_percent"], def.Support.CpuWarningPercent)
+	t.Support.CpuSpikeDurationSec = parseInt(sup["cpu_spike_duration_sec"], def.Support.CpuSpikeDurationSec)
 	t.Support.EmailsIT = parseStringsFlex(sup["emails_it"], def.Support.EmailsIT)
 	t.Support.Emails1C = parseStringsFlex(sup["emails_1c"], def.Support.Emails1C)
 	t.Support.TelegramChatIT = parseInt64(sup["telegram_chat_it"], def.Support.TelegramChatIT)
 	t.Support.TelegramChat1C = parseInt64(sup["telegram_chat_1c"], def.Support.TelegramChat1C)
+	t.Support.Categories = parseSupportCategories(sup["categories"], def.Support.Categories, t.Support.EmailsIT, t.Support.Emails1C, t.Support.TelegramChatIT, t.Support.TelegramChat1C)
 
 	return t
+}
+
+func parseSupportCategories(raw json.RawMessage, def []SupportCategory, emailsIT, emails1C []string, tgIT, tg1C int64) []SupportCategory {
+	if len(raw) > 0 && string(raw) != "null" {
+		var cats []SupportCategory
+		if err := json.Unmarshal(raw, &cats); err == nil && len(cats) > 0 {
+			return cats
+		}
+	}
+	if len(def) > 0 {
+		return def
+	}
+	return []SupportCategory{
+		{ID: "it", Name: "IT-служба", Icon: "🖥", Emails: emailsIT, TelegramChat: tgIT},
+		{ID: "1c", Name: "Поддержка 1С", Icon: "📊", Emails: emails1C, TelegramChat: tg1C},
+	}
 }
 
 // ---- чтение из БД ----
@@ -1183,11 +1262,16 @@ func (t *T) masked() map[string]any {
 			"group_radius_map": t.LDAP.GroupRadiusMap,
 		},
 		"support": map[string]any{
-			"enabled":          t.Support.Enabled,
-			"emails_it":        t.Support.EmailsIT,
-			"emails_1c":        t.Support.Emails1C,
-			"telegram_chat_it": t.Support.TelegramChatIT,
-			"telegram_chat_1c": t.Support.TelegramChat1C,
+			"enabled":                t.Support.Enabled,
+			"categories":             t.Support.Categories,
+			"disk_warning_percent":   t.Support.DiskWarningPercent,
+			"disk_warning_min_gb":    t.Support.DiskWarningMinGB,
+			"cpu_warning_percent":    t.Support.CpuWarningPercent,
+			"cpu_spike_duration_sec": t.Support.CpuSpikeDurationSec,
+			"emails_it":              t.Support.EmailsIT,
+			"emails_1c":              t.Support.Emails1C,
+			"telegram_chat_it":       t.Support.TelegramChatIT,
+			"telegram_chat_1c":       t.Support.TelegramChat1C,
 		},
 		"policy": map[string]any{
 			"code_ttl":                t.Policy.CodeTTL.String(),
