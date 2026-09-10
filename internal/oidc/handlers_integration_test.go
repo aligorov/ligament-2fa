@@ -108,7 +108,7 @@ type oidcFixture struct {
 // startSession), клиентов и возвращает всё готовое к флоу.
 func newFixture(t *testing.T) *oidcFixture {
 	t.Helper()
-	st, _, h := pg(t)
+	st, m, h := pg(t)
 	cleanOIDC(t, st)
 	ctx := context.Background()
 
@@ -506,6 +506,140 @@ func TestOIDCTokenNegative(t *testing.T) {
 	}
 }
 
+// TestOIDCAMRByAuthMode: клейм amr ID-токена отражает режим входа сессии
+// (sessions.auth_mode), а не константу pwd,mfa (аудит раунд-2: заведомо
+// ложное заверение для password_only/trusted_device). Легаси-сессия без
+// auth_mode получает безопасный дефолт pwd,mfa.
+func TestOIDCAMRByAuthMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want []string
+	}{
+		{"password+code", []string{"pwd", "mfa"}},
+		{"password_only", []string{"pwd"}},
+		{"trusted_device", []string{"pwd", "dvc"}},
+		{"", []string{"pwd", "mfa"}}, // легаси
+	} {
+		t.Run("mode="+tc.mode, func(t *testing.T) {
+			f := newFixture(t)
+			// Свежая сессия с нужным auth_mode (как выпустил бы startSession).
+			token := secrets.RandomToken(32)
+			csrf := secrets.RandomToken(16)
+			if err := f.st.SessionCreateMode(context.Background(),
+				secrets.SHA256(token), f.user.ID, csrf, time.Hour, tc.mode); err != nil {
+				t.Fatalf("SessionCreateMode: %v", err)
+			}
+			f.session = &http.Cookie{Name: cookieSession, Value: token}
+			f.csrf = csrf
+
+			verifier := secrets.RandomToken(48)
+			q := f.authorizeQuery()
+			q.Set("code_challenge", b64url(secrets.SHA256(verifier)))
+			q.Set("code_challenge_method", "S256")
+			code := runCodeFlow(t, f, q)
+
+			form := url.Values{
+				"grant_type":    {"authorization_code"},
+				"code":          {code},
+				"redirect_uri":  {"https://grafana.example.com/cb"},
+				"code_verifier": {verifier},
+			}
+			rec := f.tokenReq(form, f.confClient.ClientID, f.confSecret)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("token: %d %s", rec.Code, rec.Body.String())
+			}
+			var tok map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &tok); err != nil {
+				t.Fatalf("token json: %v", err)
+			}
+			claims := parseIDToken(t, f.h, tok["id_token"].(string))
+			amr, ok := claims["amr"].([]any)
+			if !ok || len(amr) != len(tc.want) {
+				t.Fatalf("amr = %#v, хочу %v", claims["amr"], tc.want)
+			}
+			for i, want := range tc.want {
+				if amr[i] != want {
+					t.Errorf("amr[%d] = %v, хочу %q (mode=%q)", i, amr[i], want, tc.mode)
+				}
+			}
+		})
+	}
+}
+
+// TestOIDCTokenFailAudit: неудачная аутентификация клиента на /oidc/token
+// (неверный секрет, неизвестный client_id) пишет аудит oidc_token_fail —
+// брут client_secret виден в журнале (аудит раунд-2, N5: раньше событие не
+// писалось вовсе).
+func TestOIDCTokenFailAudit(t *testing.T) {
+	f := newFixture(t)
+	form := url.Values{
+		"grant_type":   {"authorization_code"},
+		"code":         {"whatever"},
+		"redirect_uri": {"https://grafana.example.com/cb"},
+	}
+	// Неверный секрет известного клиента → 401 + oidc_token_fail(bad_secret).
+	rec := f.tokenReq(form, f.confClient.ClientID, "wrong-secret")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("неверный секрет: %d %s", rec.Code, rec.Body.String())
+	}
+	// Неизвестный client_id → 401 + oidc_token_fail(unknown_client).
+	rec = f.tokenReq(form, "mfa_nope", "whatever")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("неизвестный клиент: %d %s", rec.Code, rec.Body.String())
+	}
+	rows, err := f.st.AuditList(context.Background(), store.AuditFilter{Event: "oidc_token_fail", Limit: 50})
+	if err != nil {
+		t.Fatalf("AuditList: %v", err)
+	}
+	reasons := map[string]string{} // client_id → reason
+	for _, row := range rows {
+		if cid, _ := row.Detail["client_id"].(string); cid == f.confClient.ClientID || cid == "mfa_nope" {
+			if reason, _ := row.Detail["reason"].(string); reason != "" {
+				reasons[cid] = reason
+			}
+		}
+	}
+	if reasons[f.confClient.ClientID] != "bad_secret" {
+		t.Errorf("oidc_token_fail(bad_secret) для %s не найден: %v", f.confClient.ClientID, reasons)
+	}
+	if reasons["mfa_nope"] != "unknown_client" {
+		t.Errorf("oidc_token_fail(unknown_client) не найден: %v", reasons)
+	}
+}
+
+// TestOIDCTokenRateLimited: серия обменов с одного IP сверх burst → 429
+// rate_limited с Retry-After (аудит раунд-2, N5: эндпоинт не имел лимитов).
+// Уникальный RemoteAddr — ip-корзина изолирована от остальных тестов
+// пакета (менеджер один на процесс).
+func TestOIDCTokenRateLimited(t *testing.T) {
+	f := newFixture(t)
+	form := url.Values{"grant_type": {"authorization_code"}}.Encode()
+	for i := 0; i <= tokenRLBurst; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/oidc/token", strings.NewReader(form))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "203.0.113.99:44444"
+		rec := httptest.NewRecorder()
+		f.h.ServeHTTP(rec, req)
+		if i < tokenRLBurst {
+			// До исчернения — обычная ошибка флоу (кода нет → invalid_request),
+			// а не лимит.
+			if rec.Code == http.StatusTooManyRequests {
+				t.Fatalf("запрос #%d: 429 раньше времени", i)
+			}
+			continue
+		}
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("запрос #%d: %d, хочу 429 (%s)", i, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "rate_limited") {
+			t.Errorf("тело 429: %s", rec.Body.String())
+		}
+		if rec.Header().Get("Retry-After") == "" {
+			t.Error("заголовок Retry-After отсутствует")
+		}
+	}
+}
+
 // TestOIDCAuthorizeNegative: без сессии — /login?next=…, неизвестный
 // клиент и чужой redirect_uri — страница 400, scope без openid — редирект
 // с invalid_scope, public без PKCE — invalid_request.
@@ -639,7 +773,7 @@ func TestOIDCStoreLifecycle(t *testing.T) {
 	rec := &store.OIDCCode{
 		ClientID: f.confClient.ClientID, UserID: f.user.ID,
 		RedirectURI: "https://grafana.example.com/cb", Scope: "openid",
-		AuthTime: time.Now(), AMR: defaultAMR,
+		AuthTime: time.Now(), AMR: AMRForMode("password+code"),
 		CodeChallenge: "ch", CodeChallengeMethod: "S256",
 	}
 	if err := st.OIDCCodeSave(ctx, secrets.SHA256(code), rec, time.Minute); err != nil {
@@ -663,7 +797,7 @@ func TestOIDCStoreLifecycle(t *testing.T) {
 
 	// Access-токен: сохранение/чтение/удаление.
 	access := secrets.RandomToken(32)
-	tok := &store.OIDCToken{UserID: f.user.ID, ClientID: f.confClient.ClientID, Scope: "openid", AMR: defaultAMR}
+	tok := &store.OIDCToken{UserID: f.user.ID, ClientID: f.confClient.ClientID, Scope: "openid", AMR: AMRForMode("password+code")}
 	if err := st.OIDCTokenSave(ctx, secrets.SHA256(access), tok, time.Minute); err != nil {
 		t.Fatalf("OIDCTokenSave: %v", err)
 	}

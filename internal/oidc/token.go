@@ -22,10 +22,30 @@ import (
 // не для долгих сессий клиента).
 const idTokenTTL = 5 * time.Minute
 
-// defaultAMR — методы аутентификации по умолчанию: web-сессия Ligament
-// всегда получена паролем + вторым фактором (или доверенным устройством);
-// granular-метод сессия не хранит (см. internal/api startSession).
-const defaultAMR = "pwd,mfa"
+// AMRForMode переводит режим web-входа (sessions.auth_mode — его пишет
+// startSession при выпуске сессии) в строку методов клейма amr (RFC 8176):
+// pwd — пароль, dvc — доверенное устройство, mfa — второй фактор.
+// Матрица режимов (полный список — finishLogin/loginDone в internal/api):
+//
+//	password+code, passkey → пароль + второй фактор → pwd,mfa;
+//	push_match             → push-челлендж входа выдан ПОСЛЕ шага-1 с
+//	                         паролем (purpose=api) → pwd,mfa;
+//	password_only          → у пользователя нет вторых факторов → pwd;
+//	trusted_device         → пароль + кука доверенного устройства → pwd,dvc;
+//	'' (легаси)            → сессия выдана до появления auth_mode —
+//	                         безопасный дефолт pwd,mfa: заверение старых
+//	                         сессий не занижается (аудит раунд-2: amr был
+//	                         константой pwd,mfa и завышал заверение).
+func AMRForMode(mode string) string {
+	switch mode {
+	case "password_only":
+		return "pwd"
+	case "trusted_device":
+		return "pwd,dvc"
+	default:
+		return "pwd,mfa"
+	}
+}
 
 // SignIDToken подписывает клеймы ключом менеджера (RS256) и возвращает
 // компактный JWT «header.payload.signature».

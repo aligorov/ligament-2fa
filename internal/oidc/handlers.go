@@ -161,21 +161,25 @@ func (mgr *Manager) renderErrorPage(w http.ResponseWriter, r *http.Request, stat
 
 // sessionUser — пользователь web-сессии по cookie twofa_session
 // (включая отключённых: requirePage инвариант «отключённый теряет
-// сессию»). Возвращает пользователя, CSRF и момент входа (auth_time).
-func (mgr *Manager) sessionUser(r *http.Request) (*store.User, string, time.Time, bool) {
+// сессию»). Возвращает пользователя, CSRF, момент входа (auth_time) и
+// режим входа сессии (auth_mode → клейм amr; '' — легаси-сессия).
+func (mgr *Manager) sessionUser(r *http.Request) (*store.User, string, time.Time, string, bool) {
 	c, err := r.Cookie(cookieSession)
 	if err != nil || c.Value == "" {
-		return nil, "", time.Time{}, false
+		return nil, "", time.Time{}, "", false
 	}
 	userID, csrf, createdAt, err := mgr.st.OIDCSessionInfo(r.Context(), secrets.SHA256(c.Value))
 	if err != nil {
-		return nil, "", time.Time{}, false
+		return nil, "", time.Time{}, "", false
 	}
+	// auth_mode читается отдельно (паттерн OIDCSessionInfo: не менять
+	// сигнатуру метода); отсутствие колонки/строки — легаси-режим ''.
+	authMode, _ := mgr.st.SessionAuthMode(r.Context(), secrets.SHA256(c.Value))
 	user, err := mgr.st.UserByID(r.Context(), userID)
 	if err != nil || !user.Enabled {
-		return nil, "", time.Time{}, false
+		return nil, "", time.Time{}, "", false
 	}
-	return user, csrf, createdAt, true
+	return user, csrf, createdAt, authMode, true
 }
 
 // redirectWithError — редирект на redirect_uri с error/state (ошибки
@@ -504,7 +508,7 @@ func (mgr *Manager) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, csrf, _, ok := mgr.sessionUser(r)
+	user, csrf, _, _, ok := mgr.sessionUser(r)
 	if !ok {
 		http.Redirect(w, r, "/login?next="+url.QueryEscape(ar.authorizeURL()), http.StatusFound)
 		return
@@ -570,7 +574,7 @@ func (mgr *Manager) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reques
 	}
 	ar := authorizeReqFromValues(r.PostFormValue)
 
-	user, csrf, authTime, ok := mgr.sessionUser(r)
+	user, csrf, authTime, authMode, ok := mgr.sessionUser(r)
 	if !ok {
 		http.Redirect(w, r, "/login?next="+url.QueryEscape(ar.authorizeURL()), http.StatusFound)
 		return
@@ -599,12 +603,12 @@ func (mgr *Manager) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reques
 	code := secrets.RandomToken(32)
 	if err := mgr.st.OIDCCodeSave(r.Context(), secrets.SHA256(code), &store.OIDCCode{
 		ClientID:            client.ClientID,
-		UserID:              user.ID,
-		RedirectURI:         ar.RedirectURI,
-		Scope:               FilterScopes(ar.Scope),
-		Nonce:               ar.Nonce,
-		AuthTime:            authTime,
-		AMR:                 defaultAMR,
+		UserID:             user.ID,
+		RedirectURI:        ar.RedirectURI,
+		Scope:              FilterScopes(ar.Scope),
+		Nonce:              ar.Nonce,
+		AuthTime:           authTime,
+		AMR:                AMRForMode(authMode),
 		CodeChallenge:       ar.CodeChallenge,
 		CodeChallengeMethod: ar.CodeChallengeMethod,
 	}, codeTTL); err != nil {
@@ -649,7 +653,9 @@ func (mgr *Manager) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reques
 // handleToken — POST /oidc/token (grant_type=authorization_code):
 // аутентификация клиента (Basic или form; public — только PKCE),
 // атомарное погашение кода, проверка PKCE, выпуск access-токена и
-// подписанного ID-токена. Ошибки — RFC 6749 §5.2.
+// подписанного ID-токена. Rate-limit по IP и client_id (аудит раунд-2,
+// N5); неудачная аутентификация клиента пишется в аудит oidc_token_fail.
+// Ошибки — RFC 6749 §5.2.
 func (mgr *Manager) handleToken(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		writeOIDCError(w, http.StatusBadRequest, "invalid_request")
@@ -672,8 +678,17 @@ func (mgr *Manager) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 		clientID, clientSecret = bid, bsec
 	}
+	// Лимит до проверки секрета (client_id может быть произвольной строкой —
+	// корзина cid выделяется и под несуществующих клиентов).
+	if !mgr.allowTokenRequest(w, r, clientID) {
+		return
+	}
 	client, err := mgr.st.OIDCClientByClientID(r.Context(), clientID)
 	if errors.Is(err, store.ErrNotFound) {
+		// Неудачная аутентификация клиента видна в аудите (аудит раунд-2,
+		// N5: брут client_id/secret раньше не оставлял следов).
+		mgr.audit(r, "", "oidc_token_fail", "fail",
+			map[string]any{"client_id": clientID, "reason": "unknown_client"})
 		w.Header().Set("WWW-Authenticate", `Basic realm="oidc"`)
 		writeOIDCError(w, http.StatusUnauthorized, "invalid_client")
 		return
@@ -687,6 +702,8 @@ func (mgr *Manager) handleToken(w http.ResponseWriter, r *http.Request) {
 		// Конфиденциальный клиент обязан предъявить верный секрет
 		// (хеш — постоянное время).
 		if !VerifyClientSecret(client.ClientSecretHash, clientSecret) {
+			mgr.audit(r, "", "oidc_token_fail", "fail",
+				map[string]any{"client_id": clientID, "reason": "bad_secret"})
 			w.Header().Set("WWW-Authenticate", `Basic realm="oidc"`)
 			writeOIDCError(w, http.StatusUnauthorized, "invalid_client")
 			return

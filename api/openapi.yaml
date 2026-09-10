@@ -225,7 +225,7 @@ paths:
     post:
       tags: [Public Auth]
       summary: "Комбинированный вход «пароль + код» одним вызовом"
-      description: "Код любой: доставленный (start), TOTP или резервный. Пишет login_ok/login_fail в аудит; неудачный код кормит единый fail-счётчик."
+      description: "Код любой: доставленный (start), TOTP или резервный. Пишет login_ok/login_fail в аудит; неудачный код кормит единый fail-счётчик. Rate-limit по username и IP (собственные корзины combined); уже заблокированный пользователь получает 423 до проверки лимита."
       operationId: authCombined
       requestBody:
         required: true
@@ -268,6 +268,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
               example: {error: locked}
+        '429':
+          description: Rate-limit исчерпан (корзины username и IP).
+          headers:
+            Retry-After:
+              description: Секунды до повторной попытки.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitError'
+              example: {error: rate_limited, retry_after: 5}
         '500':
           description: Внутренняя ошибка.
           content:
@@ -280,7 +292,7 @@ paths:
     post:
       tags: [Public Auth]
       summary: "Статус push-челленджа (опрос)"
-      description: "Клиент опрашивает, пока пользователь решает в Telegram («Подтвердить»/«Это не я»). Неизвестный/удалённый челлендж — терминальный expired (200), а не 404: poll-циклу нужен статус."
+      description: "Клиент опрашивает, пока пользователь решает в Telegram («Подтвердить»/«Это не я»). Неизвестный/удалённый челлендж — терминальный expired (200), а не 404: poll-циклу нужен статус. Статус-оракул без аутентификации ограничен по IP щадящей корзиной (poll-цикл браузера проходит, перебор UUID — нет)."
       operationId: authPoll
       requestBody:
         required: true
@@ -304,12 +316,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
               example: {error: bad_request}
+        '429':
+          description: Rate-limit по IP исчерпан.
+          headers:
+            Retry-After:
+              description: Секунды до повторной попытки.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitError'
+              example: {error: rate_limited, retry_after: 5}
 
   /api/v1/auth/webauthn/begin:
     post:
       tags: [Public Auth]
       summary: "Вход WebAuthn, шаг 1: пароль + параметры церемонии"
-      description: "Проверяет пароль (+ fail-блокировку) и возвращает PublicKeyCredentialRequestOptions с одноразовым handle сессии церемонии. Нет зарегистрированных ключей → 409 no_credentials. WebAuthn не сконфигурирован (webauthn.rp_id) → 503."
+      description: "Проверяет пароль (+ fail-блокировку) и возвращает PublicKeyCredentialRequestOptions с одноразовым handle сессии церемонии. Нет зарегистрированных ключей → 409 no_credentials. WebAuthn не сконфигурирован (webauthn.rp_id) → 503. Rate-limit по username и IP, как /auth/start."
       operationId: authWebauthnBegin
       requestBody:
         required: true
@@ -353,6 +377,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
               example: {error: locked}
+        '429':
+          description: Rate-limit исчерпан (корзины username и IP).
+          headers:
+            Retry-After:
+              description: Секунды до повторной попытки.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitError'
+              example: {error: rate_limited, retry_after: 5}
         '500':
           description: Внутренняя ошибка.
           content:
@@ -3228,7 +3264,7 @@ paths:
     post:
       tags: [OIDC]
       summary: "Token endpoint (grant_type=authorization_code)"
-      description: "Аутентификация клиента: Basic или form (public — без секрета, PKCE обязателен). Атомарно погашает код (повторное использование/истёкший → invalid_grant), проверяет PKCE (S256/plain) и выдаёт access-токен (TTL 300 с) и подписанный ID-токен (RS256, TTL 5 мин). Refresh-токенов нет. Аудит oidc_token. Ошибки — RFC 6749 §5.2: {error}."
+      description: "Аутентификация клиента: Basic или form (public — без секрета, PKCE обязателен). Атомарно погашает код (повторное использование/истёкший → invalid_grant), проверяет PKCE (S256/plain) и выдаёт access-токен (TTL 300 с) и подписанный ID-токен (RS256, TTL 5 мин). Refresh-токенов нет. Клейм amr отражает фактический режим входа web-сессии (sessions.auth_mode: password_only → [pwd], trusted_device → [pwd,dvc], остальные и легаси → [pwd,mfa]). Аудит oidc_token; неудачная аутентификация клиента — oidc_token_fail. Rate-limit по IP и client_id. Ошибки — RFC 6749 §5.2: {error}."
       operationId: oidcToken
       requestBody:
         required: true
@@ -3272,6 +3308,17 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
               example: {error: invalid_client}
+        '429':
+          description: "Rate-limit исчерпан (корзины IP и client_id)."
+          headers:
+            Retry-After:
+              description: Секунды до повторной попытки.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example: {error: rate_limited}
 
   /oidc/userinfo:
     get:

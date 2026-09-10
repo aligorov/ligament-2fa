@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"sync"
 
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
@@ -58,7 +59,9 @@ type jwk struct {
 // Manager — провайдер OIDC: ключ подписи (создаётся при первом старте и
 // сохраняется в настройках), зависимости store/settings/renderer. После
 // сборки иммутабелен — ключ не мутируется, снимок настроек читается на
-// каждый запрос (дёшево).
+// каждый запрос (дёшево). Исключение — лимитер /oidc/token: создаётся
+// лениво (sync.Once), чтобы Manager, собранный литералом в тестах, работал
+// без него.
 type Manager struct {
 	st   *store.Store
 	m    *settings.M
@@ -71,6 +74,9 @@ type Manager struct {
 
 	key *rsa.PrivateKey
 	kid string
+
+	rlOnce sync.Once
+	rl     *tokenLimiter
 }
 
 // LoginNotifier интерфейс отправки уведомлений о входе.

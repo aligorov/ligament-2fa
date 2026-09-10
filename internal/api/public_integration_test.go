@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -787,5 +788,80 @@ func TestAPIWebauthnFinishNoPendingOnFail(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("после неудачного finish pending-окон = %d, want 0", n)
+	}
+}
+
+// ---- аудит раунд-2, Фаза 2b: rate-limits ранее открытых входов ----
+
+// TestAPICombinedRateLimited: /auth/combined ограничен по IP (корзина cip)
+// даже при разных именах пользователей — argon2-вход больше не брутится
+// без лимита (аудит раунд-2). Имена разные, чтобы per-user fail-счётчик
+// не достигал блокировки раньше лимита.
+func TestAPICombinedRateLimited(t *testing.T) {
+	st, set, box := setup(t)
+	h, _ := newTestRouter(t, st, set, box, nil)
+
+	for i := 0; i < rlBurst; i++ {
+		rec := doReq(t, h, http.MethodPost, "/api/v1/auth/combined",
+			map[string]any{"username": fmt.Sprintf("rlcomb%d", i), "password": "wrong", "code": "000000"})
+		wantStatus(t, rec, http.StatusUnauthorized)
+	}
+	rec := doReq(t, h, http.MethodPost, "/api/v1/auth/combined",
+		map[string]any{"username": "rlcomb-final", "password": "wrong", "code": "000000"})
+	wantStatus(t, rec, http.StatusTooManyRequests)
+	if jsonBody(t, rec)["error"] != "rate_limited" {
+		t.Fatalf("body = %s, want rate_limited", rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("заголовок Retry-After отсутствует")
+	}
+}
+
+// TestAPIWebauthnBeginRateLimited: /auth/webauthn/begin ограничен по
+// username+IP, как /auth/start (тот же первый фактор — пароль).
+func TestAPIWebauthnBeginRateLimited(t *testing.T) {
+	st, set, box := setup(t)
+	if err := set.Put(context.Background(), "webauthn",
+		json.RawMessage(`{"rp_id":"localhost","rp_name":"twofa-test"}`)); err != nil {
+		t.Fatalf("settings.Put(webauthn): %v", err)
+	}
+	wa, err := webauthn.New(st, set)
+	if err != nil {
+		t.Fatalf("webauthn.New: %v", err)
+	}
+	h, _ := newTestRouter(t, st, set, box, wa)
+	user := mkUser(t, context.Background(), st, "rlwabegin", nil)
+
+	for i := 0; i < rlBurst; i++ {
+		rec := doReq(t, h, http.MethodPost, "/api/v1/auth/webauthn/begin",
+			map[string]string{"username": user.Username, "password": "wrong-password"})
+		wantStatus(t, rec, http.StatusUnauthorized)
+	}
+	rec := doReq(t, h, http.MethodPost, "/api/v1/auth/webauthn/begin",
+		map[string]string{"username": user.Username, "password": testPassword})
+	wantStatus(t, rec, http.StatusTooManyRequests)
+	if jsonBody(t, rec)["error"] != "rate_limited" {
+		t.Fatalf("body = %s, want rate_limited", rec.Body.String())
+	}
+}
+
+// TestAPIPollRateLimited: /auth/poll — неаутентифицированный статус-оракул —
+// ограничен по IP щадящей корзиной: poll-цикл браузера (раз в ~1.5 с)
+// проходит, перебор UUID — нет.
+func TestAPIPollRateLimited(t *testing.T) {
+	st, set, box := setup(t)
+	h, _ := newTestRouter(t, st, set, box, nil)
+
+	poll := func() *httptest.ResponseRecorder {
+		return doReq(t, h, http.MethodPost, "/api/v1/auth/poll",
+			map[string]string{"challenge_id": uuid.NewString()})
+	}
+	for i := 0; i < pollRLBurst; i++ {
+		wantStatus(t, poll(), http.StatusOK) // неизвестный UUID → 200 expired
+	}
+	rec := poll()
+	wantStatus(t, rec, http.StatusTooManyRequests)
+	if jsonBody(t, rec)["error"] != "rate_limited" {
+		t.Fatalf("body = %s, want rate_limited", rec.Body.String())
 	}
 }

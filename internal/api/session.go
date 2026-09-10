@@ -20,6 +20,7 @@ import (
 
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -122,7 +123,18 @@ type SessionAPI struct {
 	pv   auth.PasswordVerifier
 	m    *settings.M
 	rl   *limiterMap
+	fw   sessFirewall // nil — web-неудачи не кормят fail2ban
 }
+
+// sessFirewall — узкое окно в firewall.Guard для подачи неудач web-входа.
+type sessFirewall interface {
+	Fail(ctx context.Context, ip, reason string)
+}
+
+// SetFirewall подключает fail2ban-guard: неудачные web-логины (JSON и
+// HTML-форма) считаются по IP наравне с RADIUS и /auth/verify (аудит
+// раунд-2, N3: SessionAPI пишет аудит в обход core.audit — мимо guard).
+func (s *SessionAPI) SetFirewall(f sessFirewall) { s.fw = f }
 
 // NewSessionAPI собирает API сессий; pv — проверка первого фактора (тот же
 // верификатор, что в ядре). Ресурсы освобождаются Stop.
@@ -140,10 +152,23 @@ func (s *SessionAPI) Register(r chi.Router) {
 	r.With(RequireSession(s.st)).Post("/api/v1/logout", s.handleLogout)
 }
 
-// audit пишет событие, не ломая основной поток (как в PublicAPI).
+// audit пишет событие, не ломая основной поток (как в PublicAPI). Неудачи
+// входа/кода дополнительно кормят fail2ban (Guard.Fail по IP) — тот же
+// фильтр событий, что в core.audit: SessionAPI пишет аудит в обход ядра.
 func (s *SessionAPI) audit(ctx context.Context, username, event, ip, result string, detail map[string]any) {
 	if err := s.st.Audit(ctx, username, event, detail, ip, result); err != nil {
 		slog.Warn("api: аудит не записан", "event", event, "error", err)
+	}
+	if result == "fail" && s.fw != nil {
+		if ip == "" {
+			ip = firewall.IPFrom(ctx)
+		}
+		switch event {
+		case "login_fail", "code_fail":
+			if ip != "" {
+				s.fw.Fail(ctx, ip, event)
+			}
+		}
 	}
 }
 
@@ -353,10 +378,12 @@ func (s *SessionAPI) finishLogin(w http.ResponseWriter, r *http.Request, user *s
 
 // startSession выпускает сессию (и, при remember_device, доверяет
 // устройству) и пишет login_ok — общий хвост JSON- и HTML-входа.
-// Возвращает CSRF для ответа клиенту (cookie HttpOnly — скрипт токен
-// не прочитает).
+// mode (каким способом пользователь аутентифицировался: password+code,
+// trusted_device, push_match, …) фиксируется в sessions.auth_mode — из
+// него OIDC собирает честный клейм amr ID-токена. Возвращает CSRF для
+// ответа клиенту (cookie HttpOnly — скрипт токен не прочитает).
 func (s *SessionAPI) startSession(w http.ResponseWriter, r *http.Request, user *store.User, rememberDevice bool, mode string) (string, error) {
-	csrf, err := s.createSession(w, r, user)
+	csrf, err := s.createSession(w, r, user, mode)
 	if err != nil {
 		return "", err
 	}
@@ -369,13 +396,13 @@ func (s *SessionAPI) startSession(w http.ResponseWriter, r *http.Request, user *
 }
 
 // createSession выпускает сессию: случайный токен — в cookie, в БД — только
-// его SHA-256 и CSRF-токен. Возвращает CSRF для ответа клиенту (cookie
-// HttpOnly — скрипт токен не прочитает).
-func (s *SessionAPI) createSession(w http.ResponseWriter, r *http.Request, user *store.User) (string, error) {
+// его SHA-256, CSRF-токен и режим входа (auth_mode). Возвращает CSRF для
+// ответа клиенту (cookie HttpOnly — скрипт токен не прочитает).
+func (s *SessionAPI) createSession(w http.ResponseWriter, r *http.Request, user *store.User, authMode string) (string, error) {
 	token := secrets.RandomToken(tokenBytes)
 	csrf := secrets.RandomToken(tokenBytes)
 	ttl := s.m.Get().Policy.SessionTTL
-	if err := s.st.SessionCreate(r.Context(), secrets.SHA256(token), user.ID, csrf, ttl); err != nil {
+	if err := s.st.SessionCreateMode(r.Context(), secrets.SHA256(token), user.ID, csrf, ttl, authMode); err != nil {
 		return "", err
 	}
 	setCookie(w, cookieSession, token, int(ttl.Seconds()))
@@ -503,15 +530,21 @@ func (s *SessionAPI) HasWebauthnPending(ctx context.Context, userID uuid.UUID) b
 	return exists
 }
 
-// consumePushApproved атомарно проверяет и погашает approved push-челлендж (app_push / telegram_push).
+// consumePushApproved атомарно проверяет и погашает approved push-челлендж
+// (app_push / telegram_push). Purpose-фильтр (аудит раунд-2, N2): web-сессию
+// даёт только push ВХОДА — челленджи purpose=api, созданные /auth/start и
+// web-формой ПОСЛЕ проверки пароля (шаг 1). RADIUS-push (purpose=radius или
+// произвольный svc: Wi-Fi/VPN) обмениваться на web-сессию не может: он
+// создаётся без пароля web-пути и аппрувится без number match.
 func (s *SessionAPI) consumePushApproved(ctx context.Context, user *store.User, challengeID uuid.UUID) bool {
 	var id uuid.UUID
 	err := s.st.Pool().QueryRow(ctx, `
 		SELECT id FROM challenges
-		WHERE id = $1 AND user_id = $2 
+		WHERE id = $1 AND user_id = $2
 		  AND channel IN ('app_push', 'telegram_push')
 		  AND push_state = 'approved'
-		  AND used_at IS NULL 
+		  AND purpose = 'api'
+		  AND used_at IS NULL
 		  AND expires_at > now()`, challengeID, user.ID).Scan(&id)
 	if err != nil {
 		return false

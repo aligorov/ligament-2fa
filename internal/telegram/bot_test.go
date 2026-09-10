@@ -755,3 +755,77 @@ func TestLinkSameChatNoNotification(t *testing.T) {
 		}
 	}
 }
+
+// ---- аудит раунд-2, N8: закрытые челленджи не аппрувятся ----
+
+// TestCallbackExpiredPush: просроченный push-челлендж не аппрувится —
+// бот редактирует сообщение («истёк») и не трогает push_state/аудит.
+func TestCallbackExpiredPush(t *testing.T) {
+	fs := newFakeStore()
+	_, cid := addPushUser(fs, "bob")
+	fs.mu.Lock()
+	fs.challenges[cid].ExpiresAt = time.Now().Add(-time.Minute)
+	fs.mu.Unlock()
+
+	b, api := newTestBot(t, "TOK", fs)
+	api.pushUpdate(pushCallback(1, cid, "approve"))
+	stop := runBot(t, b)
+	waitFor(t, "edit 'истёк'", func() bool {
+		_, _, _, edits := api.snapshot()
+		for _, m := range edits {
+			if m["text"] == "⏳ Запрос истёк" {
+				return true
+			}
+		}
+		return false
+	})
+	if err := stop(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	_, challenges, audits, setPushN := fs.snapshot()
+	if got := challenges[cid].PushState; got == nil || *got != "pending" {
+		t.Errorf("push_state просроченного = %v, want pending (не трогаем)", got)
+	}
+	if setPushN != 0 {
+		t.Errorf("ChallengeSetPush вызовов = %d, want 0", setPushN)
+	}
+	if len(audits) != 0 {
+		t.Errorf("аудит = %+v, want пусто", audits)
+	}
+}
+
+// TestCallbackUsedPush: уже погашенный (used_at) push-челлендж не
+// аппрувится — «уже обработано», состояние и аудит не меняются.
+func TestCallbackUsedPush(t *testing.T) {
+	fs := newFakeStore()
+	_, cid := addPushUser(fs, "bob")
+	used := time.Now().Add(-time.Second)
+	fs.mu.Lock()
+	fs.challenges[cid].UsedAt = &used
+	fs.mu.Unlock()
+
+	b, api := newTestBot(t, "TOK", fs)
+	api.pushUpdate(pushCallback(1, cid, "approve"))
+	stop := runBot(t, b)
+	waitFor(t, "edit 'уже обработано'", func() bool {
+		_, _, _, edits := api.snapshot()
+		for _, m := range edits {
+			if m["text"] == "⏳ Уже обработано" {
+				return true
+			}
+		}
+		return false
+	})
+	if err := stop(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	_, _, audits, setPushN := fs.snapshot()
+	if setPushN != 0 {
+		t.Errorf("ChallengeSetPush вызовов = %d, want 0", setPushN)
+	}
+	if len(audits) != 0 {
+		t.Errorf("аудит = %+v, want пусто", audits)
+	}
+}

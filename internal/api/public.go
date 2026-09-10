@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
@@ -35,25 +36,54 @@ const purposeAPI = "api"
 // maxBodyBytes — потолок тела запроса публичного API.
 const maxBodyBytes = 1 << 20
 
+// Параметры poll-лимитера (отдельная карта): /auth/poll — неотменяемый
+// статус-оракул челленджа, который легитимный клиент долбит каждые ~1.5 с
+// весь срок кода, поэтому корзина щадящая: burst 30, затем 2/с по IP —
+// окно перебора UUID у атакующего ограничено, poll-цикл браузера проходит.
+const (
+	pollRLRate  = rate.Limit(2)
+	pollRLBurst = 30
+)
+
 // PublicAPI — зависимости и маршруты /api/v1/auth/*.
 type PublicAPI struct {
-	core *auth.Core
-	wa   *webauthn.Svc // nil — webauthn не сконфигурирован (503)
-	st   *store.Store
-	pv   auth.PasswordVerifier
-	m    *settings.M
-	rl   *limiterMap
+	core   *auth.Core
+	wa     *webauthn.Svc // nil — webauthn не сконфигурирован (503)
+	st     *store.Store
+	pv     auth.PasswordVerifier
+	m      *settings.M
+	rl     *limiterMap
+	rlPoll *limiterMap // отдельная, более щадящая карта poll-оракула
+	fw     pubFirewall // nil — неудачи не кормят fail2ban
 }
+
+// pubFirewall — узкое окно в firewall.Guard для подачи неудач публичного API.
+type pubFirewall interface {
+	Fail(ctx context.Context, ip, reason string)
+}
+
+// SetFirewall подключает fail2ban-guard: неудачные логины публичного API
+// (/auth/start, webauthn/begin, web-код в login/2fa — события, которые
+// PublicAPI/SessionAPI пишут в обход core.audit) считаются по IP наравне
+// с RADIUS (аудит раунд-2, N3).
+func (p *PublicAPI) SetFirewall(f pubFirewall) { p.fw = f }
 
 // NewPublicAPI собирает публичный API. wa может быть nil — webauthn-роуты
 // тогда отвечают 503; pv — проверка первого фактора (тот же верификатор,
 // что в ядре). Ресурсы освобождаются Stop.
 func NewPublicAPI(core *auth.Core, wa *webauthn.Svc, st *store.Store, pv auth.PasswordVerifier, m *settings.M) *PublicAPI {
-	return &PublicAPI{core: core, wa: wa, st: st, pv: pv, m: m, rl: newLimiterMap()}
+	return &PublicAPI{
+		core: core, wa: wa, st: st, pv: pv, m: m,
+		rl:     newLimiterMap(),
+		rlPoll: newLimiterMapParams(pollRLRate, pollRLBurst),
+	}
 }
 
-// Stop останавливает фоновую очистку rate-limiter.
-func (p *PublicAPI) Stop() { p.rl.Stop() }
+// Stop останавливает фоновую очистку rate-limiter'ов.
+func (p *PublicAPI) Stop() {
+	p.rl.Stop()
+	p.rlPoll.Stop()
+}
 
 // Register монтирует маршруты публичного API в chi-роутер.
 func (p *PublicAPI) Register(r chi.Router) {
@@ -114,10 +144,36 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 
 // audit пишет событие публичного API (result ok/fail, src_ip); ошибка
 // записи логируется и проглатывается — аудит не ломает ответ клиенту.
+// Неудачи входа/кода дополнительно кормят fail2ban (Guard.Fail по IP) —
+// тот же фильтр событий, что в core.audit: api_start/api_verify_fail
+// пишутся здесь в обход ядра (аудит раунд-2, N3).
 func (p *PublicAPI) audit(ctx context.Context, username, event, ip, result string, detail map[string]any) {
 	if err := p.st.Audit(ctx, username, event, detail, ip, result); err != nil {
 		slog.Warn("api: аудит не записан", "event", event, "error", err)
 	}
+	if result == "fail" && p.fw != nil {
+		if ip == "" {
+			ip = firewall.IPFrom(ctx)
+		}
+		switch event {
+		case "login_fail", "code_fail":
+			if ip != "" {
+				p.fw.Fail(ctx, ip, event)
+			}
+		}
+	}
+}
+
+// allow проверяет rate-limit корзины username и IP (как /auth/start);
+// при исчерпании сам отвечает 429.
+func (p *PublicAPI) allow(w http.ResponseWriter, r *http.Request, username string) bool {
+	if !p.rl.Allow("u:"+username) || !p.rl.Allow("ip:"+clientIP(r)) {
+		w.Header().Set("Retry-After", strconv.Itoa(rlRetryAfterSec))
+		writeJSON(w, http.StatusTooManyRequests,
+			map[string]any{"error": "rate_limited", "retry_after": rlRetryAfterSec})
+		return false
+	}
+	return true
 }
 
 // ---- POST /api/v1/auth/start ----
@@ -138,10 +194,7 @@ func (p *PublicAPI) handleStart(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	ip := clientIP(r)
 
-	if !p.rl.Allow("u:"+req.Username) || !p.rl.Allow("ip:"+ip) {
-		w.Header().Set("Retry-After", strconv.Itoa(rlRetryAfterSec))
-		writeJSON(w, http.StatusTooManyRequests,
-			map[string]any{"error": "rate_limited", "retry_after": rlRetryAfterSec})
+	if !p.allow(w, r, req.Username) {
 		return
 	}
 
@@ -278,11 +331,28 @@ type combinedReq struct {
 }
 
 // handleCombined — вход одним вызовом «пароль + код» (код любой:
-// доставленный, TOTP или резервный). Аудит login_ok/login_fail пишет
-// ядро (VerifyPasswordAndCode) — по одной записи на попытку.
+// доставленный, TOTP или резервный). Rate-limit по образцу /auth/start
+// (аудит раунд-2: combined был единственным входом с argon2 без лимита);
+// уже заблокированный пользователь получает 423 ДО лимита — блокировка
+// приоритетнее, а путь дёшев (до argon2 не доходит в любом случае).
+// Аудит login_ok/login_fail пишет ядро (VerifyPasswordAndCode) — по
+// одной записи на попытку.
 func (p *PublicAPI) handleCombined(w http.ResponseWriter, r *http.Request) {
 	var req combinedReq
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	ctx := r.Context()
+	if u, err := p.st.UserByUsername(ctx, req.Username); err == nil && p.core.FailLocked(ctx, u.ID) {
+		writeError(w, http.StatusLocked, "locked")
+		return
+	}
+	// Корзины с собственным префиксом: исчерпание попыток combined не
+	// отрезает тому же пользователю выдачу кода через /auth/start.
+	if !p.rl.Allow("cu:"+req.Username) || !p.rl.Allow("cip:"+clientIP(r)) {
+		w.Header().Set("Retry-After", strconv.Itoa(rlRetryAfterSec))
+		writeJSON(w, http.StatusTooManyRequests,
+			map[string]any{"error": "rate_limited", "retry_after": rlRetryAfterSec})
 		return
 	}
 	user, ok, err := p.core.VerifyPasswordAndCode(r.Context(), req.Username, req.Password, req.Code, auth.LoginCodePurposes...)
@@ -306,8 +376,17 @@ type pollReq struct {
 }
 
 // handlePoll — статус push-челленджа (клиент опрашивает, пока пользователь
-// решает: «Подтвердить»/«Это не я» в Telegram).
+// решает: «Подтвердить»/«Это не я» в Telegram). Эндпоинт без аутентификации
+// (статус-оракул по UUID), поэтому ограничен по IP щадящей корзиной
+// pollRLRate/pollRLBurst — poll-цикл браузера (раз в ~1.5 с) проходит,
+// массовый перебор UUID — нет (аудит раунд-2, N6).
 func (p *PublicAPI) handlePoll(w http.ResponseWriter, r *http.Request) {
+	if !p.rlPoll.Allow("ip:" + clientIP(r)) {
+		w.Header().Set("Retry-After", strconv.Itoa(rlRetryAfterSec))
+		writeJSON(w, http.StatusTooManyRequests,
+			map[string]any{"error": "rate_limited", "retry_after": rlRetryAfterSec})
+		return
+	}
 	var req pollReq
 	if !decodeJSON(w, r, &req) {
 		return
@@ -365,6 +444,11 @@ func (p *PublicAPI) handleWABegin(w http.ResponseWriter, r *http.Request) {
 	}
 	var req waBeginReq
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// Rate-limit по образцу /auth/start (тот же первый фактор — пароль;
+	// аудит раунд-2: begin был входом с argon2 без лимита).
+	if !p.allow(w, r, req.Username) {
 		return
 	}
 	ctx := r.Context()

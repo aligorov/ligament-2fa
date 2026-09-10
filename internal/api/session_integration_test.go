@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -474,5 +476,140 @@ func TestWebLogin2FAPasskeyWindow(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("активных pending-окон = %d, want 0", n)
+	}
+}
+
+// ---- аудит раунд-2, Фаза 2b ----
+
+// fakeGuard — фейковый fail2ban-guard: собирает вызовы Fail (паттерн
+// app_security_test.go).
+type fakeGuard struct {
+	mu    sync.Mutex
+	fails []string
+}
+
+func (g *fakeGuard) Fail(_ context.Context, ip, reason string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.fails = append(g.fails, ip+" "+reason)
+}
+
+func (g *fakeGuard) snapshot() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.fails...)
+}
+
+// TestSessionAuditFeedsFail2ban: audit-хелперы SessionAPI/PublicAPI кормят
+// Guard.Fail событиями login_fail/code_fail (аудит раунд-2, N3 — эти пути
+// пишут аудит в обход core.audit); ok и посторонние события guard не кормят;
+// пустой IP берётся из контекста файрвола, как в core.audit.
+func TestSessionAuditFeedsFail2ban(t *testing.T) {
+	st, set, _ := setup(t)
+	g := &fakeGuard{}
+	sess := &SessionAPI{st: st, m: set, fw: g}
+	pub := &PublicAPI{st: st, m: set, fw: g}
+	ctx := context.Background()
+
+	sess.audit(ctx, "u1", "login_fail", "203.0.113.10", "fail", nil)
+	pub.audit(ctx, "u1", "login_fail", "203.0.113.10", "fail", nil)
+	sess.audit(ctx, "u1", "code_fail", "203.0.113.10", "fail", nil)
+	// Не кормят: успех и события вне фильтра core.audit.
+	sess.audit(ctx, "u1", "login_ok", "203.0.113.10", "ok", nil)
+	pub.audit(ctx, "u1", "api_start", "203.0.113.10", "fail", nil)
+	// Пустой IP — из контекста middleware файрвола.
+	sess.audit(firewall.WithIP(ctx, "203.0.113.11"), "u1", "login_fail", "", "fail", nil)
+
+	got := g.snapshot()
+	want := []string{
+		"203.0.113.10 login_fail",
+		"203.0.113.10 login_fail",
+		"203.0.113.10 code_fail",
+		"203.0.113.11 login_fail",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Guard.Fail вызовов = %v, хочу %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Fail #%d = %q, хочу %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestWebFormLoginFailFeedsFail2ban: неудачные web-логины (шаг 1, пароль)
+// наращивают счётчик guard — веб-форма больше не невидима для fail2ban.
+func TestWebFormLoginFailFeedsFail2ban(t *testing.T) {
+	st, set, _ := setup(t)
+	ctx := context.Background()
+	g := &fakeGuard{}
+	core := auth.NewCore(st, set, nil, nil, auth.NewLocalVerifier(st), nil)
+	sess := NewSessionAPI(core, st, auth.NewLocalVerifier(st), set)
+	sess.SetFirewall(g)
+	t.Cleanup(sess.Stop)
+	r := chi.NewRouter()
+	sess.Register(r)
+
+	mkUser(t, ctx, st, "webf2b", nil)
+	for i := 0; i < 3; i++ {
+		rec := doReq(t, r, http.MethodPost, "/api/v1/login",
+			map[string]string{"username": "webf2b", "password": "wrong-password"})
+		wantStatus(t, rec, http.StatusUnauthorized)
+	}
+	if got := g.snapshot(); len(got) != 3 {
+		t.Fatalf("Guard.Fail после 3 неудачных web-логинов: %v, хочу 3 записи", got)
+	}
+}
+
+// TestPushClaimPurposeFilter: push_claim (consumePushApproved) обменивает
+// на web-сессию ТОЛЬКО push-челленджи входа (purpose=api — созданы
+// /auth/start и web-формой после шага-1 с паролем). RADIUS-push
+// (purpose=radius и произвольный svc Wi-Fi/VPN) и повторный claim
+// отклоняются (аудит раунд-2, N2: сквозной путь RADIUS-push → web-сессия).
+func TestPushClaimPurposeFilter(t *testing.T) {
+	st, set, _ := setup(t)
+	ctx := context.Background()
+	user := mkUser(t, ctx, st, "pushclaim", nil)
+	sess := &SessionAPI{st: st, m: set}
+
+	approved := "approved"
+	mk := func(purpose string) *store.Challenge {
+		ch := &store.Challenge{
+			UserID: user.ID, Channel: channel.AppPush,
+			PushState: &approved, ExpiresAt: time.Now().Add(time.Minute),
+			AttemptsLeft: 1, Purpose: purpose,
+		}
+		if err := st.ChallengeCreate(ctx, ch); err != nil {
+			t.Fatalf("создать push-челлендж (%s): %v", purpose, err)
+		}
+		return ch
+	}
+	radiusCh := mk("radius")
+	svcCh := mk("Wi-Fi: Корпоративная сеть") // произвольный svc RADIUS app_push
+	apiCh := mk("api")
+
+	if sess.consumePushApproved(ctx, user, radiusCh.ID) {
+		t.Error("RADIUS-purpose push (telegram) не должен обмениваться на web-сессию")
+	}
+	if sess.consumePushApproved(ctx, user, svcCh.ID) {
+		t.Error("RADIUS-purpose push (svc Wi-Fi) не должен обмениваться на web-сессию")
+	}
+	if !sess.consumePushApproved(ctx, user, apiCh.ID) {
+		t.Fatal("web-purpose (api) push должен обмениваться на web-сессию")
+	}
+	// Челлендж погашен одноразовым claim — повторно не обменивается.
+	if sess.consumePushApproved(ctx, user, apiCh.ID) {
+		t.Error("повторный claim того же push не должен проходить")
+	}
+	// Отклонённые RADIUS-push остались непогашенными (RADIUS-удержание
+	// завершится push_timeout, а не чужим входом).
+	for _, ch := range []*store.Challenge{radiusCh, svcCh} {
+		fresh, err := st.ChallengeGet(ctx, ch.ID)
+		if err != nil {
+			t.Fatalf("ChallengeGet: %v", err)
+		}
+		if fresh.UsedAt != nil {
+			t.Errorf("челлендж %s погашен web-claim'ом", ch.Purpose)
+		}
 	}
 }

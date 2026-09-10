@@ -266,6 +266,20 @@ func (b *Bot) handleCallback(ctx context.Context, queryID string, chatID, msgID 
 		answer()
 		return
 	}
+	// Закрытый челлендж не аппрувим (аудит раунд-2, N8): окно действия
+	// проверяется здесь, а не только в потребителе claim — просроченный
+	// или уже погашенный push остаётся закрытым, каким бы ни был
+	// push_state в строке.
+	if ch.UsedAt != nil {
+		_ = b.cl.editMessageText(ctx, chatID, msgID, "⏳ Уже обработано")
+		answer()
+		return
+	}
+	if !time.Now().Before(ch.ExpiresAt) {
+		_ = b.cl.editMessageText(ctx, chatID, msgID, "⏳ Запрос истёк")
+		answer()
+		return
+	}
 	if ch.PushState == nil || *ch.PushState != "pending" {
 		_ = b.cl.editMessageText(ctx, chatID, msgID, "⏳ Уже обработано")
 		answer()

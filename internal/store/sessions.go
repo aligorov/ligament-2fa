@@ -12,15 +12,40 @@ import (
 )
 
 // SessionCreate создаёт сессию: tokenHash — хеш cookie-токена, срок жизни
-// expires_at = now + ttl.
+// expires_at = now + ttl. Режим входа не фиксируется (легаси-вызовы;
+// web-входы используют SessionCreateMode).
 func (s *Store) SessionCreate(ctx context.Context, tokenHash []byte, userID uuid.UUID, csrf string, ttl time.Duration) error {
+	return s.SessionCreateMode(ctx, tokenHash, userID, csrf, ttl, "")
+}
+
+// SessionCreateMode — SessionCreate с фиксацией режима входа (auth_mode:
+// 'password+code', 'trusted_device', 'push_match', 'password_only', …) —
+// по нему OIDC собирает клейм amr ID-токена. Пустая строка — легаси-сессия
+// без режима (безопасный дефолт amr у потребителя).
+func (s *Store) SessionCreateMode(ctx context.Context, tokenHash []byte, userID uuid.UUID, csrf string, ttl time.Duration, authMode string) error {
 	_, err := s.Pool().Exec(ctx,
-		`INSERT INTO sessions (token_hash, user_id, csrf, expires_at) VALUES ($1, $2, $3, $4)`,
-		tokenHash, userID, csrf, time.Now().Add(ttl))
+		`INSERT INTO sessions (token_hash, user_id, csrf, expires_at, auth_mode) VALUES ($1, $2, $3, $4, $5)`,
+		tokenHash, userID, csrf, time.Now().Add(ttl), authMode)
 	if err != nil {
 		return fmt.Errorf("store: создать сессию: %w", err)
 	}
 	return nil
+}
+
+// SessionAuthMode возвращает режим входа сессии ('' — легаси, создана до
+// появления auth_mode). Отдельный метод (как OIDCSessionInfo), чтобы не
+// менять сигнатуру SessionGet.
+func (s *Store) SessionAuthMode(ctx context.Context, tokenHash []byte) (string, error) {
+	var mode string
+	err := s.Pool().QueryRow(ctx,
+		`SELECT auth_mode FROM sessions WHERE token_hash = $1`, tokenHash).Scan(&mode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: чтение auth_mode сессии: %w", err)
+	}
+	return mode, nil
 }
 
 // SessionGet возвращает пользователя и CSRF-токен по хешу cookie-токена.

@@ -216,6 +216,13 @@ func BuildRouter(d Deps) *Router {
 
 	pub := NewPublicAPI(d.Core, d.WA, d.St, d.PV, d.M)
 	sess := NewSessionAPI(d.Core, d.St, d.PV, d.M)
+	if d.FW != nil {
+		// Неудачные web-логины (JSON/HTML) и логины публичного API кормят
+		// fail2ban наравне с RADIUS (аудит раунд-2, N3: эти пути писали
+		// аудит в обход core.audit — мимо guard).
+		pub.SetFirewall(d.FW)
+		sess.SetFirewall(d.FW)
+	}
 	me := NewMeAPI(d.Core, d.WA, d.St, d.Box, d.PV, d.M)
 	admin := NewAdminAPI(d.St, d.M, d.Lic)
 	if d.FW != nil {

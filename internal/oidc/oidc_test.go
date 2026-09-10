@@ -218,6 +218,30 @@ func TestSplitAMR(t *testing.T) {
 	}
 }
 
+// TestAMRForMode: режим входа сессии (sessions.auth_mode) → строка amr.
+// Каждый режим finishLogin/loginDone покрыт; легаси-пустота — безопасный
+// дефолт pwd,mfa (аудит раунд-2: amr раньше был константой pwd,mfa и
+// завышал заверение безфакторных сессий).
+func TestAMRForMode(t *testing.T) {
+	for _, tc := range []struct{ mode, want string }{
+		{"password+code", "pwd,mfa"},  // пароль + доставленный код/TOTP/резервный
+		{"passkey", "pwd,mfa"},        // пароль + церемония WebAuthn
+		{"push_match", "pwd,mfa"},     // push-челлендж входа после шага-1 с паролем
+		{"password_only", "pwd"},      // вторых факторов у пользователя нет
+		{"trusted_device", "pwd,dvc"}, // пароль + кука доверенного устройства
+		{"", "pwd,mfa"},               // легаси-сессия до auth_mode
+	} {
+		if got := AMRForMode(tc.mode); got != tc.want {
+			t.Errorf("AMRForMode(%q) = %q, хочу %q", tc.mode, got, tc.want)
+		}
+		// Строка обязана разбираться SplitAMR в ожидаемый массив клейма.
+		parts := SplitAMR(AMRForMode(tc.mode))
+		if len(parts) == 0 || parts[0] != "pwd" {
+			t.Errorf("AMRForMode(%q): клейм без pwd: %v", tc.mode, parts)
+		}
+	}
+}
+
 // TestHasScopeAndFilter: точное вхождение scope; фильтр оставляет только
 // поддерживаемые.
 func TestHasScopeAndFilter(t *testing.T) {
