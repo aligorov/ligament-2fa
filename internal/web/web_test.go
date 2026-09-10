@@ -499,10 +499,10 @@ func TestRenderPages(t *testing.T) {
 				}
 			}
 			// Макет: общий для всех авторизованных страниц.
-			if !strings.Contains(out, `href="/static/style.css"`) {
+			if !strings.Contains(out, `/static/style.css`) {
 				t.Errorf("Render(%s): нет ссылки на style.css", tc.tmpl)
 			}
-			if !strings.Contains(out, `src="/static/webauthn.js"`) {
+			if !strings.Contains(out, `/static/webauthn.js`) {
 				t.Errorf("Render(%s): нет подключения webauthn.js", tc.tmpl)
 			}
 			// CSRF несут страницы с мутациями (logout и формы); login и

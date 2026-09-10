@@ -28,8 +28,14 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final auth = context.watch<AuthState>();
-    if (auth.activePrompt != null && !_modalShown) {
+    final auth = context.read<AuthState>();
+    _checkPrompts(auth);
+  }
+
+  void _checkPrompts(AuthState auth) {
+    if (auth.activePrompt == null) {
+      _modalShown = false;
+    } else if (!_modalShown) {
       _modalShown = true;
       final prompt = auth.activePrompt!;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -41,7 +47,7 @@ class _HomeScreenState extends State<HomeScreen> {
           context: context,
           barrierDismissible: true,
           builder: (_) => ApprovalModal(prompt: prompt),
-        ).then((_) {
+        ).whenComplete(() {
           _modalShown = false;
           if (mounted) {
             context.read<AuthState>().dismissPrompt(prompt['challenge_id']?.toString());
@@ -50,7 +56,9 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     }
 
-    if (auth.activeSupportPrompt != null && !_supportModalShown) {
+    if (auth.activeSupportPrompt == null) {
+      _supportModalShown = false;
+    } else if (!_supportModalShown) {
       _supportModalShown = true;
       final prompt = auth.activeSupportPrompt!;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -62,7 +70,7 @@ class _HomeScreenState extends State<HomeScreen> {
           context: context,
           barrierDismissible: false,
           builder: (_) => SupportApprovalModal(prompt: prompt),
-        ).then((_) {
+        ).whenComplete(() {
           _supportModalShown = false;
         });
       });
@@ -120,6 +128,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthState>();
+    _checkPrompts(auth);
 
     final pages = [
       _buildRequestsTab(auth),
@@ -637,6 +646,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final support = auth.support;
     final is1C = support.category == '1c';
     final isActive = support.state == SupportSessionState.active;
+    final isAuthorizing = support.state == SupportSessionState.authorizing;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -644,12 +654,16 @@ class _HomeScreenState extends State<HomeScreen> {
       decoration: BoxDecoration(
         color: isActive
             ? const Color(0xFFEF4444).withValues(alpha: 0.15)
-            : (is1C ? const Color(0xFFF59E0B).withValues(alpha: 0.12) : const Color(0xFF0284C7).withValues(alpha: 0.12)),
+            : (isAuthorizing
+                ? const Color(0xFF10B981).withValues(alpha: 0.15)
+                : (is1C ? const Color(0xFFF59E0B).withValues(alpha: 0.12) : const Color(0xFF0284C7).withValues(alpha: 0.12))),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: isActive
               ? const Color(0xFFEF4444)
-              : (is1C ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8)),
+              : (isAuthorizing
+                  ? const Color(0xFF10B981)
+                  : (is1C ? const Color(0xFFF59E0B) : const Color(0xFF38BDF8))),
           width: 1.5,
         ),
       ),
@@ -660,11 +674,15 @@ class _HomeScreenState extends State<HomeScreen> {
             decoration: BoxDecoration(
               color: isActive
                   ? const Color(0xFFEF4444)
-                  : (is1C ? const Color(0xFFF59E0B) : const Color(0xFF0284C7)),
+                  : (isAuthorizing
+                      ? const Color(0xFF10B981)
+                      : (is1C ? const Color(0xFFF59E0B) : const Color(0xFF0284C7))),
               shape: BoxShape.circle,
             ),
             child: Icon(
-              isActive ? Icons.screen_share : Icons.hourglass_top,
+              isActive
+                  ? Icons.screen_share
+                  : (isAuthorizing ? Icons.verified_user : Icons.hourglass_top),
               color: Colors.white,
               size: 20,
             ),
@@ -677,7 +695,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text(
                   isActive
                       ? '🔴 Идет удаленный сеанс (${is1C ? '1С' : 'IT'})'
-                      : '⏳ Заявка на помощь (${is1C ? '1С-поддержка' : 'IT-служба'})',
+                      : (isAuthorizing
+                          ? '🟡 Запрос на подключение (${is1C ? '1С' : 'IT'})'
+                          : '⏳ Заявка на помощь (${is1C ? '1С-поддержка' : 'IT-служба'})'),
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
@@ -688,9 +708,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text(
                   isActive
                       ? 'Экран транслируется инженеру поддержки'
-                      : (support.problemSummary?.isNotEmpty == true
-                          ? '"${support.problemSummary}"'
-                          : 'Ожидание подключения инженера...'),
+                      : (isAuthorizing
+                          ? 'Инженер ожидает ввода контрольного числа'
+                          : (support.problemSummary?.isNotEmpty == true
+                              ? '"${support.problemSummary}"'
+                              : 'Ожидание подключения инженера...')),
                   style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 11),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -699,6 +721,31 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const SizedBox(width: 8),
+          if (isAuthorizing && auth.activeSupportPrompt != null) ...[
+            ElevatedButton.icon(
+              onPressed: () {
+                _supportModalShown = true;
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (_) => SupportApprovalModal(prompt: auth.activeSupportPrompt!),
+                ).whenComplete(() {
+                  _supportModalShown = false;
+                });
+              },
+              icon: const Icon(Icons.check_circle, size: 14),
+              label: const Text('Ввести код', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF10B981),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+            const SizedBox(width: 6),
+          ],
           if (isActive || support.state == SupportSessionState.requested || support.state == SupportSessionState.authorizing) ...[
             ElevatedButton.icon(
               onPressed: () => _showInSessionChatModal(context, auth),

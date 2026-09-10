@@ -1,19 +1,19 @@
 {{define "layout"}}{{template "layout_app" .}}{{end}}
 {{define "content"}}
 <div class="page-head">
-  <div class="page-title-row" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+  <div class="page-title-row">
     <div>
       <h1 class="page-title">🛟 Удаленная помощь (SOS)</h1>
       <p class="page-sub">Очередь экстренных обращений сотрудников компании за помощью и удаленное подключение к рабочим местам.</p>
     </div>
-    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+    <div class="support-header-actions">
       <button type="button" class="btn ghost sm" id="btn-toggle-sound" title="Включить звуковой сигнал при появлении новых заявок">
         🔔 Звук: Выкл
       </button>
       <button type="button" class="btn secondary sm" id="btn-open-support-settings">
         ⚙️ Категории и пороги
       </button>
-      <form action="/admin/support" method="post" style="display: inline;">
+      <form action="/admin/support" method="post" class="inline-form">
         {{csrf .CSRF}}
         <input type="hidden" name="action" value="cleanup">
         <button type="submit" class="btn ghost sm danger" data-confirm="Удалить все завершенные, отклоненные и отмененные обращения?">
@@ -36,7 +36,7 @@
   </a>
 
   <a class="card support-kpi-card {{if eq .StatusFilter "connecting"}}active{{end}}" href="/admin/support?status=connecting{{if .CategoryFilter}}&category={{.CategoryFilter}}{{end}}">
-    <div class="support-kpi-val" style="color: var(--primary);">
+    <div class="support-kpi-val kpi-connecting">
       {{.ConnectingCount}}
     </div>
     <div class="support-kpi-label">
@@ -45,7 +45,7 @@
   </a>
 
   <a class="card support-kpi-card {{if eq .StatusFilter "active"}}active{{end}}" href="/admin/support?status=active{{if .CategoryFilter}}&category={{.CategoryFilter}}{{end}}">
-    <div class="support-kpi-val" style="color: var(--ok, #10b981);">
+    <div class="support-kpi-val kpi-active">
       {{.ActiveCount}}
     </div>
     <div class="support-kpi-label">
@@ -54,7 +54,7 @@
   </a>
 
   <a class="card support-kpi-card {{if eq .StatusFilter "closed"}}active{{end}}" href="/admin/support?status=closed{{if .CategoryFilter}}&category={{.CategoryFilter}}{{end}}">
-    <div class="support-kpi-val" style="color: var(--muted);">
+    <div class="support-kpi-val kpi-closed">
       {{.ClosedCount}}
     </div>
     <div class="support-kpi-label">
@@ -77,15 +77,15 @@
   </div>
 
   <div class="support-filters-group">
-    <span class="muted" style="font-size: 0.85rem;">Статус:</span>
+    <span class="muted support-filter-label">Статус:</span>
     <a class="btn {{if or (eq .StatusFilter "") (eq .StatusFilter "all")}}secondary{{else}}ghost{{end}} sm" href="/admin/support?{{if .CategoryFilter}}category={{.CategoryFilter}}&{{end}}status=all">
       Все
     </a>
     <a class="btn {{if eq .StatusFilter "requested"}}warn{{else}}ghost{{end}} sm" href="/admin/support?{{if .CategoryFilter}}category={{.CategoryFilter}}&{{end}}status=requested">
-      Ожидают {{if .WaitingCount}}<span class="badge warn sm" style="margin-left: 4px;">{{.WaitingCount}}</span>{{end}}
+      Ожидают {{if .WaitingCount}}<span class="badge warn sm badge-spaced">{{.WaitingCount}}</span>{{end}}
     </a>
     <a class="btn {{if eq .StatusFilter "active"}}ok{{else}}ghost{{end}} sm" href="/admin/support?{{if .CategoryFilter}}category={{.CategoryFilter}}&{{end}}status=active">
-      Активные {{if .ActiveCount}}<span class="badge ok sm" style="margin-left: 4px;">{{.ActiveCount}}</span>{{end}}
+      Активные {{if .ActiveCount}}<span class="badge ok sm badge-spaced">{{.ActiveCount}}</span>{{end}}
     </a>
     <a class="btn {{if eq .StatusFilter "closed"}}neutral{{else}}ghost{{end}} sm" href="/admin/support?{{if .CategoryFilter}}category={{.CategoryFilter}}&{{end}}status=closed">
       Завершенные
@@ -157,10 +157,10 @@
           {{if eq .Status "active"}}Перейти к экрану 🖥{{else if $isConnecting}}К авторизации 🔵{{else}}Подключиться ⚡{{end}}
         </a>
       {{else}}
-        <span class="muted" style="font-size: 0.8rem;">Сессия закрыта</span>
+        <span class="muted support-closed-text">Сессия закрыта</span>
       {{end}}
 
-      <form action="/admin/support" method="post" style="display: inline;">
+      <form action="/admin/support" method="post" class="inline-form">
         {{csrf $.CSRF}}
         <input type="hidden" name="action" value="delete">
         <input type="hidden" name="id" value="{{.ID}}">
@@ -174,116 +174,116 @@
 
 <!-- Модальное окно настроек категорий и порогов телеметрии -->
 <div id="support-settings-modal" class="viewer-modal-backdrop">
-  <div class="card support-modal-window" style="width: 960px; max-width: 96vw; max-height: 90vh; display: flex; flex-direction: column; padding: 0; overflow: hidden; box-sizing: border-box; background: var(--surface, #1e293b); border: 1px solid var(--line, #334155); border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.75);">
+  <div class="support-modal-window">
     <!-- Sticky Header -->
-    <div style="display: flex; justify-content: space-between; align-items: flex-start; padding: 20px 24px 16px; border-bottom: 1px solid var(--line, #334155); background: var(--surface, #1e293b); flex-shrink: 0;">
-      <div>
-        <h3 style="margin: 0; font-size: 1.25rem; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 8px;">
+    <div class="support-modal-header">
+      <div class="support-modal-header-text">
+        <h3 class="support-modal-title">
           <span>⚙️</span> Настройки категорий SOS и порогов телеметрии
         </h3>
-        <p class="muted" style="margin: 6px 0 0 0; font-size: 0.85rem; color: #94a3b8;">
+        <p class="support-modal-desc">
           Маршрутизация обращений сотрудников (Email / Telegram) и тревожные пороги ресурсов ПК.
         </p>
       </div>
-      <button type="button" class="btn ghost sm" id="btn-close-support-settings" title="Закрыть" style="font-size: 1.25rem; line-height: 1; padding: 6px 12px; border-radius: 8px; cursor: pointer; color: #94a3b8;">✕</button>
+      <button type="button" class="btn ghost sm support-modal-close-btn" id="btn-close-support-settings" title="Закрыть">✕</button>
     </div>
 
     <!-- Main Form -->
-    <form action="/admin/support" method="post" style="display: flex; flex-direction: column; flex: 1; min-height: 0; margin: 0; width: 100%;">
+    <form action="/admin/support" method="post" class="support-modal-form">
       {{csrf .CSRF}}
       <input type="hidden" name="action" value="save_settings">
 
       <!-- Scrollable Body -->
-      <div class="support-modal-scroll-body" style="overflow-y: auto; flex: 1; min-height: 0; padding: 20px 24px;">
+      <div class="support-modal-scroll-body">
         
         <!-- Секция 1: Категории -->
-        <div style="margin-bottom: 24px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <div class="support-modal-section">
+          <div class="support-section-title-row">
             <div>
-              <h4 style="margin: 0; font-size: 1rem; font-weight: 600; color: #f1f5f9;">Категории обращений и маршрутизация</h4>
-              <p class="muted" style="margin: 2px 0 0; font-size: 0.8rem; color: #94a3b8;">При поступлении заявки инженерам отправляется push, email и уведомление в Telegram.</p>
+              <h4 class="support-section-heading">Категории обращений и маршрутизация</h4>
+              <p class="support-section-subheading">При поступлении заявки инженерам отправляется push, email и уведомление в Telegram.</p>
             </div>
-            <button type="button" class="btn sm ghost" id="btn-add-category-row" style="border: 1px dashed var(--accent, #38bdf8); color: var(--accent, #38bdf8); font-weight: 600; padding: 6px 14px; border-radius: 8px;">+ Добавить категорию</button>
+            <button type="button" class="btn sm ghost support-add-category-btn" id="btn-add-category-row">+ Добавить категорию</button>
           </div>
 
-          <div style="border: 1px solid var(--line, #334155); border-radius: 10px; overflow-x: auto; background: var(--bg, #0f172a);">
-            <table class="table" id="categories-table" style="width: 100%; min-width: 780px; border-collapse: collapse; margin: 0;">
+          <div class="support-categories-table-wrap">
+            <table class="table support-categories-table" id="categories-table">
               <thead>
-                <tr style="background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid var(--line, #334155);">
-                  <th style="width: 100px; padding: 10px 12px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; text-align: left;">ID</th>
-                  <th style="width: 160px; padding: 10px 12px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; text-align: left;">Название</th>
-                  <th style="width: 70px; padding: 10px 12px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; text-align: center;">Иконка</th>
-                  <th style="padding: 10px 12px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; text-align: left;">Email-адреса пересылки</th>
-                  <th style="width: 170px; padding: 10px 12px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; text-align: left;">Telegram Chat ID</th>
-                  <th style="width: 46px; padding: 10px 12px;"></th>
+                <tr>
+                  <th class="th-cat-id">ID</th>
+                  <th class="th-cat-name">Название</th>
+                  <th class="th-cat-icon">Иконка</th>
+                  <th class="th-cat-emails">Email-адреса пересылки</th>
+                  <th class="th-cat-tg">Telegram Chat ID</th>
+                  <th class="th-cat-del"></th>
                 </tr>
               </thead>
               <tbody id="categories-tbody">
                 {{range .Categories}}
-                <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.06);">
-                  <td style="padding: 8px 12px;">
-                    <input type="text" name="cat_id[]" class="input sm mono" value="{{.ID}}" required placeholder="it" style="width: 100%; box-sizing: border-box; font-family: monospace;">
+                <tr>
+                  <td>
+                    <input type="text" name="cat_id[]" class="input sm mono cat-input-field" value="{{.ID}}" required placeholder="it">
                   </td>
-                  <td style="padding: 8px 12px;">
-                    <input type="text" name="cat_title[]" class="input sm" value="{{.Name}}" required placeholder="IT-служба" style="width: 100%; box-sizing: border-box;">
+                  <td>
+                    <input type="text" name="cat_title[]" class="input sm cat-input-field" value="{{.Name}}" required placeholder="IT-служба">
                   </td>
-                  <td style="padding: 8px 12px; text-align: center;">
-                    <input type="text" name="cat_icon[]" class="input sm" value="{{.Icon}}" style="width: 100%; box-sizing: border-box; text-align: center;" placeholder="🖥">
+                  <td class="td-icon-center">
+                    <input type="text" name="cat_icon[]" class="input sm cat-input-field cat-icon-input" value="{{.Icon}}" placeholder="🖥">
                   </td>
-                  <td style="padding: 8px 12px;">
-                    <input type="text" name="cat_emails[]" class="input sm" value="{{join .Emails ", "}}" placeholder="support@corp.ru" style="width: 100%; box-sizing: border-box;">
+                  <td>
+                    <input type="text" name="cat_emails[]" class="input sm cat-input-field" value="{{join .Emails ", "}}" placeholder="support@corp.ru">
                   </td>
-                  <td style="padding: 8px 12px;">
-                    <input type="text" name="cat_telegram[]" class="input sm mono" value="{{if .TelegramChat}}{{.TelegramChat}}{{end}}" placeholder="-100..." style="width: 100%; box-sizing: border-box; font-family: monospace;">
+                  <td>
+                    <input type="text" name="cat_telegram[]" class="input sm mono cat-input-field" value="{{if .TelegramChat}}{{.TelegramChat}}{{end}}" placeholder="-100...">
                   </td>
-                  <td style="padding: 8px 12px; text-align: center;">
-                    <button type="button" class="btn ghost sm danger cat-row-del" title="Удалить категорию" style="padding: 4px 8px; border-radius: 6px; cursor: pointer; color: #ef4444;">✕</button>
+                  <td class="td-del-center">
+                    <button type="button" class="btn ghost sm danger cat-row-del" title="Удалить категорию">✕</button>
                   </td>
                 </tr>
                 {{end}}
               </tbody>
             </table>
           </div>
-          <div style="margin-top: 8px; font-size: 0.8rem; color: #64748b; line-height: 1.4;">
+          <div class="support-categories-help">
             💡 Письмо приходит на указанные адреса с полем <code>Reply-To</code> сотрудника, ФИО, именем ПК, IP и описанием проблемы. <code>Telegram Chat ID</code> — числовой ID группы или канала (начинается с <code>-100</code>).
           </div>
         </div>
 
         <!-- Секция 2: Пороги телеметрии -->
-        <div style="padding: 18px 20px; background: var(--bg, #0f172a); border: 1px solid var(--line, #334155); border-radius: 12px;">
-          <h4 style="margin: 0 0 4px 0; font-size: 1rem; font-weight: 600; color: #f1f5f9;">Пороги предупреждений телеметрии (Диски и 100% CPU)</h4>
-          <p class="muted" style="margin: 0 0 14px 0; font-size: 0.8rem; color: #94a3b8;">При превышении порогов индикаторы состояния в консоли оператора загораются тревожным цветом.</p>
+        <div class="support-thresholds-section">
+          <h4 class="support-section-heading">Пороги предупреждений телеметрии (Диски и 100% CPU)</h4>
+          <p class="support-section-subheading">При превышении порогов индикаторы состояния в консоли оператора загораются тревожным цветом.</p>
           
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
-            <div style="display: flex; flex-direction: column; gap: 6px;">
-              <span style="font-size: 0.8rem; font-weight: 500; color: #cbd5e1;">Порог заполнения диска (%)</span>
-              <div style="position: relative; display: flex; align-items: center;">
-                <input type="number" name="disk_warning_percent" class="input sm" value="{{if .Settings.DiskWarningPercent}}{{.Settings.DiskWarningPercent}}{{else}}90{{end}}" min="1" max="100" style="width: 100%; padding-right: 28px; box-sizing: border-box;">
-                <span style="position: absolute; right: 10px; color: #64748b; font-size: 0.85rem; pointer-events: none;">%</span>
+          <div class="support-thresholds-grid">
+            <div class="support-threshold-col">
+              <span class="support-threshold-label">Порог заполнения диска (%)</span>
+              <div class="support-unit-wrap">
+                <input type="number" name="disk_warning_percent" class="input sm support-unit-input" value="{{if .Settings.DiskWarningPercent}}{{.Settings.DiskWarningPercent}}{{else}}90{{end}}" min="1" max="100">
+                <span class="support-unit-suffix">%</span>
               </div>
             </div>
 
-            <div style="display: flex; flex-direction: column; gap: 6px;">
-              <span style="font-size: 0.8rem; font-weight: 500; color: #cbd5e1;">Мин. места на диске (ГБ)</span>
-              <div style="position: relative; display: flex; align-items: center;">
-                <input type="number" name="disk_warning_min_gb" class="input sm" value="{{if .Settings.DiskWarningMinGB}}{{.Settings.DiskWarningMinGB}}{{else}}10{{end}}" min="1" style="width: 100%; padding-right: 32px; box-sizing: border-box;">
-                <span style="position: absolute; right: 10px; color: #64748b; font-size: 0.85rem; pointer-events: none;">ГБ</span>
+            <div class="support-threshold-col">
+              <span class="support-threshold-label">Мин. места на диске (ГБ)</span>
+              <div class="support-unit-wrap">
+                <input type="number" name="disk_warning_min_gb" class="input sm support-unit-input" value="{{if .Settings.DiskWarningMinGB}}{{.Settings.DiskWarningMinGB}}{{else}}10{{end}}" min="1">
+                <span class="support-unit-suffix">ГБ</span>
               </div>
             </div>
 
-            <div style="display: flex; flex-direction: column; gap: 6px;">
-              <span style="font-size: 0.8rem; font-weight: 500; color: #cbd5e1;">Порог нагрузки CPU (%)</span>
-              <div style="position: relative; display: flex; align-items: center;">
-                <input type="number" name="cpu_warning_percent" class="input sm" value="{{if .Settings.CpuWarningPercent}}{{.Settings.CpuWarningPercent}}{{else}}95{{end}}" min="1" max="100" style="width: 100%; padding-right: 28px; box-sizing: border-box;">
-                <span style="position: absolute; right: 10px; color: #64748b; font-size: 0.85rem; pointer-events: none;">%</span>
+            <div class="support-threshold-col">
+              <span class="support-threshold-label">Порог нагрузки CPU (%)</span>
+              <div class="support-unit-wrap">
+                <input type="number" name="cpu_warning_percent" class="input sm support-unit-input" value="{{if .Settings.CpuWarningPercent}}{{.Settings.CpuWarningPercent}}{{else}}95{{end}}" min="1" max="100">
+                <span class="support-unit-suffix">%</span>
               </div>
             </div>
 
-            <div style="display: flex; flex-direction: column; gap: 6px;">
-              <span style="font-size: 0.8rem; font-weight: 500; color: #cbd5e1;">Пик 100% CPU (сек)</span>
-              <div style="position: relative; display: flex; align-items: center;">
-                <input type="number" name="cpu_spike_duration_sec" class="input sm" value="{{if .Settings.CpuSpikeDurationSec}}{{.Settings.CpuSpikeDurationSec}}{{else}}30{{end}}" min="5" style="width: 100%; padding-right: 36px; box-sizing: border-box;">
-                <span style="position: absolute; right: 10px; color: #64748b; font-size: 0.85rem; pointer-events: none;">сек</span>
+            <div class="support-threshold-col">
+              <span class="support-threshold-label">Пик 100% CPU (сек)</span>
+              <div class="support-unit-wrap">
+                <input type="number" name="cpu_spike_duration_sec" class="input sm support-unit-input" value="{{if .Settings.CpuSpikeDurationSec}}{{.Settings.CpuSpikeDurationSec}}{{else}}30{{end}}" min="5">
+                <span class="support-unit-suffix">сек</span>
               </div>
             </div>
           </div>
@@ -292,9 +292,9 @@
       </div>
 
       <!-- Sticky Footer Actions (Always Visible!) -->
-      <div class="actions support-modal-actions" style="display: flex; justify-content: flex-end; align-items: center; gap: 12px; padding: 16px 24px; border-top: 1px solid var(--line, #334155); background: var(--surface, #1e293b); flex-shrink: 0; box-sizing: border-box;">
-        <button type="button" class="btn ghost" id="btn-cancel-support-settings" style="padding: 9px 18px; border-radius: 8px; font-weight: 500; cursor: pointer;">Отмена</button>
-        <button type="submit" class="btn primary" style="padding: 9px 24px; border-radius: 8px; font-weight: 600; cursor: pointer; background: #0284c7; color: white; border: none; box-shadow: 0 4px 12px rgba(2, 132, 199, 0.3);">💾 Сохранить настройки</button>
+      <div class="actions support-modal-actions">
+        <button type="button" class="btn ghost support-btn-cancel" id="btn-cancel-support-settings">Отмена</button>
+        <button type="submit" class="btn primary support-btn-save">💾 Сохранить настройки</button>
       </div>
     </form>
   </div>

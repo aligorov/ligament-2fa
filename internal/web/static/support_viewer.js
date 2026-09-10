@@ -153,12 +153,12 @@ document.addEventListener("DOMContentLoaded", () => {
     btnAddCategoryRow.addEventListener("click", () => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td><input type="text" name="cat_id[]" class="input sm mono" required placeholder="it"></td>
-        <td><input type="text" name="cat_title[]" class="input sm" required placeholder="Новая служба"></td>
-        <td><input type="text" name="cat_icon[]" class="input sm" style="text-align: center;" value="🛟"></td>
-        <td><input type="text" name="cat_emails[]" class="input sm" placeholder="support@corp.ru"></td>
-        <td><input type="text" name="cat_telegram[]" class="input sm mono" placeholder="-100..."></td>
-        <td style="text-align: center;"><button type="button" class="btn ghost sm danger cat-row-del" title="Удалить">✕</button></td>
+        <td><input type="text" name="cat_id[]" class="input sm mono cat-input-field" required placeholder="it"></td>
+        <td><input type="text" name="cat_title[]" class="input sm cat-input-field" required placeholder="Новая служба"></td>
+        <td class="td-icon-center"><input type="text" name="cat_icon[]" class="input sm cat-input-field cat-icon-input" value="🛟"></td>
+        <td><input type="text" name="cat_emails[]" class="input sm cat-input-field" placeholder="support@corp.ru"></td>
+        <td><input type="text" name="cat_telegram[]" class="input sm mono cat-input-field" placeholder="-100..."></td>
+        <td class="td-del-center"><button type="button" class="btn ghost sm danger cat-row-del" title="Удалить">✕</button></td>
       `;
       categoriesTbody.appendChild(tr);
       const firstInp = tr.querySelector("input");
