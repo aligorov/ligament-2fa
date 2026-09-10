@@ -35,15 +35,26 @@ class SupportChatMessage {
   };
 
   factory SupportChatMessage.fromJson(Map<String, dynamic> json) {
+    DateTime ts;
+    if (json['timestamp'] != null) {
+      if (json['timestamp'] is num) {
+        ts = DateTime.fromMillisecondsSinceEpoch((json['timestamp'] as num).toInt());
+      } else {
+        ts = DateTime.tryParse(json['timestamp'].toString()) ?? DateTime.now();
+      }
+    } else if (json['created_at'] != null) {
+      ts = DateTime.tryParse(json['created_at'].toString()) ?? DateTime.now();
+    } else {
+      ts = DateTime.now();
+    }
+
     return SupportChatMessage(
       id: json['id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
       sender: json['sender']?.toString() ?? 'operator',
       senderName: json['sender_name']?.toString() ??
           (json['sender'] == 'operator' ? 'Инженер' : 'Пользователь'),
       text: json['text']?.toString() ?? '',
-      timestamp: json['timestamp'] != null
-          ? DateTime.fromMillisecondsSinceEpoch((json['timestamp'] as num).toInt())
-          : DateTime.now(),
+      timestamp: ts,
     );
   }
 }
@@ -124,6 +135,10 @@ class SupportService extends ChangeNotifier {
   List<ReceivedFileItem> get receivedFiles => List.unmodifiable(_receivedFiles);
   void Function(SupportChatMessage message)? onChatMessageReceived;
 
+  void setApi(ApiClient api) {
+    _api = api;
+  }
+
   void markChatAsRead() {
     _unreadChatCount = 0;
     notifyListeners();
@@ -133,6 +148,36 @@ class SupportService extends ChangeNotifier {
     _chatMessages.clear();
     _unreadChatCount = 0;
     notifyListeners();
+  }
+
+  Future<void> loadChatHistory([String? sessId]) async {
+    final sId = sessId ?? _activeSessionId;
+    if (_api == null || sId == null || sId.isEmpty) return;
+    try {
+      final list = await _api!.getSupportMessages(sId);
+      bool changed = false;
+      for (final item in list) {
+        final chatMsg = SupportChatMessage.fromJson(item);
+        final idx = _chatMessages.indexWhere((m) =>
+            m.id == chatMsg.id ||
+            (m.sender == chatMsg.sender &&
+                m.text == chatMsg.text &&
+                m.timestamp.difference(chatMsg.timestamp).abs().inSeconds < 5));
+        if (idx == -1) {
+          _chatMessages.add(chatMsg);
+          changed = true;
+        } else if (_chatMessages[idx].id != chatMsg.id) {
+          _chatMessages[idx] = chatMsg;
+          changed = true;
+        }
+      }
+      if (changed) {
+        _chatMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('support_service: loadChatHistory error: $e');
+    }
   }
 
   void sendChatMessage(String text, {String? senderName}) {
@@ -148,6 +193,16 @@ class SupportService extends ChangeNotifier {
     notifyListeners();
 
     _sendSignalOrData(msg.toJson());
+
+    if (_api != null && _activeSessionId != null && _activeSessionId!.isNotEmpty) {
+      _api!.sendSupportChatMessage(
+        sessionId: _activeSessionId!,
+        text: msg.text,
+        senderName: msg.senderName,
+      ).catchError((e) {
+        debugPrint('support_service: ошибка отправки сообщения через API: $e');
+      });
+    }
   }
 
   void _sendSignalOrData(Map<String, dynamic> data) {
@@ -611,10 +666,22 @@ class SupportService extends ChangeNotifier {
     } else if (type == 'chat_message') {
       try {
         final chatMsg = SupportChatMessage.fromJson(input);
-        _chatMessages.add(chatMsg);
-        _unreadChatCount++;
-        notifyListeners();
-        onChatMessageReceived?.call(chatMsg);
+        final isDuplicate = _chatMessages.any((m) =>
+            m.id == chatMsg.id ||
+            (m.sender == chatMsg.sender &&
+                m.text == chatMsg.text &&
+                m.timestamp.difference(chatMsg.timestamp).abs().inSeconds < 5));
+        if (!isDuplicate) {
+          _chatMessages.add(chatMsg);
+          _chatMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+          if (chatMsg.sender != 'user') {
+            _unreadChatCount++;
+          }
+          notifyListeners();
+          if (chatMsg.sender != 'user') {
+            onChatMessageReceived?.call(chatMsg);
+          }
+        }
       } catch (e) {
         debugPrint('support_service: ошибка разбора чат-сообщения: $e');
       }
@@ -726,7 +793,6 @@ class SupportService extends ChangeNotifier {
       _screens.clear();
       _currentScreenId = null;
       _activeDownloads.clear();
-      _api = null;
       notifyListeners();
 
       // 2. Закрываем DataChannel и снимаем его обработчики

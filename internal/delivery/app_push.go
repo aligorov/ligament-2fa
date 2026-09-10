@@ -349,3 +349,44 @@ func (h *AppHub) broadcastToAdmin(sessionID uuid.UUID, data []byte) int {
 	return count
 }
 
+// SendSupportChatMessage рассылает сообщение чата обеим сторонам (пользователю и всем консолям оператора).
+func (h *AppHub) SendSupportChatMessage(sessionID uuid.UUID, userID uuid.UUID, msg any) {
+	chatPayload := map[string]any{
+		"type":       "chat_message",
+		"session_id": sessionID.String(),
+	}
+	if b, err := json.Marshal(msg); err == nil {
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err == nil {
+			for k, v := range m {
+				chatPayload[k] = v
+			}
+		}
+	}
+	chatPayload["type"] = "chat_message"
+	chatPayload["session_id"] = sessionID.String()
+
+	// 1. Доставка операторам (консоли админа по sessionID)
+	adminPayload := map[string]any{
+		"type":       "chat_message",
+		"session_id": sessionID,
+		"data":       chatPayload,
+	}
+	for k, v := range chatPayload {
+		adminPayload[k] = v
+	}
+	if b, err := json.Marshal(adminPayload); err == nil {
+		h.broadcastToAdmin(sessionID, b)
+	}
+
+	// 2. Доставка клиенту пользователя (через постоянный сокет /api/v1/app/ws)
+	userPayload := map[string]any{
+		"type":       "support_signal",
+		"session_id": sessionID,
+		"data":       chatPayload,
+	}
+	if b, err := json.Marshal(userPayload); err == nil {
+		h.broadcastToUser(userID, b)
+	}
+}
+

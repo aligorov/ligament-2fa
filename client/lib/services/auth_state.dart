@@ -146,11 +146,18 @@ class AuthState extends ChangeNotifier {
       notifyListeners();
     };
 
+    if (api != null) {
+      support.setApi(api!);
+    }
+    support.removeListener(notifyListeners);
+    support.addListener(notifyListeners);
+
     support.onChatMessageReceived = (msg) {
       alert.triggerChatNotification(
         sender: msg.senderName,
         message: msg.text,
       );
+      notifyListeners();
     };
 
     ws.onSupportSignal = (signal) {
@@ -292,6 +299,7 @@ class AuthState extends ChangeNotifier {
     ws.disconnect();
     telemetry.stopReporting();
     support.stopScreenSharing();
+    support.clearChat();
 
     token = null;
     currentUser = null;

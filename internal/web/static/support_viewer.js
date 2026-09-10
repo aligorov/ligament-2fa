@@ -1008,6 +1008,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (viewerFilesDrawer) viewerFilesDrawer.classList.remove("visible");
       unreadChatCount = 0;
       updateChatBadge();
+      loadChatHistory();
       if (chatInputText) chatInputText.focus();
     } else {
       viewerChatDrawer.classList.remove("visible");
@@ -1016,11 +1017,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function appendChatMessage(msg) {
     if (!chatMessagesContainer) return;
+    if (msg.id && chatMessagesContainer.querySelector(`[data-msg-id="${msg.id}"]`)) {
+      return;
+    }
     const emptyHint = chatMessagesContainer.querySelector(".chat-empty-hint");
     if (emptyHint) emptyHint.remove();
 
     const isOperator = msg.sender === "operator";
     const el = document.createElement("div");
+    if (msg.id) el.dataset.msgId = String(msg.id);
     el.className = "chat-msg " + (isOperator ? "chat-msg-out" : "chat-msg-in");
 
     const timeDate = msg.timestamp ? new Date(msg.timestamp) : new Date();
@@ -1039,11 +1044,33 @@ document.addEventListener("DOMContentLoaded", () => {
     chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
   }
 
+  async function loadChatHistory() {
+    if (!sessionID || !chatMessagesContainer) return;
+    try {
+      const q = transferToken ? `?token=${encodeURIComponent(transferToken)}` : "";
+      const res = await fetch(`/api/v1/support/sessions/${sessionID}/messages${q}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && Array.isArray(data.messages)) {
+        data.messages.forEach((m) => {
+          appendChatMessage({
+            id: m.id,
+            sender: m.sender,
+            sender_name: m.sender_name,
+            text: m.text,
+            timestamp: new Date(m.created_at).getTime()
+          });
+        });
+      }
+    } catch (_) {}
+  }
+
   function sendChatMessage(text) {
     if (!text || !text.trim()) return;
+    const msgId = "msg_" + Date.now();
     const msg = {
       type: "chat_message",
-      id: String(Date.now()),
+      id: msgId,
       sender: "operator",
       sender_name: operatorName || "Инженер",
       text: text.trim(),
@@ -1052,7 +1079,18 @@ document.addEventListener("DOMContentLoaded", () => {
     sendControlMessage(msg);
     appendChatMessage(msg);
     if (chatInputText) chatInputText.value = "";
+    if (sessionID) {
+      const q = transferToken ? `?token=${encodeURIComponent(transferToken)}` : "";
+      fetch(`/api/v1/support/sessions/${sessionID}/messages${q}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text.trim(), sender_name: operatorName || "Инженер" })
+      }).catch(() => {});
+    }
   }
+
+  // Загружаем начальную историю сообщений сессии
+  loadChatHistory();
 
   if (btnChatToggle) {
     btnChatToggle.addEventListener("click", () => toggleChatDrawer());

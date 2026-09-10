@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -805,15 +806,39 @@ class _HomeScreenState extends State<HomeScreen> {
     auth.support.markChatAsRead();
     final textController = TextEditingController();
     final scrollController = ScrollController();
+    final activeSessId = auth.support.activeSessionId;
+
+    if (activeSessId != null && activeSessId.isNotEmpty) {
+      auth.support.loadChatHistory(activeSessId);
+    }
+
+    Timer? historyPoller;
+    historyPoller = Timer.periodic(const Duration(seconds: 2), (_) {
+      final sId = auth.support.activeSessionId ?? activeSessId;
+      if (sId != null && sId.isNotEmpty) {
+        auth.support.loadChatHistory(sId);
+      }
+    });
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
-        return Consumer<AuthState>(
-          builder: (context, currentAuth, _) {
-            final messages = currentAuth.support.chatMessages;
+        return ListenableBuilder(
+          listenable: auth.support,
+          builder: (context, _) {
+            final messages = auth.support.chatMessages;
+
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (scrollController.hasClients) {
+                scrollController.animateTo(
+                  scrollController.position.maxScrollExtent,
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
+                );
+              }
+            });
 
             return Container(
               height: MediaQuery.of(context).size.height * 0.75,
@@ -836,7 +861,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Чат с инженером (${currentAuth.support.category == '1c' ? '1С' : 'IT'})',
+                            'Чат с инженером (${auth.support.category == '1c' ? '1С' : 'IT'})',
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 15,
@@ -860,10 +885,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       children: [
-                        _buildQuickReplyChip(currentAuth, '👋 Здравствуйте!'),
-                        _buildQuickReplyChip(currentAuth, '👍 Хорошо, ожидаю'),
-                        _buildQuickReplyChip(currentAuth, '🔄 Перезагружаю ПК'),
-                        _buildQuickReplyChip(currentAuth, '✅ Всё заработало!'),
+                        _buildQuickReplyChip(auth, '👋 Здравствуйте!'),
+                        _buildQuickReplyChip(auth, '👍 Хорошо, ожидаю'),
+                        _buildQuickReplyChip(auth, '🔄 Перезагружаю ПК'),
+                        _buildQuickReplyChip(auth, '✅ Всё заработало!'),
                       ],
                     ),
                   ),
@@ -971,9 +996,9 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                             onSubmitted: (val) {
                               if (val.trim().isNotEmpty) {
-                                currentAuth.support.sendChatMessage(
+                                auth.support.sendChatMessage(
                                   val.trim(),
-                                  senderName: currentAuth.displayName,
+                                  senderName: auth.displayName,
                                 );
                                 textController.clear();
                               }
@@ -986,9 +1011,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           onPressed: () {
                             final val = textController.text.trim();
                             if (val.isNotEmpty) {
-                              currentAuth.support.sendChatMessage(
+                              auth.support.sendChatMessage(
                                 val,
-                                senderName: currentAuth.displayName,
+                                senderName: auth.displayName,
                               );
                               textController.clear();
                             }
@@ -1003,7 +1028,11 @@ class _HomeScreenState extends State<HomeScreen> {
           },
         );
       },
-    );
+    ).whenComplete(() {
+      historyPoller?.cancel();
+      textController.dispose();
+      scrollController.dispose();
+    });
   }
 
   Widget _buildQuickReplyChip(AuthState auth, String text) {

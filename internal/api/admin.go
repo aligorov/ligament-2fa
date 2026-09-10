@@ -155,8 +155,12 @@ func (a *AdminAPI) Register(r chi.Router) {
 		r.Post("/sessions/{id}/end", a.handleAdminSupportSessionEnd)
 		r.Get("/colleagues", a.handleAdminSupportColleagues)
 		r.Get("/sessions/{id}/ws", a.handleAdminSupportSessionWS)
+		r.Get("/sessions/{id}/messages", a.handleAdminSupportMessagesGet)
+		r.Post("/sessions/{id}/messages", a.handleAdminSupportMessageSend)
 	})
 	r.Get("/api/v1/support/ws/{id}", a.handleAdminSupportSessionWS)
+	r.Get("/api/v1/support/sessions/{id}/messages", a.handleAdminSupportMessagesGet)
+	r.Post("/api/v1/support/sessions/{id}/messages", a.handleAdminSupportMessageSend)
 }
 
 // RequireAdminToken пропускает запросы с Authorization: Bearer <admin_token>.
@@ -2071,10 +2075,11 @@ func (a *AdminAPI) checkOperatorAuth(r *http.Request, sessionID uuid.UUID) bool 
 		tokenHash := secrets.SHA256(c.Value)
 		if userID, _, err := a.st.SessionGet(r.Context(), tokenHash); err == nil {
 			if u, err := a.st.UserByID(r.Context(), userID); err == nil && u.Enabled {
-				if u.Role == "admin" || u.IsSupportAny() {
+				if strings.EqualFold(u.Role, "admin") || u.IsSupportAny() {
 					return true
 				}
-				if ss, err := a.st.SupportSessionGet(r.Context(), sessionID); err == nil && ss.TransferredToID != nil && *ss.TransferredToID == u.ID {
+				if ss, err := a.st.SupportSessionGet(r.Context(), sessionID); err == nil &&
+					((ss.TransferredToID != nil && *ss.TransferredToID == u.ID) || ss.UserID == u.ID) {
 					return true
 				}
 			}
@@ -2090,7 +2095,10 @@ func (a *AdminAPI) checkOperatorAuth(r *http.Request, sessionID uuid.UUID) bool 
 		tokenHash := secrets.SHA256(appToken)
 		if device, err := a.st.AppDeviceGetByTokenHash(r.Context(), tokenHash); err == nil && device.Active {
 			if u, err := a.st.UserByID(r.Context(), device.UserID); err == nil && u.Enabled {
-				if u.Role == "admin" || u.IsSupportAny() {
+				if strings.EqualFold(u.Role, "admin") || u.IsSupportAny() {
+					return true
+				}
+				if ss, err := a.st.SupportSessionGet(r.Context(), sessionID); err == nil && ss.UserID == u.ID {
 					return true
 				}
 			}
@@ -2142,11 +2150,130 @@ func (a *AdminAPI) handleAdminSupportSessionWS(w http.ResponseWriter, r *http.Re
 		if messageType == websocket.TextMessage {
 			var msg map[string]any
 			if err := json.Unmarshal(data, &msg); err == nil {
+				// Если это сообщение чата, сохраняем в БД и рассылаем всем участникам
+				if msg["type"] == "chat_message" || (msg["type"] == "input_control" && isChatControl(msg)) {
+					chatData := msg
+					if msg["type"] == "input_control" {
+						if d, ok := msg["data"].(map[string]any); ok {
+							chatData = d
+						}
+					}
+					text, _ := chatData["text"].(string)
+					senderName, _ := chatData["sender_name"].(string)
+					if strings.TrimSpace(text) != "" {
+						if senderName == "" {
+							senderName = "Инженер"
+						}
+						dbMsg := &store.SupportMessage{
+							SessionID:  session.ID,
+							Sender:     "operator",
+							SenderName: senderName,
+							Text:       strings.TrimSpace(text),
+						}
+						_ = a.st.SupportMessageCreate(r.Context(), dbMsg)
+						a.hub.SendSupportChatMessage(session.ID, session.UserID, dbMsg)
+						continue
+					}
+				}
 				// Пересылаем сигнальное сообщение или команду ввода на устройство пользователя
 				a.hub.SendSupportSignal(session.UserID, session.ID, msg)
 			}
 		}
 	}
+}
+
+func isChatControl(msg map[string]any) bool {
+	if d, ok := msg["data"].(map[string]any); ok {
+		return d["type"] == "chat_message"
+	}
+	return false
+}
+
+// handleAdminSupportMessagesGet — GET /api/v1/support/sessions/{id}/messages.
+func (a *AdminAPI) handleAdminSupportMessagesGet(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+
+	if !a.checkOperatorAuth(r, id) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	msgs, err := a.st.SupportMessagesList(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"messages": msgs,
+	})
+}
+
+// handleAdminSupportMessageSend — POST /api/v1/support/sessions/{id}/messages.
+func (a *AdminAPI) handleAdminSupportMessageSend(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+
+	if !a.checkOperatorAuth(r, id) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	session, err := a.st.SupportSessionGet(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+
+	var req struct {
+		Text       string `json:"text"`
+		SenderName string `json:"sender_name"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" {
+		writeError(w, http.StatusBadRequest, "empty_text")
+		return
+	}
+
+	senderName := strings.TrimSpace(req.SenderName)
+	if senderName == "" {
+		senderName = "Инженер"
+	}
+
+	msg := &store.SupportMessage{
+		SessionID:  session.ID,
+		Sender:     "operator",
+		SenderName: senderName,
+		Text:       req.Text,
+	}
+
+	if err := a.st.SupportMessageCreate(r.Context(), msg); err != nil {
+		slog.Error("api: ошибка сохранения support_message", "error", err)
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+
+	if a.hub != nil {
+		a.hub.SendSupportChatMessage(session.ID, session.UserID, msg)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "ok",
+		"message": msg,
+	})
 }
 
 

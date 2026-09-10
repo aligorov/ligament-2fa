@@ -76,7 +76,7 @@ class WebSocketService {
         onPrompt?.call(data);
       } else if (data['type'] == 'support_prompt') {
         onSupportPrompt?.call(data);
-      } else if (data['type'] == 'support_signal') {
+      } else if (data['type'] == 'support_signal' || data['type'] == 'chat_message') {
         onSupportSignal?.call(data);
       } else if (data['type'] == 'support_ended') {
         onSupportEnded?.call(data);

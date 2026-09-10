@@ -288,6 +288,85 @@ class ApiClient {
     }
   }
 
+  /// Получение истории сообщений чата сессии поддержки
+  Future<List<Map<String, dynamic>>> getSupportMessages(String sessionId) async {
+    http.Response res;
+    try {
+      res = await http.get(
+        Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/messages')),
+        headers: _headers(),
+      );
+    } catch (_) {
+      res = await http.get(
+        Uri.parse(_cleanUrl('/api/v1/support/sessions/$sessionId/messages')),
+        headers: _headers(),
+      );
+    }
+    if (res.statusCode != 200) {
+      res = await http.get(
+        Uri.parse(_cleanUrl('/api/v1/support/sessions/$sessionId/messages')),
+        headers: _headers(),
+      );
+    }
+    if (res.statusCode != 200) {
+      return [];
+    }
+    final data = jsonDecode(utf8.decode(res.bodyBytes));
+    if (data is Map<String, dynamic> && data['messages'] is List) {
+      return (data['messages'] as List)
+          .whereType<Map<String, dynamic>>()
+          .toList();
+    }
+    if (data is List) {
+      return data.whereType<Map<String, dynamic>>().toList();
+    }
+    return [];
+  }
+
+  /// Отправка сообщения в чат поддержки
+  Future<void> sendSupportChatMessage({
+    required String sessionId,
+    required String text,
+    String? senderName,
+  }) async {
+    final body = jsonEncode({
+      'text': text,
+      if (senderName != null && senderName.isNotEmpty) 'sender_name': senderName,
+    });
+    http.Response res;
+    try {
+      res = await http.post(
+        Uri.parse(_cleanUrl('/api/v1/app/support/$sessionId/messages')),
+        headers: _headers(),
+        body: body,
+      );
+      if (res.statusCode != 200) {
+        res = await http.post(
+          Uri.parse(_cleanUrl('/api/v1/support/sessions/$sessionId/messages')),
+          headers: _headers(),
+          body: body,
+        );
+      }
+    } catch (_) {
+      res = await http.post(
+        Uri.parse(_cleanUrl('/api/v1/support/sessions/$sessionId/messages')),
+        headers: _headers(),
+        body: body,
+      );
+    }
+    if (res.statusCode != 200) {
+      // Fallback на /signal
+      await sendSupportSignal(
+        sessionId: sessionId,
+        signal: {
+          'type': 'chat_message',
+          'text': text,
+          'sender_name': senderName ?? 'Пользователь',
+        },
+      );
+    }
+  }
+
   /// Завершение сеанса удаленного доступа со стороны пользователя
   Future<void> endSupportSession({
     required String sessionId,

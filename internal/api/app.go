@@ -86,6 +86,8 @@ func (a *AppAPI) Register(r chi.Router) {
 			r.Post("/support/{id}/connect", a.handleSupportConnect)
 			r.Post("/support/{id}/decision", a.handleSupportDecision)
 			r.Post("/support/{id}/signal", a.handleSupportSignal)
+			r.Get("/support/{id}/messages", a.handleSupportMessagesGet)
+			r.Post("/support/{id}/messages", a.handleSupportMessageSend)
 			r.Post("/support/{id}/end", a.handleSupportEnd)
 
 			r.Get("/me/profile", a.handleProfile)
@@ -905,11 +907,142 @@ func (a *AppAPI) handleSupportSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Если это сообщение чата, сохраняем в БД и рассылаем через хаб
+	if signal["type"] == "chat_message" {
+		text, _ := signal["text"].(string)
+		senderName, _ := signal["sender_name"].(string)
+		if strings.TrimSpace(text) != "" {
+			user, _ := appUserFromCtx(r.Context())
+			if senderName == "" && user != nil {
+				senderName = user.DisplayName
+				if senderName == "" {
+					senderName = user.Username
+				}
+			}
+			msg := &store.SupportMessage{
+				SessionID:  sessID,
+				Sender:     "user",
+				SenderName: senderName,
+				Text:       strings.TrimSpace(text),
+			}
+			_ = a.st.SupportMessageCreate(r.Context(), msg)
+			if a.hub != nil {
+				var uid uuid.UUID
+				if user != nil {
+					uid = user.ID
+				}
+				a.hub.SendSupportChatMessage(sessID, uid, msg)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "message": msg})
+			return
+		}
+	}
+
 	if a.hub != nil {
 		a.hub.SendSignalToAdmin(sessID, signal)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleSupportMessagesGet возвращает историю сообщений чата сессии поддержки.
+func (a *AppAPI) handleSupportMessagesGet(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	sessID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_id")
+		return
+	}
+
+	user, _ := appUserFromCtx(r.Context())
+	ss, err := a.st.SupportSessionGet(r.Context(), sessID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if user == nil || (ss.UserID != user.ID && !user.IsSupportAny()) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+
+	msgs, err := a.st.SupportMessagesList(r.Context(), sessID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"messages": msgs,
+	})
+}
+
+// handleSupportMessageSend отправляет новое сообщение в чат сессии.
+func (a *AppAPI) handleSupportMessageSend(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	sessID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_id")
+		return
+	}
+
+	user, _ := appUserFromCtx(r.Context())
+	ss, err := a.st.SupportSessionGet(r.Context(), sessID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if user == nil || (ss.UserID != user.ID && !user.IsSupportAny()) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+
+	var req struct {
+		Text       string `json:"text"`
+		SenderName string `json:"sender_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json")
+		return
+	}
+
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" {
+		writeError(w, http.StatusBadRequest, "empty_text")
+		return
+	}
+
+	sender := "user"
+	if ss.UserID != user.ID && user.IsSupportAny() {
+		sender = "operator"
+	}
+	senderName := strings.TrimSpace(req.SenderName)
+	if senderName == "" {
+		senderName = user.DisplayName
+		if senderName == "" {
+			senderName = user.Username
+		}
+	}
+
+	msg := &store.SupportMessage{
+		SessionID:  sessID,
+		Sender:     sender,
+		SenderName: senderName,
+		Text:       req.Text,
+	}
+
+	if err := a.st.SupportMessageCreate(r.Context(), msg); err != nil {
+		slog.Error("app_api: ошибка сохранения сообщения чата", "error", err)
+		writeError(w, http.StatusInternalServerError, "db_error")
+		return
+	}
+
+	if a.hub != nil {
+		a.hub.SendSupportChatMessage(sessID, ss.UserID, msg)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "ok",
+		"message": msg,
+	})
 }
 
 // handleSupportEnd завершает активный сеанс удаленного доступа по инициативе пользователя.

@@ -73,6 +73,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   final GlobalKey _videoKey = GlobalKey();
 
   final List<SupportChatMessage> _chatMessages = [];
+  late final ValueNotifier<List<SupportChatMessage>> _chatMessagesNotifier;
   int _unreadChatCount = 0;
 
   Size? _previousWindowSize;
@@ -99,14 +100,47 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     }
   }
 
+  Future<void> _loadChatHistory() async {
+    final auth = context.read<AuthState>();
+    if (auth.api == null || widget.sessionId.isEmpty) return;
+    try {
+      final list = await auth.api!.getSupportMessages(widget.sessionId);
+      bool changed = false;
+      for (final item in list) {
+        final chatMsg = SupportChatMessage.fromJson(item);
+        final idx = _chatMessages.indexWhere((m) =>
+            m.id == chatMsg.id ||
+            (m.sender == chatMsg.sender &&
+                m.text == chatMsg.text &&
+                m.timestamp.difference(chatMsg.timestamp).abs().inSeconds < 5));
+        if (idx == -1) {
+          _chatMessages.add(chatMsg);
+          changed = true;
+        } else if (_chatMessages[idx].id != chatMsg.id) {
+          _chatMessages[idx] = chatMsg;
+          changed = true;
+        }
+      }
+      if (changed) {
+        _chatMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+        _chatMessagesNotifier.value = List.of(_chatMessages);
+        if (mounted) setState(() {});
+      }
+    } catch (e) {
+      debugPrint('support_operator: _loadChatHistory error: $e');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    _chatMessagesNotifier = ValueNotifier<List<SupportChatMessage>>(_chatMessages);
     _expandWindowForOperator();
     _isChatOnly = widget.isChatOnly;
     _currentNumberMatch = widget.numberMatch;
     final accessMode = widget.sessionData['access_mode']?.toString();
     _isControlEnabled = accessMode != 'view_only';
+    _loadChatHistory();
     if (_isChatOnly) {
       _connectionStatus = 'Режим чата';
       _connectWebSocket();
@@ -310,15 +344,28 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     } else if (type == 'chat_message') {
       try {
         final msg = SupportChatMessage.fromJson(data);
-        if (mounted) {
-          setState(() {
-            _chatMessages.add(msg);
-            _unreadChatCount++;
-          });
-          context.read<AuthState>().alert.triggerChatNotification(
-            sender: msg.senderName,
-            message: msg.text,
-          );
+        final isDuplicate = _chatMessages.any((m) =>
+            m.id == msg.id ||
+            (m.sender == msg.sender &&
+                m.text == msg.text &&
+                m.timestamp.difference(msg.timestamp).abs().inSeconds < 5));
+        if (!isDuplicate) {
+          _chatMessages.add(msg);
+          _chatMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+          _chatMessagesNotifier.value = List.of(_chatMessages);
+          if (mounted) {
+            setState(() {
+              if (msg.sender != 'operator') {
+                _unreadChatCount++;
+              }
+            });
+            if (msg.sender != 'operator') {
+              context.read<AuthState>().alert.triggerChatNotification(
+                sender: msg.senderName,
+                message: msg.text,
+              );
+            }
+          }
         }
       } catch (_) {}
     }
@@ -388,36 +435,65 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     if (text.trim().isEmpty) return;
     final auth = context.read<AuthState>();
     final operatorName = auth.displayName.isNotEmpty ? auth.displayName : 'Инженер';
-    final msg = {
-      'type': 'chat_message',
-      'id': 'msg_${DateTime.now().millisecondsSinceEpoch}',
-      'sender': 'operator',
-      'sender_name': operatorName,
-      'text': text.trim(),
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-    };
-    _sendDataMessage(msg);
-    if (mounted) {
-      setState(() {
-        _chatMessages.add(SupportChatMessage.fromJson(msg));
-      });
+    final msg = SupportChatMessage(
+      id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
+      sender: 'operator',
+      senderName: operatorName,
+      text: text.trim(),
+      timestamp: DateTime.now(),
+    );
+
+    if (!_chatMessages.any((m) => m.id == msg.id)) {
+      _chatMessages.add(msg);
+      _chatMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      _chatMessagesNotifier.value = List.of(_chatMessages);
+      if (mounted) setState(() {});
     }
+
+    _sendDataMessage(msg.toJson());
+    _sendWsSignal(msg.toJson());
+
+    auth.api?.sendSupportChatMessage(
+      sessionId: widget.sessionId,
+      text: msg.text,
+      senderName: operatorName,
+    ).catchError((e) {
+      debugPrint('support_operator: ошибка отправки сообщения через API: $e');
+    });
   }
 
   void _showOperatorChatModal() {
     setState(() {
       _unreadChatCount = 0;
     });
+    _loadChatHistory();
+
     final textController = TextEditingController();
     final scrollController = ScrollController();
+
+    Timer? historyPoller;
+    historyPoller = Timer.periodic(const Duration(seconds: 2), (_) {
+      _loadChatHistory();
+    });
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
+        return ValueListenableBuilder<List<SupportChatMessage>>(
+          valueListenable: _chatMessagesNotifier,
+          builder: (context, messages, _) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (scrollController.hasClients) {
+                scrollController.animateTo(
+                  scrollController.position.maxScrollExtent,
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
+                );
+              }
+            });
+
             return Container(
               height: MediaQuery.of(context).size.height * 0.75,
               decoration: const BoxDecoration(
@@ -459,16 +535,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       children: [
-                        _buildOperatorChatChip(setModalState, '👋 Здравствуйте! Подключился к экрану.'),
-                        _buildOperatorChatChip(setModalState, '📁 Пожалуйста, сохраните открытые файлы.'),
-                        _buildOperatorChatChip(setModalState, '🔄 Сейчас потребуется перезагрузить систему.'),
-                        _buildOperatorChatChip(setModalState, '✅ Проблема устранена, проверяйте!'),
+                        _buildOperatorChatChip('👋 Здравствуйте! Подключился к экрану.'),
+                        _buildOperatorChatChip('📁 Пожалуйста, сохраните открытые файлы.'),
+                        _buildOperatorChatChip('🔄 Сейчас потребуется перезагрузить систему.'),
+                        _buildOperatorChatChip('✅ Проблема устранена, проверяйте!'),
                       ],
                     ),
                   ),
 
                   Expanded(
-                    child: _chatMessages.isEmpty
+                    child: messages.isEmpty
                         ? const Center(
                             child: Text(
                               'Сообщений пока нет.\nНапишите пользователю приветствие или инструкцию.',
@@ -479,9 +555,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                         : ListView.builder(
                             controller: scrollController,
                             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                            itemCount: _chatMessages.length,
+                            itemCount: messages.length,
                             itemBuilder: (c, i) {
-                              final msg = _chatMessages[i];
+                              final msg = messages[i];
                               final isOperator = msg.sender == 'operator';
                               final timeStr = DateFormat('HH:mm').format(msg.timestamp);
 
@@ -556,7 +632,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             onSubmitted: (val) {
                               if (val.trim().isNotEmpty) {
                                 _sendChatMessage(val.trim());
-                                setModalState(() {});
                                 textController.clear();
                               }
                             },
@@ -569,7 +644,6 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                             final val = textController.text.trim();
                             if (val.isNotEmpty) {
                               _sendChatMessage(val);
-                              setModalState(() {});
                               textController.clear();
                             }
                           },
@@ -583,17 +657,20 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           },
         );
       },
-    );
+    ).whenComplete(() {
+      historyPoller?.cancel();
+      textController.dispose();
+      scrollController.dispose();
+    });
   }
 
-  Widget _buildOperatorChatChip(void Function(void Function()) setModalState, String text) {
+  Widget _buildOperatorChatChip(String text) {
     return Container(
       margin: const EdgeInsets.only(right: 6),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: () {
           _sendChatMessage(text);
-          setModalState(() {});
         },
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -967,6 +1044,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
 
   @override
   void dispose() {
+    _chatMessagesNotifier.dispose();
     _keyboardFocus.dispose();
     _restoreWindowSize();
     _cleanupResources();

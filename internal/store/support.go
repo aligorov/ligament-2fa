@@ -396,3 +396,54 @@ func (s *Store) SupportSessionCleanupClosed(ctx context.Context) (int64, error) 
 	return ct.RowsAffected(), nil
 }
 
+// SupportMessage представляет сохраненное сообщение в чате сессии удаленной поддержки.
+type SupportMessage struct {
+	ID         uuid.UUID `json:"id"`
+	SessionID  uuid.UUID `json:"session_id"`
+	Sender     string    `json:"sender"`      // "user" | "operator"
+	SenderName string    `json:"sender_name"`
+	Text       string    `json:"text"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// SupportMessageCreate сохраняет сообщение чата в базе данных.
+func (s *Store) SupportMessageCreate(ctx context.Context, msg *SupportMessage) error {
+	if msg.ID == uuid.Nil {
+		msg.ID = uuid.New()
+	}
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now()
+	}
+	_, err := s.Pool().Exec(ctx, `INSERT INTO support_messages
+		(id, session_id, sender, sender_name, text, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		msg.ID, msg.SessionID, msg.Sender, msg.SenderName, msg.Text, msg.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("store: сохранить support_message: %w", err)
+	}
+	return nil
+}
+
+// SupportMessagesList возвращает хронологический список сообщений для указанной сессии.
+func (s *Store) SupportMessagesList(ctx context.Context, sessionID uuid.UUID) ([]*SupportMessage, error) {
+	rows, err := s.Pool().Query(ctx, `SELECT id, session_id, sender, sender_name, text, created_at
+		FROM support_messages WHERE session_id = $1 ORDER BY created_at ASC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("store: список support_messages для %s: %w", sessionID, err)
+	}
+	defer rows.Close()
+
+	var out []*SupportMessage
+	for rows.Next() {
+		m := &SupportMessage{}
+		if err := rows.Scan(&m.ID, &m.SessionID, &m.Sender, &m.SenderName, &m.Text, &m.CreatedAt); err != nil {
+			return nil, fmt.Errorf("store: сканирование support_message: %w", err)
+		}
+		out = append(out, m)
+	}
+	if out == nil {
+		out = []*SupportMessage{}
+	}
+	return out, rows.Err()
+}
+

@@ -3590,6 +3590,42 @@ paths:
         '200':
           description: Сигнал доставлен.
 
+  /api/v1/app/support/{id}/messages:
+    get:
+      tags: [Support]
+      summary: "История сообщений чата сессии поддержки (клиент)"
+      description: "Возвращает хронологический список сообщений чата для пользователя."
+      operationId: appSupportMessagesGet
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Список сообщений.
+    post:
+      tags: [Support]
+      summary: "Отправить сообщение в чат поддержки (клиент)"
+      description: "Сохраняет сообщение в БД и доставляет оператору."
+      operationId: appSupportMessagesPost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Сообщение отправлено.
+
   /api/v1/app/support/{id}/end:
     post:
       tags: [Support]
@@ -3839,6 +3875,74 @@ paths:
       responses:
         '101':
           description: Переключение на протокол WebSocket.
+
+  /api/v1/admin/support/sessions/{id}/messages:
+    get:
+      tags: [Support]
+      summary: "История сообщений чата сессии поддержки (оператор)"
+      description: "Возвращает сообщения сессии для консоли оператора."
+      operationId: adminSupportMessagesGet
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Список сообщений.
+    post:
+      tags: [Support]
+      summary: "Отправить сообщение в чат поддержки от оператора"
+      description: "Сохраняет сообщение в БД и доставляет пользователю через push."
+      operationId: adminSupportMessagesPost
+      security:
+        - adminBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Сообщение отправлено.
+
+  /api/v1/support/sessions/{id}/messages:
+    get:
+      tags: [Support]
+      summary: "История сообщений чата сессии поддержки (публичный/оператор)"
+      description: "Возвращает сообщения сессии по токену оператора или передачи."
+      operationId: supportSessionsMessagesGet
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Список сообщений.
+    post:
+      tags: [Support]
+      summary: "Отправить сообщение в чат поддержки"
+      description: "Сохраняет сообщение в БД и доставляет сторонам."
+      operationId: supportSessionsMessagesPost
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Сообщение отправлено.
 
 components:
   securitySchemes:
