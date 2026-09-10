@@ -278,7 +278,7 @@ class SettingsScreen extends StatelessWidget {
             child: Column(
               children: [
                 const Text(
-                  'Ligament 2FA v1.0.1+6 (v0.4.46)',
+                  'Ligament 2FA v1.0.1+7 (v0.4.47)',
                   style: TextStyle(color: Color(0xFF64748B), fontSize: 12, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 4),

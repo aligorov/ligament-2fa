@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -8,6 +9,75 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import '../api/client.dart';
 import 'input_injector.dart';
 import 'telemetry_service.dart';
+
+class SupportChatMessage {
+  final String id;
+  final String sender; // 'operator' | 'user'
+  final String senderName;
+  final String text;
+  final DateTime timestamp;
+
+  SupportChatMessage({
+    required this.id,
+    required this.sender,
+    required this.senderName,
+    required this.text,
+    required this.timestamp,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'type': 'chat_message',
+    'id': id,
+    'sender': sender,
+    'sender_name': senderName,
+    'text': text,
+    'timestamp': timestamp.millisecondsSinceEpoch,
+  };
+
+  factory SupportChatMessage.fromJson(Map<String, dynamic> json) {
+    return SupportChatMessage(
+      id: json['id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      sender: json['sender']?.toString() ?? 'operator',
+      senderName: json['sender_name']?.toString() ??
+          (json['sender'] == 'operator' ? 'Инженер' : 'Пользователь'),
+      text: json['text']?.toString() ?? '',
+      timestamp: json['timestamp'] != null
+          ? DateTime.fromMillisecondsSinceEpoch((json['timestamp'] as num).toInt())
+          : DateTime.now(),
+    );
+  }
+}
+
+class ReceivedFileItem {
+  final String id;
+  final String filename;
+  final String localPath;
+  final int size;
+  final DateTime receivedAt;
+
+  ReceivedFileItem({
+    required this.id,
+    required this.filename,
+    required this.localPath,
+    required this.size,
+    required this.receivedAt,
+  });
+}
+
+class _ActiveFileDownload {
+  final String id;
+  final String filename;
+  final int totalSize;
+  final int totalChunks;
+  final Map<int, List<int>> chunks = {};
+
+  _ActiveFileDownload({
+    required this.id,
+    required this.filename,
+    required this.totalSize,
+    required this.totalChunks,
+  });
+}
 
 enum SupportSessionState {
   idle,
@@ -35,6 +105,11 @@ class SupportService extends ChangeNotifier {
   Timer? _telemetryTimer;
   final TelemetryService _telemetry = TelemetryService();
 
+  final List<SupportChatMessage> _chatMessages = [];
+  int _unreadChatCount = 0;
+  final List<ReceivedFileItem> _receivedFiles = [];
+  final Map<String, _ActiveFileDownload> _activeDownloads = {};
+
   SupportSessionState get state => _state;
   String? get activeSessionId => _activeSessionId;
   String? get category => _category;
@@ -43,6 +118,155 @@ class SupportService extends ChangeNotifier {
   bool get isSharing => _state == SupportSessionState.active;
   List<Map<String, dynamic>> get screens => _screens;
   String? get currentScreenId => _currentScreenId;
+
+  List<SupportChatMessage> get chatMessages => List.unmodifiable(_chatMessages);
+  int get unreadChatCount => _unreadChatCount;
+  List<ReceivedFileItem> get receivedFiles => List.unmodifiable(_receivedFiles);
+
+  void markChatAsRead() {
+    _unreadChatCount = 0;
+    notifyListeners();
+  }
+
+  void clearChat() {
+    _chatMessages.clear();
+    _unreadChatCount = 0;
+    notifyListeners();
+  }
+
+  void sendChatMessage(String text, {String? senderName}) {
+    if (text.trim().isEmpty) return;
+    final msg = SupportChatMessage(
+      id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
+      sender: 'user',
+      senderName: senderName ?? 'Пользователь',
+      text: text.trim(),
+      timestamp: DateTime.now(),
+    );
+    _chatMessages.add(msg);
+    notifyListeners();
+
+    _sendSignalOrData(msg.toJson());
+  }
+
+  void _sendSignalOrData(Map<String, dynamic> data) {
+    bool sent = false;
+    if (_dataChannel != null && _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+      try {
+        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(data)));
+        sent = true;
+      } catch (e) {
+        debugPrint('support_service: ошибка отправки через DataChannel: $e');
+      }
+    }
+    if (!sent && _api != null && _activeSessionId != null) {
+      _api!.sendSupportSignal(sessionId: _activeSessionId!, signal: data);
+    }
+  }
+
+  Future<void> sendFile(File file) async {
+    if (!await file.exists()) return;
+    final filename = file.uri.pathSegments.last;
+    final bytes = await file.readAsBytes();
+    final totalSize = bytes.length;
+    const chunkSize = 32768; // 32 KB
+    final totalChunks = (totalSize / chunkSize).ceil();
+    final transferId = 'file_${DateTime.now().millisecondsSinceEpoch}';
+
+    _sendSignalOrData({
+      'type': 'file_start',
+      'transfer_id': transferId,
+      'filename': filename,
+      'size': totalSize,
+      'total_chunks': totalChunks,
+      'sender': 'user',
+    });
+
+    for (int i = 0; i < totalChunks; i++) {
+      final start = i * chunkSize;
+      final end = (start + chunkSize > totalSize) ? totalSize : start + chunkSize;
+      final chunkBytes = bytes.sublist(start, end);
+      final b64 = base64Encode(chunkBytes);
+
+      _sendSignalOrData({
+        'type': 'file_chunk',
+        'transfer_id': transferId,
+        'chunk_index': i,
+        'data': b64,
+      });
+      if (i % 10 == 0) {
+        await Future.delayed(const Duration(milliseconds: 15));
+      }
+    }
+
+    _sendSignalOrData({
+      'type': 'file_end',
+      'transfer_id': transferId,
+    });
+
+    _chatMessages.add(SupportChatMessage(
+      id: 'sys_${DateTime.now().millisecondsSinceEpoch}',
+      sender: 'user',
+      senderName: 'Пользователь',
+      text: '📎 Отправлен файл: $filename (${(totalSize / 1024).toStringAsFixed(1)} КБ)',
+      timestamp: DateTime.now(),
+    ));
+    notifyListeners();
+  }
+
+  Future<void> _saveReceivedFile(_ActiveFileDownload dl) async {
+    try {
+      String downloadsPath = '';
+      if (Platform.isWindows) {
+        final profile = Platform.environment['USERPROFILE'] ?? 'C:\\Users\\Default';
+        downloadsPath = '$profile\\Downloads\\LigamentSupport';
+      } else if (Platform.isMacOS || Platform.isLinux) {
+        final home = Platform.environment['HOME'] ?? '/tmp';
+        downloadsPath = '$home/Downloads/LigamentSupport';
+      } else {
+        downloadsPath = '/sdcard/Download/LigamentSupport';
+      }
+
+      final dir = Directory(downloadsPath);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+
+      final safeName = dl.filename.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+      final targetPath = '${dir.path}${Platform.pathSeparator}$safeName';
+      final file = File(targetPath);
+
+      final builder = BytesBuilder(copy: false);
+      for (int i = 0; i < dl.totalChunks; i++) {
+        if (dl.chunks.containsKey(i)) {
+          builder.add(dl.chunks[i]!);
+        }
+      }
+      await file.writeAsBytes(builder.takeBytes(), flush: true);
+
+      final item = ReceivedFileItem(
+        id: dl.id,
+        filename: safeName,
+        localPath: targetPath,
+        size: dl.totalSize,
+        receivedAt: DateTime.now(),
+      );
+      _receivedFiles.insert(0, item);
+
+      final sysMsg = SupportChatMessage(
+        id: 'sys_${DateTime.now().millisecondsSinceEpoch}',
+        sender: 'operator',
+        senderName: 'Система',
+        text: '📁 Получен файл: $safeName (${(dl.totalSize / 1024).toStringAsFixed(1)} КБ)',
+        timestamp: DateTime.now(),
+      );
+      _chatMessages.add(sysMsg);
+      _unreadChatCount++;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('support_service: ошибка сохранения переданного файла: $e');
+    }
+  }
 
   /// Установка локального состояния запроса
   void setRequested({
@@ -56,6 +280,8 @@ class SupportService extends ChangeNotifier {
     _problemSummary = problemSummary;
     _accessMode = accessMode;
     _state = SupportSessionState.requested;
+    _unreadChatCount = 0;
+    _activeDownloads.clear();
     notifyListeners();
   }
 
@@ -239,11 +465,13 @@ class SupportService extends ChangeNotifier {
       } else if (payload.containsKey('type') &&
           (payload['type'].toString().startsWith('mouse_') ||
               payload['type'].toString().startsWith('key_') ||
+              payload['type'].toString().startsWith('file_') ||
               payload['type'] == 'wheel' ||
               payload['type'] == 'hotkey' ||
               payload['type'] == 'switch_screen' ||
               payload['type'] == 'clipboard_get' ||
-              payload['type'] == 'clipboard_set')) {
+              payload['type'] == 'clipboard_set' ||
+              payload['type'] == 'chat_message')) {
         _handleRemoteInput(payload);
       }
     } catch (e) {
@@ -366,6 +594,46 @@ class SupportService extends ChangeNotifier {
         })));
       }
       return;
+    } else if (type == 'chat_message') {
+      try {
+        final chatMsg = SupportChatMessage.fromJson(input);
+        _chatMessages.add(chatMsg);
+        _unreadChatCount++;
+        notifyListeners();
+      } catch (e) {
+        debugPrint('support_service: ошибка разбора чат-сообщения: $e');
+      }
+      return;
+    } else if (type == 'file_start') {
+      final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+      final filename = input['filename']?.toString() ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
+      final size = (input['size'] as num?)?.toInt() ?? 0;
+      final totalChunks = (input['total_chunks'] as num?)?.toInt() ?? 1;
+      _activeDownloads[transferId] = _ActiveFileDownload(
+        id: transferId,
+        filename: filename,
+        totalSize: size,
+        totalChunks: totalChunks,
+      );
+      return;
+    } else if (type == 'file_chunk') {
+      final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+      final chunkIndex = (input['chunk_index'] as num?)?.toInt() ?? 0;
+      final base64Data = input['data']?.toString() ?? '';
+      final dl = _activeDownloads[transferId];
+      if (dl != null && base64Data.isNotEmpty) {
+        try {
+          dl.chunks[chunkIndex] = base64Decode(base64Data);
+        } catch (_) {}
+      }
+      return;
+    } else if (type == 'file_end') {
+      final transferId = input['transfer_id']?.toString() ?? input['id']?.toString() ?? '';
+      final dl = _activeDownloads.remove(transferId);
+      if (dl != null) {
+        _saveReceivedFile(dl);
+      }
+      return;
     }
 
     if (_accessMode == 'view_only') {
@@ -441,6 +709,7 @@ class SupportService extends ChangeNotifier {
       _problemSummary = null;
       _screens.clear();
       _currentScreenId = null;
+      _activeDownloads.clear();
       _api = null;
       notifyListeners();
 

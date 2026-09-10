@@ -40,6 +40,13 @@ class AuthState extends ChangeNotifier {
 
   bool get isLoggedIn => token != null && currentUser != null;
 
+  String get username => currentUser?['username']?.toString() ?? '';
+  String get displayName {
+    final dn = currentUser?['display_name']?.toString();
+    if (dn != null && dn.isNotEmpty) return dn;
+    return username;
+  }
+
   bool get isAdmin => currentUser?['role'] == 'admin';
 
   List<String> get supportRoles {

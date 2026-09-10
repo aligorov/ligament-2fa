@@ -76,6 +76,15 @@
         📋 Буфер обмена
       </button>
 
+      <!-- Чат и Передача файлов -->
+      <button id="btn-chat-toggle" type="button" class="hud-btn" title="Чат с пользователем">
+        💬 Чат <span id="chat-badge" class="hud-badge-count" style="display: none;">0</span>
+      </button>
+
+      <button id="btn-files-toggle" type="button" class="hud-btn" title="Передача файлов на ПК">
+        📁 Файлы
+      </button>
+
       <!-- Телеметрия ПК -->
       <div class="hud-telemetry">
         <span id="tel-cpu-badge" class="hud-tel-badge" title="Загрузка CPU">⚡ CPU: --%</span>
@@ -123,6 +132,53 @@
     </div>
   </div>
 
+  <!-- Выдвижная боковая панель чата -->
+  <div id="viewer-chat-drawer" class="hud-side-drawer chat-drawer">
+    <div class="hud-drawer-head">
+      <div class="hud-drawer-head-title">
+        <span>💬 Чат с пользователем</span>
+        <span class="hud-drawer-subtitle">{{if .Session.DisplayName}}{{.Session.DisplayName}}{{else}}{{.Session.Username}}{{end}}</span>
+      </div>
+      <button type="button" class="hud-btn hud-btn-icon" id="btn-chat-close" title="Закрыть">✕</button>
+    </div>
+    <div class="chat-templates-bar">
+      <button type="button" class="chat-template-chip" data-template="👋 Здравствуйте! Подключился к экрану.">👋 Здравствуйте</button>
+      <button type="button" class="chat-template-chip" data-template="📁 Пожалуйста, сохраните открытые файлы.">📁 Сохраните файлы</button>
+      <button type="button" class="chat-template-chip" data-template="🔄 Сейчас потребуется перезагрузить систему.">🔄 Перезагрузка</button>
+      <button type="button" class="chat-template-chip" data-template="✅ Проблема устранена, проверяйте!">✅ Проверяйте</button>
+    </div>
+    <div id="chat-messages-container" class="chat-messages-container">
+      <div class="chat-empty-hint">История сообщений пуста. Напишите пользователю.</div>
+    </div>
+    <div class="hud-drawer-footer chat-input-footer">
+      <input type="text" id="chat-input-text" class="input sm" placeholder="Введите сообщение..." maxlength="500">
+      <button type="button" id="btn-chat-send" class="btn primary sm">Отправить ↵</button>
+    </div>
+  </div>
+
+  <!-- Выдвижная боковая панель передачи файлов -->
+  <div id="viewer-files-drawer" class="hud-side-drawer files-drawer">
+    <div class="hud-drawer-head">
+      <div class="hud-drawer-head-title">
+        <span>📁 Передача файлов</span>
+        <span class="hud-drawer-subtitle">Downloads/LigamentSupport</span>
+      </div>
+      <button type="button" class="hud-btn hud-btn-icon" id="btn-files-close" title="Закрыть">✕</button>
+    </div>
+    <div class="files-drawer-content">
+      <div id="files-dropzone" class="files-dropzone">
+        <div class="files-dropzone-icon">📤</div>
+        <div class="files-dropzone-text">Перетащите файлы сюда или нажмите для выбора</div>
+        <input type="file" id="file-upload-input" multiple style="display: none;">
+        <button type="button" id="btn-select-file" class="btn secondary sm" style="margin-top: 8px;">Выбрать на диске</button>
+      </div>
+      <div class="files-drawer-section-title">Переданные и получаемые файлы:</div>
+      <div id="files-transfer-list" class="files-transfer-list">
+        <div class="files-empty-hint">Файлы еще не передавались. Вы можете перетащить файл прямо на экран.</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Центрированный оверлей Zero-Trust 2FA (для connecting) -->
   <div id="number-match-card" class="number-match-overlay{{if and (eq .Session.Status "connecting") .Session.NumberMatch}} visible{{else}} hidden{{end}}">
     <div class="number-match-dialog">
@@ -141,6 +197,15 @@
   <!-- Основной холст удаленного рабочего стола (100% пространства) -->
   <main class="support-screen-canvas" id="viewer-screen-container" tabindex="0">
     <video id="remote-video" class="support-remote-video" autoplay playsinline muted></video>
+
+    <!-- Overlay при Drag-and-Drop файла на экран -->
+    <div id="canvas-drop-overlay" class="canvas-drop-overlay">
+      <div class="canvas-drop-card">
+        <div class="canvas-drop-icon">📥</div>
+        <div class="canvas-drop-title">Отпустите файл для передачи</div>
+        <div class="canvas-drop-sub">Файл будет сохранен в папку Downloads/LigamentSupport на ПК пользователя</div>
+      </div>
+    </div>
 
     <div id="video-placeholder" class="viewer-placeholder">
       <div class="viewer-spinner"></div>

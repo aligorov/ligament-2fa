@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_state.dart';
 import '../services/support_service.dart';
@@ -636,6 +638,37 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const SizedBox(width: 8),
+          if (isActive) ...[
+            ElevatedButton.icon(
+              onPressed: () => _showInSessionChatModal(context, auth),
+              icon: const Icon(Icons.chat_bubble_outline, size: 13),
+              label: Text(
+                support.unreadChatCount > 0
+                    ? 'Чат (${support.unreadChatCount})'
+                    : 'Чат',
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: support.unreadChatCount > 0
+                    ? const Color(0xFF3B82F6)
+                    : const Color(0xFF334155),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+            const SizedBox(width: 4),
+            IconButton(
+              onPressed: () => _showReceivedFilesModal(context, auth),
+              icon: const Icon(Icons.folder_open, size: 18, color: Color(0xFF94A3B8)),
+              tooltip: 'Файлы от инженера',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+            ),
+            const SizedBox(width: 4),
+          ],
           OutlinedButton(
             onPressed: () => auth.endSupport(),
             style: OutlinedButton.styleFrom(
@@ -656,5 +689,387 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
+  }
+
+  void _showInSessionChatModal(BuildContext context, AuthState auth) {
+    auth.support.markChatAsRead();
+    final textController = TextEditingController();
+    final scrollController = ScrollController();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Consumer<AuthState>(
+          builder: (context, currentAuth, _) {
+            final messages = currentAuth.support.chatMessages;
+
+            return Container(
+              height: MediaQuery.of(context).size.height * 0.75,
+              decoration: const BoxDecoration(
+                color: Color(0xFF0F172A),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                border: Border(
+                  top: BorderSide(color: Color(0xFF334155), width: 1.5),
+                  left: BorderSide(color: Color(0xFF334155), width: 1),
+                  right: BorderSide(color: Color(0xFF334155), width: 1),
+                ),
+              ),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.support_agent, color: Color(0xFF38BDF8), size: 22),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Чат с инженером (${currentAuth.support.category == '1c' ? '1С' : 'IT'})',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
+                          onPressed: () => Navigator.of(ctx).pop(),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(color: Color(0xFF1E293B), height: 1),
+
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Row(
+                      children: [
+                        _buildQuickReplyChip(currentAuth, '👋 Здравствуйте!'),
+                        _buildQuickReplyChip(currentAuth, '👍 Хорошо, ожидаю'),
+                        _buildQuickReplyChip(currentAuth, '🔄 Перезагружаю ПК'),
+                        _buildQuickReplyChip(currentAuth, '✅ Всё заработало!'),
+                      ],
+                    ),
+                  ),
+
+                  Expanded(
+                    child: messages.isEmpty
+                        ? const Center(
+                            child: Text(
+                              'Сообщений пока нет.\nВы можете написать инженеру здесь.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Color(0xFF64748B), fontSize: 13),
+                            ),
+                          )
+                        : ListView.builder(
+                            controller: scrollController,
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            itemCount: messages.length,
+                            itemBuilder: (ctx, i) {
+                              final msg = messages[i];
+                              final isMe = msg.sender == 'user';
+                              final timeStr = DateFormat('HH:mm').format(msg.timestamp);
+
+                              return Align(
+                                alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                                child: Container(
+                                  margin: const EdgeInsets.only(bottom: 8),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  constraints: BoxConstraints(
+                                    maxWidth: MediaQuery.of(context).size.width * 0.75,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: isMe
+                                        ? const Color(0xFF2563EB)
+                                        : const Color(0xFF1E293B),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: isMe
+                                          ? const Color(0xFF3B82F6)
+                                          : const Color(0xFF334155),
+                                    ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                                    children: [
+                                      if (!isMe)
+                                        Padding(
+                                          padding: const EdgeInsets.only(bottom: 2),
+                                          child: Text(
+                                            msg.senderName,
+                                            style: const TextStyle(
+                                              color: Color(0xFF38BDF8),
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      Text(
+                                        msg.text,
+                                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        timeStr,
+                                        style: TextStyle(
+                                          color: isMe ? Colors.white70 : const Color(0xFF64748B),
+                                          fontSize: 9,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+
+                  Container(
+                    padding: EdgeInsets.only(
+                      left: 12,
+                      right: 12,
+                      top: 8,
+                      bottom: MediaQuery.of(context).viewInsets.bottom + 8,
+                    ),
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF0B0F19),
+                      border: Border(top: BorderSide(color: Color(0xFF1E293B))),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: textController,
+                            style: const TextStyle(color: Colors.white, fontSize: 13),
+                            decoration: InputDecoration(
+                              hintText: 'Написать инженеру...',
+                              hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
+                              filled: true,
+                              fillColor: const Color(0xFF1E293B),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(20),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                            onSubmitted: (val) {
+                              if (val.trim().isNotEmpty) {
+                                currentAuth.support.sendChatMessage(
+                                  val.trim(),
+                                  senderName: currentAuth.displayName,
+                                );
+                                textController.clear();
+                              }
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.send, color: Color(0xFF38BDF8)),
+                          onPressed: () {
+                            final val = textController.text.trim();
+                            if (val.isNotEmpty) {
+                              currentAuth.support.sendChatMessage(
+                                val,
+                                senderName: currentAuth.displayName,
+                              );
+                              textController.clear();
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildQuickReplyChip(AuthState auth, String text) {
+    return Container(
+      margin: const EdgeInsets.only(right: 6),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () {
+          auth.support.sendChatMessage(
+            text,
+            senderName: auth.displayName,
+          );
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E293B),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFF334155)),
+          ),
+          child: Text(
+            text,
+            style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 11),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showReceivedFilesModal(BuildContext context, AuthState auth) {
+    final support = auth.support;
+
+    String downloadsPath = '';
+    if (Platform.isWindows) {
+      final profile = Platform.environment['USERPROFILE'] ?? 'C:\\Users\\Default';
+      downloadsPath = '$profile\\Downloads\\LigamentSupport';
+    } else if (Platform.isMacOS || Platform.isLinux) {
+      final home = Platform.environment['HOME'] ?? '/tmp';
+      downloadsPath = '$home/Downloads/LigamentSupport';
+    } else {
+      downloadsPath = '/sdcard/Download/LigamentSupport';
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0F172A),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: Color(0xFF334155)),
+          ),
+          title: Row(
+            children: [
+              const Icon(Icons.folder_shared, color: Color(0xFF38BDF8), size: 22),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Файлы удаленной поддержки',
+                  style: TextStyle(color: Colors.white, fontSize: 16),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
+                onPressed: () => Navigator.of(ctx).pop(),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (support.receivedFiles.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text(
+                      'Инженер пока не передавал файлов.\nВсе полученные файлы автоматически сохраняются в вашу папку Загрузки/LigamentSupport.',
+                      style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.4),
+                    ),
+                  )
+                else ...[
+                  const Text(
+                    'Полученные файлы в этой сессии:',
+                    style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: support.receivedFiles.length,
+                      separatorBuilder: (_, __) => const Divider(color: Color(0xFF1E293B), height: 1),
+                      itemBuilder: (c, idx) {
+                        final f = support.receivedFiles[idx];
+                        return ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.insert_drive_file, color: Color(0xFF38BDF8)),
+                          title: Text(
+                            f.filename,
+                            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text(
+                            '${(f.size / 1024).toStringAsFixed(1)} КБ • ${DateFormat('HH:mm').format(f.receivedAt)}',
+                            style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.folder_open, color: Color(0xFF94A3B8), size: 18),
+                            tooltip: 'Показать в папке',
+                            onPressed: () => _openFolder(downloadsPath),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E293B),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFF334155)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.folder, color: Color(0xFFF59E0B), size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          downloadsPath,
+                          style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 11, fontFamily: 'monospace'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () => _openFolder(downloadsPath),
+              icon: const Icon(Icons.folder_open, size: 16),
+              label: const Text('Открыть папку'),
+              style: TextButton.styleFrom(foregroundColor: const Color(0xFF38BDF8)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2563EB),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Закрыть'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _openFolder(String path) {
+    try {
+      if (Platform.isWindows) {
+        Process.run('explorer.exe', [path]);
+      } else if (Platform.isMacOS) {
+        Process.run('open', [path]);
+      } else if (Platform.isLinux) {
+        Process.run('xdg-open', [path]);
+      }
+    } catch (_) {}
   }
 }

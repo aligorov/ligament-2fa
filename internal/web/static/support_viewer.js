@@ -158,6 +158,46 @@ document.addEventListener("DOMContentLoaded", () => {
   const telCpuBadge = document.getElementById("tel-cpu-badge");
   const telDiskBadge = document.getElementById("tel-disk-badge");
 
+  // Чат и Передача файлов
+  const btnChatToggle = document.getElementById("btn-chat-toggle");
+  const chatBadge = document.getElementById("chat-badge");
+  const btnFilesToggle = document.getElementById("btn-files-toggle");
+  const viewerChatDrawer = document.getElementById("viewer-chat-drawer");
+  const btnChatClose = document.getElementById("btn-chat-close");
+  const chatMessagesContainer = document.getElementById("chat-messages-container");
+  const chatInputText = document.getElementById("chat-input-text");
+  const btnChatSend = document.getElementById("btn-chat-send");
+  const chatTemplateChips = document.querySelectorAll(".chat-template-chip");
+
+  const viewerFilesDrawer = document.getElementById("viewer-files-drawer");
+  const btnFilesClose = document.getElementById("btn-files-close");
+  const filesDropzone = document.getElementById("files-dropzone");
+  const fileUploadInput = document.getElementById("file-upload-input");
+  const btnSelectFile = document.getElementById("btn-select-file");
+  const filesTransferList = document.getElementById("files-transfer-list");
+  const canvasDropOverlay = document.getElementById("canvas-drop-overlay");
+  const viewerScreenContainer = document.getElementById("viewer-screen-container");
+
+  let unreadChatCount = 0;
+  const incomingDownloads = new Map();
+
+  function escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function formatBytes(bytes) {
+    if (bytes === undefined || bytes === null || isNaN(bytes)) return "0 Б";
+    if (bytes < 1024) return bytes + " Б";
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " КБ";
+    return (bytes / 1048576).toFixed(1) + " МБ";
+  }
+
   function tokenQuery() {
     return transferToken ? "?token=" + encodeURIComponent(transferToken) : "";
   }
@@ -382,6 +422,19 @@ document.addEventListener("DOMContentLoaded", () => {
         clipboardReadVal.textContent = msg.text || "(буфер обмена пуст)";
         clipboardReadResult.style.display = "block";
       }
+    } else if (msg.type === "chat_message") {
+      appendChatMessage(msg);
+      if (!viewerChatDrawer || !viewerChatDrawer.classList.contains("visible")) {
+        unreadChatCount++;
+        updateChatBadge();
+        playSosChime();
+      }
+    } else if (msg.type === "file_start") {
+      handleIncomingFileStart(msg);
+    } else if (msg.type === "file_chunk") {
+      handleIncomingFileChunk(msg);
+    } else if (msg.type === "file_end") {
+      handleIncomingFileEnd(msg);
     }
   }
 
@@ -440,6 +493,8 @@ document.addEventListener("DOMContentLoaded", () => {
         handleRemoteSDP(data.sdp);
       } else if (data.candidate) {
         handleRemoteCandidate(data.candidate);
+      } else {
+        handleControlMessage(data);
       }
     } else if (msg.type === "support_prompt") {
       showNumberMatch(msg.number_match);
@@ -773,6 +828,371 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnClipboardRead) {
     btnClipboardRead.addEventListener("click", () => {
       sendControlMessage({ type: "clipboard_get" });
+    });
+  }
+
+  // ----------------------------------------------------
+  // ЧАТ С ПОЛЬЗОВАТЕЛЕМ
+  // ----------------------------------------------------
+  function updateChatBadge() {
+    if (!chatBadge) return;
+    if (unreadChatCount > 0) {
+      chatBadge.textContent = String(unreadChatCount);
+      chatBadge.style.display = "inline-flex";
+    } else {
+      chatBadge.style.display = "none";
+    }
+  }
+
+  function toggleChatDrawer(force) {
+    if (!viewerChatDrawer) return;
+    const isOpening = force !== undefined ? force : !viewerChatDrawer.classList.contains("visible");
+    if (isOpening) {
+      viewerChatDrawer.classList.add("visible");
+      if (viewerFilesDrawer) viewerFilesDrawer.classList.remove("visible");
+      unreadChatCount = 0;
+      updateChatBadge();
+      if (chatInputText) chatInputText.focus();
+    } else {
+      viewerChatDrawer.classList.remove("visible");
+    }
+  }
+
+  function appendChatMessage(msg) {
+    if (!chatMessagesContainer) return;
+    const emptyHint = chatMessagesContainer.querySelector(".chat-empty-hint");
+    if (emptyHint) emptyHint.remove();
+
+    const isOperator = msg.sender === "operator";
+    const el = document.createElement("div");
+    el.className = "chat-msg " + (isOperator ? "chat-msg-out" : "chat-msg-in");
+
+    const timeDate = msg.timestamp ? new Date(msg.timestamp) : new Date();
+    const timeStr = timeDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const senderDisplay = msg.sender_name || (isOperator ? (operatorName || "Инженер") : "Пользователь");
+
+    el.innerHTML = `
+      <div class="chat-msg-meta">
+        <strong>${escapeHtml(senderDisplay)}</strong>
+        <span>${timeStr}</span>
+      </div>
+      <div class="chat-msg-text">${escapeHtml(msg.text || "")}</div>
+    `;
+
+    chatMessagesContainer.appendChild(el);
+    chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+  }
+
+  function sendChatMessage(text) {
+    if (!text || !text.trim()) return;
+    const msg = {
+      type: "chat_message",
+      id: String(Date.now()),
+      sender: "operator",
+      sender_name: operatorName || "Инженер",
+      text: text.trim(),
+      timestamp: Date.now()
+    };
+    sendControlMessage(msg);
+    appendChatMessage(msg);
+    if (chatInputText) chatInputText.value = "";
+  }
+
+  if (btnChatToggle) {
+    btnChatToggle.addEventListener("click", () => toggleChatDrawer());
+  }
+  if (btnChatClose) {
+    btnChatClose.addEventListener("click", () => toggleChatDrawer(false));
+  }
+  if (btnChatSend && chatInputText) {
+    btnChatSend.addEventListener("click", () => sendChatMessage(chatInputText.value));
+    chatInputText.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendChatMessage(chatInputText.value);
+      }
+    });
+  }
+  chatTemplateChips.forEach((chip) => {
+    chip.addEventListener("click", () => {
+      if (chatInputText) {
+        chatInputText.value = chip.dataset.template || "";
+        chatInputText.focus();
+      }
+    });
+  });
+
+  // ----------------------------------------------------
+  // ПЕРЕДАЧА ФАЙЛОВ
+  // ----------------------------------------------------
+  const FILE_CHUNK_SIZE = 32768; // 32KB
+
+  function toggleFilesDrawer(force) {
+    if (!viewerFilesDrawer) return;
+    const isOpening = force !== undefined ? force : !viewerFilesDrawer.classList.contains("visible");
+    if (isOpening) {
+      viewerFilesDrawer.classList.add("visible");
+      if (viewerChatDrawer) viewerChatDrawer.classList.remove("visible");
+    } else {
+      viewerFilesDrawer.classList.remove("visible");
+    }
+  }
+
+  function createTransferUI(transferId, filename, size, direction) {
+    if (!filesTransferList) return;
+    const emptyHint = filesTransferList.querySelector(".files-empty-hint");
+    if (emptyHint) emptyHint.remove();
+
+    const item = document.createElement("div");
+    item.className = "file-transfer-item";
+    item.id = "transfer-" + transferId;
+
+    const dirIcon = direction === "download" ? "📥" : "📤";
+    const dirText = direction === "download" ? "Прием от клиента" : "Отправка на ПК";
+
+    item.innerHTML = `
+      <div class="file-transfer-header">
+        <span class="file-transfer-name" title="${escapeHtml(filename)}">${dirIcon} ${escapeHtml(filename)}</span>
+        <span class="file-transfer-size">${formatBytes(size)}</span>
+      </div>
+      <div class="file-transfer-bar-wrap">
+        <div class="file-transfer-bar" id="bar-${transferId}"></div>
+      </div>
+      <div class="file-transfer-status">
+        <span id="status-${transferId}">${dirText}...</span>
+        <span id="pct-${transferId}">0%</span>
+      </div>
+    `;
+    filesTransferList.prepend(item);
+  }
+
+  function updateTransferProgress(transferId, pct, statusText) {
+    const bar = document.getElementById("bar-" + transferId);
+    const pctEl = document.getElementById("pct-" + transferId);
+    const statusEl = document.getElementById("status-" + transferId);
+    if (bar) bar.style.width = Math.min(100, Math.max(0, pct)) + "%";
+    if (pctEl) pctEl.textContent = Math.min(100, Math.max(0, pct)) + "%";
+    if (statusEl && statusText) statusEl.textContent = statusText;
+  }
+
+  function completeTransferUI(transferId, statusText, isError) {
+    const bar = document.getElementById("bar-" + transferId);
+    const statusEl = document.getElementById("status-" + transferId);
+    const pctEl = document.getElementById("pct-" + transferId);
+    if (bar) {
+      bar.style.width = "100%";
+      bar.className = "file-transfer-bar " + (isError ? "error" : "done");
+    }
+    if (pctEl) pctEl.textContent = isError ? "Ошибка" : "100%";
+    if (statusEl) statusEl.textContent = statusText;
+  }
+
+  async function sendFile(file) {
+    if (!file) return;
+    toggleFilesDrawer(true);
+
+    const transferId = "f_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    const totalChunks = Math.ceil(file.size / FILE_CHUNK_SIZE) || 1;
+
+    createTransferUI(transferId, file.name, file.size, "upload");
+
+    sendControlMessage({
+      type: "file_start",
+      transfer_id: transferId,
+      filename: file.name,
+      size: file.size,
+      total_chunks: totalChunks
+    });
+
+    try {
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * FILE_CHUNK_SIZE;
+        const end = Math.min(file.size, start + FILE_CHUNK_SIZE);
+        const slice = file.slice(start, end);
+        const arrayBuf = await slice.arrayBuffer();
+
+        let binary = "";
+        const bytes = new Uint8Array(arrayBuf);
+        const len = bytes.byteLength;
+        for (let b = 0; b < len; b++) {
+          binary += String.fromCharCode(bytes[b]);
+        }
+        const b64 = btoa(binary);
+
+        sendControlMessage({
+          type: "file_chunk",
+          transfer_id: transferId,
+          chunk_index: i,
+          data: b64
+        });
+
+        const pct = Math.round(((i + 1) / totalChunks) * 100);
+        updateTransferProgress(transferId, pct, `Отправка (${i + 1}/${totalChunks})...`);
+
+        if (inputChannel && inputChannel.bufferedAmount > 65536) {
+          await new Promise((r) => setTimeout(r, 20));
+        } else if (i % 4 === 0) {
+          await new Promise((r) => setTimeout(r, 4));
+        }
+      }
+
+      sendControlMessage({
+        type: "file_end",
+        transfer_id: transferId
+      });
+
+      completeTransferUI(transferId, "Сохранено в Downloads/LigamentSupport ✅", false);
+      appendChatMessage({
+        type: "chat_message",
+        id: String(Date.now()),
+        sender: "operator",
+        sender_name: "Система",
+        text: `📁 Передан файл: ${file.name} (${formatBytes(file.size)})`,
+        timestamp: Date.now()
+      });
+    } catch (err) {
+      console.error("Support file transfer error:", err);
+      completeTransferUI(transferId, "Ошибка передачи: " + err.message, true);
+    }
+  }
+
+  async function handleFilesUpload(fileList) {
+    if (!fileList || fileList.length === 0) return;
+    for (const file of fileList) {
+      await sendFile(file);
+    }
+  }
+
+  // Прием входящих файлов от клиента
+  function handleIncomingFileStart(msg) {
+    const transferId = msg.transfer_id || msg.id;
+    if (!transferId) return;
+    incomingDownloads.set(transferId, {
+      filename: msg.filename || "client_file",
+      size: msg.size || 0,
+      totalChunks: msg.total_chunks || 1,
+      chunks: new Map()
+    });
+    toggleFilesDrawer(true);
+    createTransferUI(transferId, msg.filename || "client_file", msg.size || 0, "download");
+  }
+
+  function handleIncomingFileChunk(msg) {
+    const transferId = msg.transfer_id || msg.id;
+    const item = incomingDownloads.get(transferId);
+    if (!item || !msg.data) return;
+
+    try {
+      const binary = atob(msg.data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      item.chunks.set(msg.chunk_index, bytes);
+
+      const receivedCount = item.chunks.size;
+      const pct = Math.round((receivedCount / item.totalChunks) * 100);
+      updateTransferProgress(transferId, pct, `Прием (${receivedCount}/${item.totalChunks})...`);
+    } catch (e) {
+      console.error("Support incoming chunk decode error:", e);
+    }
+  }
+
+  function handleIncomingFileEnd(msg) {
+    const transferId = msg.transfer_id || msg.id;
+    const item = incomingDownloads.get(transferId);
+    if (!item) return;
+
+    const parts = [];
+    for (let i = 0; i < item.totalChunks; i++) {
+      if (item.chunks.has(i)) {
+        parts.push(item.chunks.get(i));
+      }
+    }
+
+    try {
+      const blob = new Blob(parts);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = item.filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 1000);
+
+      completeTransferUI(transferId, "Скачан в загрузки браузера ✅", false);
+      appendChatMessage({
+        type: "chat_message",
+        id: String(Date.now()),
+        sender: "user",
+        sender_name: "Система",
+        text: `📁 Получен файл: ${item.filename} (${formatBytes(item.size)})`,
+        timestamp: Date.now()
+      });
+      playSosChime();
+    } catch (e) {
+      console.error("Support incoming file save error:", e);
+      completeTransferUI(transferId, "Ошибка сборки файла", true);
+    } finally {
+      incomingDownloads.delete(transferId);
+    }
+  }
+
+  if (btnFilesToggle) {
+    btnFilesToggle.addEventListener("click", () => toggleFilesDrawer());
+  }
+  if (btnFilesClose) {
+    btnFilesClose.addEventListener("click", () => toggleFilesDrawer(false));
+  }
+  if (btnSelectFile && fileUploadInput) {
+    btnSelectFile.addEventListener("click", () => fileUploadInput.click());
+  }
+  if (filesDropzone && fileUploadInput) {
+    filesDropzone.addEventListener("click", (e) => {
+      if (e.target !== btnSelectFile) fileUploadInput.click();
+    });
+    filesDropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      filesDropzone.classList.add("drag-active");
+    });
+    filesDropzone.addEventListener("dragleave", () => {
+      filesDropzone.classList.remove("drag-active");
+    });
+    filesDropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      filesDropzone.classList.remove("drag-active");
+      if (e.dataTransfer && e.dataTransfer.files) {
+        handleFilesUpload(e.dataTransfer.files);
+      }
+    });
+  }
+  if (fileUploadInput) {
+    fileUploadInput.addEventListener("change", () => {
+      handleFilesUpload(fileUploadInput.files);
+      fileUploadInput.value = "";
+    });
+  }
+
+  // Drag & drop onto screen container
+  if (viewerScreenContainer && canvasDropOverlay) {
+    viewerScreenContainer.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      canvasDropOverlay.classList.add("active");
+    });
+    viewerScreenContainer.addEventListener("dragleave", (e) => {
+      if (!e.relatedTarget || !viewerScreenContainer.contains(e.relatedTarget)) {
+        canvasDropOverlay.classList.remove("active");
+      }
+    });
+    viewerScreenContainer.addEventListener("drop", (e) => {
+      e.preventDefault();
+      canvasDropOverlay.classList.remove("active");
+      if (e.dataTransfer && e.dataTransfer.files) {
+        handleFilesUpload(e.dataTransfer.files);
+      }
     });
   }
 

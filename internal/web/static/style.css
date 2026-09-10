@@ -1914,6 +1914,22 @@ button.select-chip.partial .ad-group-count {
   color: #94a3b8;
 }
 
+.hud-badge-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #ef4444;
+  color: #ffffff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  border-radius: 999px;
+  padding: 2px 6px;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 4px;
+}
+
 /* Problem Summary Popover */
 .hud-popover-wrap {
   position: relative;
@@ -2057,6 +2073,312 @@ button.select-chip.partial .ad-group-count {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+/* Side Drawers (Chat & Files) */
+.hud-side-drawer {
+  display: none;
+  flex-direction: column;
+  position: fixed;
+  top: 44px;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  max-width: 95vw;
+  background: rgba(15, 23, 42, 0.96);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.6);
+  z-index: 70;
+  animation: slideInRight 0.2s ease-out;
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.hud-side-drawer.visible {
+  display: flex;
+}
+
+.hud-drawer-head-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hud-drawer-subtitle {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+/* Chat drawer */
+.chat-templates-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  scrollbar-width: none;
+}
+
+.chat-templates-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-template-chip {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #cbd5e1;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  padding: 4px 8px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.chat-template-chip:hover {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: rgba(59, 130, 246, 0.5);
+  color: #ffffff;
+}
+
+.chat-messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-empty-hint {
+  font-size: 0.8rem;
+  color: #64748b;
+  text-align: center;
+  margin: auto;
+  padding: 20px 10px;
+}
+
+.chat-msg {
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  word-break: break-word;
+  animation: fadeIn 0.15s ease;
+}
+
+.chat-msg-in {
+  align-self: flex-start;
+  background: #334155;
+  color: #f1f5f9;
+  border-bottom-left-radius: 2px;
+}
+
+.chat-msg-out {
+  align-self: flex-end;
+  background: #2563eb;
+  color: #ffffff;
+  border-bottom-right-radius: 2px;
+}
+
+.chat-msg-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.68rem;
+  opacity: 0.75;
+  margin-bottom: 3px;
+}
+
+.chat-msg-text {
+  white-space: pre-wrap;
+}
+
+.chat-input-footer {
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.25);
+  display: flex;
+  gap: 8px;
+}
+
+/* Files drawer */
+.files-drawer-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.files-dropzone {
+  border: 2px dashed rgba(255, 255, 255, 0.25);
+  border-radius: 12px;
+  padding: 20px 16px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.files-dropzone:hover {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.files-dropzone.drag-active {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.15);
+}
+
+.files-dropzone-icon {
+  font-size: 2rem;
+  margin-bottom: 6px;
+}
+
+.files-dropzone-text {
+  font-size: 0.82rem;
+  color: #cbd5e1;
+}
+
+.files-drawer-section-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.files-transfer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.files-empty-hint {
+  font-size: 0.8rem;
+  color: #64748b;
+  text-align: center;
+  padding: 16px 8px;
+}
+
+.file-transfer-item {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.file-transfer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.file-transfer-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.file-transfer-size {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  font-weight: normal;
+}
+
+.file-transfer-bar-wrap {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.file-transfer-bar {
+  height: 100%;
+  background: #3b82f6;
+  transition: width 0.15s ease-out;
+  width: 0%;
+}
+
+.file-transfer-bar.done {
+  background: #10b981;
+}
+
+.file-transfer-bar.error {
+  background: #ef4444;
+}
+
+.file-transfer-status {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
+
+/* Canvas Drop Overlay */
+.canvas-drop-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.canvas-drop-overlay.active {
+  display: flex;
+}
+
+.canvas-drop-card {
+  background: #1e293b;
+  border: 2px dashed #3b82f6;
+  border-radius: 16px;
+  padding: 36px 48px;
+  text-align: center;
+  color: #f1f5f9;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+}
+
+.canvas-drop-icon {
+  font-size: 3rem;
+  margin-bottom: 8px;
+}
+
+.canvas-drop-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.canvas-drop-sub {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  margin-top: 4px;
 }
 
 /* 2FA Zero-Trust Centered Dialog */

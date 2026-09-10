@@ -4,10 +4,12 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../services/auth_state.dart';
+import '../services/support_service.dart';
 
 enum OperatorZoomMode {
   fit,
@@ -62,6 +64,9 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
   double _zoomScale = 1.0;
   final FocusNode _keyboardFocus = FocusNode();
   final GlobalKey _videoKey = GlobalKey();
+
+  final List<SupportChatMessage> _chatMessages = [];
+  int _unreadChatCount = 0;
 
   @override
   void initState() {
@@ -232,6 +237,16 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     } else if (type == 'clipboard_data') {
       final text = data['text']?.toString() ?? '';
       _showRemoteClipboardDialog(text);
+    } else if (type == 'chat_message') {
+      try {
+        final msg = SupportChatMessage.fromJson(data);
+        if (mounted) {
+          setState(() {
+            _chatMessages.add(msg);
+            _unreadChatCount++;
+          });
+        }
+      } catch (_) {}
     }
   }
 
@@ -287,10 +302,236 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           );
           Navigator.of(context).pop();
         }
+      } else if (data['type'] == 'chat_message' || payload['type'] == 'chat_message') {
+        _handleDataChannelMessage(payload['type'] == 'chat_message' ? payload : data);
       }
     } catch (e) {
       debugPrint('support_operator: ошибка обработки WS: $e');
     }
+  }
+
+  void _sendChatMessage(String text) {
+    if (text.trim().isEmpty) return;
+    final auth = context.read<AuthState>();
+    final operatorName = auth.displayName.isNotEmpty ? auth.displayName : 'Инженер';
+    final msg = {
+      'type': 'chat_message',
+      'id': 'msg_${DateTime.now().millisecondsSinceEpoch}',
+      'sender': 'operator',
+      'sender_name': operatorName,
+      'text': text.trim(),
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+    _sendDataMessage(msg);
+    if (mounted) {
+      setState(() {
+        _chatMessages.add(SupportChatMessage.fromJson(msg));
+      });
+    }
+  }
+
+  void _showOperatorChatModal() {
+    setState(() {
+      _unreadChatCount = 0;
+    });
+    final textController = TextEditingController();
+    final scrollController = ScrollController();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Container(
+              height: MediaQuery.of(context).size.height * 0.75,
+              decoration: const BoxDecoration(
+                color: Color(0xFF0F172A),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                border: Border(
+                  top: BorderSide(color: Color(0xFF334155), width: 1.5),
+                  left: BorderSide(color: Color(0xFF334155), width: 1),
+                  right: BorderSide(color: Color(0xFF334155), width: 1),
+                ),
+              ),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.chat, color: Color(0xFF38BDF8), size: 22),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Чат с пользователем • ${widget.sessionData['employee_name'] ?? widget.sessionData['username'] ?? 'Клиент'}',
+                            style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
+                          onPressed: () => Navigator.of(ctx).pop(),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(color: Color(0xFF1E293B), height: 1),
+
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Row(
+                      children: [
+                        _buildOperatorChatChip(setModalState, '👋 Здравствуйте! Подключился к экрану.'),
+                        _buildOperatorChatChip(setModalState, '📁 Пожалуйста, сохраните открытые файлы.'),
+                        _buildOperatorChatChip(setModalState, '🔄 Сейчас потребуется перезагрузить систему.'),
+                        _buildOperatorChatChip(setModalState, '✅ Проблема устранена, проверяйте!'),
+                      ],
+                    ),
+                  ),
+
+                  Expanded(
+                    child: _chatMessages.isEmpty
+                        ? const Center(
+                            child: Text(
+                              'Сообщений пока нет.\nНапишите пользователю приветствие или инструкцию.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Color(0xFF64748B), fontSize: 13),
+                            ),
+                          )
+                        : ListView.builder(
+                            controller: scrollController,
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            itemCount: _chatMessages.length,
+                            itemBuilder: (c, i) {
+                              final msg = _chatMessages[i];
+                              final isOperator = msg.sender == 'operator';
+                              final timeStr = DateFormat('HH:mm').format(msg.timestamp);
+
+                              return Align(
+                                alignment: isOperator ? Alignment.centerRight : Alignment.centerLeft,
+                                child: Container(
+                                  margin: const EdgeInsets.only(bottom: 8),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  constraints: BoxConstraints(
+                                    maxWidth: MediaQuery.of(context).size.width * 0.75,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: isOperator ? const Color(0xFF2563EB) : const Color(0xFF1E293B),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: isOperator ? const Color(0xFF3B82F6) : const Color(0xFF334155),
+                                    ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: isOperator ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                                    children: [
+                                      if (!isOperator)
+                                        Padding(
+                                          padding: const EdgeInsets.only(bottom: 2),
+                                          child: Text(
+                                            msg.senderName,
+                                            style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 10, fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                      Text(msg.text, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        timeStr,
+                                        style: TextStyle(color: isOperator ? Colors.white70 : const Color(0xFF64748B), fontSize: 9),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+
+                  Container(
+                    padding: EdgeInsets.only(
+                      left: 12,
+                      right: 12,
+                      top: 8,
+                      bottom: MediaQuery.of(context).viewInsets.bottom + 8,
+                    ),
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF0B0F19),
+                      border: Border(top: BorderSide(color: Color(0xFF1E293B))),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: textController,
+                            style: const TextStyle(color: Colors.white, fontSize: 13),
+                            decoration: InputDecoration(
+                              hintText: 'Написать сообщение пользователю...',
+                              hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
+                              filled: true,
+                              fillColor: const Color(0xFF1E293B),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(20),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                            onSubmitted: (val) {
+                              if (val.trim().isNotEmpty) {
+                                _sendChatMessage(val.trim());
+                                setModalState(() {});
+                                textController.clear();
+                              }
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.send, color: Color(0xFF38BDF8)),
+                          onPressed: () {
+                            final val = textController.text.trim();
+                            if (val.isNotEmpty) {
+                              _sendChatMessage(val);
+                              setModalState(() {});
+                              textController.clear();
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildOperatorChatChip(void Function(void Function()) setModalState, String text) {
+    return Container(
+      margin: const EdgeInsets.only(right: 6),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () {
+          _sendChatMessage(text);
+          setModalState(() {});
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E293B),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFF334155)),
+          ),
+          child: Text(text, style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 11)),
+        ),
+      ),
+    );
   }
 
   void _sendWsSignal(Map<String, dynamic> signal) {
@@ -826,6 +1067,17 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     },
                   ),
 
+                  // Чат с пользователем
+                  IconButton(
+                    icon: Badge(
+                      isLabelVisible: _unreadChatCount > 0,
+                      label: Text('$_unreadChatCount'),
+                      child: const Icon(Icons.chat_bubble_outline, color: Color(0xFF38BDF8), size: 20),
+                    ),
+                    tooltip: 'Чат с пользователем',
+                    onPressed: _showOperatorChatModal,
+                  ),
+
                   // Бейджи телеметрии (CPU, Диск)
                   if (_cpuPercent > 0 || _diskPercent > 0)
                     Row(
@@ -1107,6 +1359,18 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                       onPressed: _showTextInputDialog,
                       icon: const Icon(Icons.keyboard_alt_outlined, size: 16, color: Color(0xFF38BDF8)),
                       label: const Text('Ввод текста', style: TextStyle(fontSize: 12, color: Colors.white)),
+                    ),
+                    TextButton.icon(
+                      onPressed: _showOperatorChatModal,
+                      icon: Badge(
+                        isLabelVisible: _unreadChatCount > 0,
+                        label: Text('$_unreadChatCount'),
+                        child: const Icon(Icons.chat_bubble_outline, size: 16, color: Color(0xFF38BDF8)),
+                      ),
+                      label: Text(
+                        _unreadChatCount > 0 ? 'Чат ($_unreadChatCount)' : 'Чат',
+                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                      ),
                     ),
                   ],
                 ),
