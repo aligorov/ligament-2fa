@@ -563,9 +563,16 @@ HRESULT LigamentCredential::GetSerialization(
         if (!m_hPollThread) {
             // No worker running: send a fresh push challenge.
             std::wstring challengeId;
+            std::wstring numberMatch;
             std::string err;
-            if (m_apiClient->StartPush(m_username, m_password, challengeId, err)) {
-                m_statusText = L"Push отправлен! Подтвердите вход в Telegram...";
+            if (m_apiClient->StartPush(m_username, m_password, challengeId, numberMatch, err)) {
+                // number-matching: приложение требует ввести контрольное
+                // число — показываем его ЗДЕСЬ, на экране входа (RDP).
+                if (!numberMatch.empty()) {
+                    m_statusText = L"Подтвердите вход в приложении Ligament. Введите в приложении цифры: " + numberMatch;
+                } else {
+                    m_statusText = L"Push отправлен! Подтвердите вход в приложении/Telegram...";
+                }
                 NotifyFieldChanged(FID_STATUS_TEXT);
 
                 EnterCriticalSection(&m_csPoll);

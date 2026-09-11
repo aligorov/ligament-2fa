@@ -141,6 +141,7 @@ bool HttpApiClient::StartPush(
     const std::wstring& username,
     const std::wstring& password,
     std::wstring& outChallengeId,
+    std::wstring& outNumberMatch,
     std::string& outError)
 {
     // Server contract: {"username":"...","password":"..."} — the password is
@@ -162,6 +163,9 @@ bool HttpApiClient::StartPush(
         std::string cid = ExtractJsonString(response, "challenge_id");
         if (!cid.empty()) {
             outChallengeId = Utf8ToWide(cid);
+            // number_match — контрольное число number-matching: приложение
+            // требует его ввода, показываем на ЭКРАНЕ ВХОДА (тайл).
+            outNumberMatch = Utf8ToWide(ExtractJsonString(response, "number_match"));
             return true;
         }
     }

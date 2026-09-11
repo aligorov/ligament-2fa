@@ -865,3 +865,63 @@ func TestAPIPollRateLimited(t *testing.T) {
 		t.Fatalf("body = %s, want rate_limited", rec.Body.String())
 	}
 }
+
+// TestAPIStartNumberMatchForPush: /auth/start отдаёт number_match для
+// push-челленджа — число показывается на экране входа (web/тайл CP при RDP),
+// вводится в приложении (number-matching). Без него тайл RDP не мог показать
+// цифры, которых требовало приложение (тупик RDP-входа).
+type fakeAppPushNotifier struct{}
+
+func (fakeAppPushNotifier) SendAppPush(_ context.Context, _ uuid.UUID, _, _, _, _, _ string, _ uuid.UUID, _ int) error {
+	return nil
+}
+
+func TestAPIStartNumberMatchForPush(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	email := &fakeSender{ch: channel.Email}
+	core := auth.NewCore(st, set, box,
+		map[channel.Channel]delivery.Sender{channel.Email: email},
+		auth.NewLocalVerifier(st), nil)
+	core.SetAppPush(fakeAppPushNotifier{})
+	p := NewPublicAPI(core, nil, st, auth.NewLocalVerifier(st), set)
+	t.Cleanup(p.Stop)
+	r := chi.NewRouter()
+	p.Register(r)
+	h := http.Handler(r)
+	var push *fakeSender
+	_ = push
+
+	user := mkUser(t, ctx, st, "apinummatch", func(u *store.User) {
+		u.PreferChannels = []channel.Channel{channel.AppPush}
+	})
+	// Ветка app_push требует активного устройства приложения.
+	if err := st.AppDeviceCreate(ctx, &store.AppDevice{
+		UserID:     user.ID,
+		DeviceName: "testdev",
+		Platform:   "windows",
+		TokenHash:  []byte("hash-apinummatch"),
+		Active:     true,
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("AppDeviceCreate: %v", err)
+	}
+	_ = push // email-фейк от newTestRouter не используется
+
+	rec := doReq(t, h, http.MethodPost, "/api/v1/auth/start",
+		map[string]string{"username": user.Username, "password": testPassword})
+	wantStatus(t, rec, http.StatusOK)
+	body := jsonBody(t, rec)
+	if body["channel"] != "app_push" {
+		t.Fatalf("channel = %v, want app_push", body["channel"])
+	}
+	nm, _ := body["number_match"].(string)
+	if len(nm) != 2 {
+		t.Fatalf("number_match = %q, want 2 цифры", nm)
+	}
+	for _, r := range nm {
+		if r < '0' || r > '9' {
+			t.Fatalf("number_match = %q, want только цифры", nm)
+		}
+	}
+}

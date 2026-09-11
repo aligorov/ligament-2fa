@@ -25,8 +25,10 @@ public:
     ~HttpApiClient();
 
     // 1. Push authentication (server /api/v1/auth/start requires
-    //    {username, password}; the channel is chosen server-side)
-    bool StartPush(const std::wstring& username, const std::wstring& password, std::wstring& outChallengeId, std::string& outError);
+    //    {username, password}; the channel is chosen server-side).
+    //    outNumberMatch — контрольное число number-matching из ответа
+    //    (может быть пустым): его показывают на тайле, вводят в приложении.
+    bool StartPush(const std::wstring& username, const std::wstring& password, std::wstring& outChallengeId, std::wstring& outNumberMatch, std::string& outError);
     bool PollStatus(const std::wstring& challengeId, std::wstring& outStatus, std::string& outError);
 
     // 2. Combined password + OTP authentication

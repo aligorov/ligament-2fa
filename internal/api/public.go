@@ -245,11 +245,20 @@ func (p *PublicAPI) handleStart(w http.ResponseWriter, r *http.Request) {
 
 	p.audit(ctx, user.Username, "api_start", ip, "ok",
 		map[string]any{"channel": string(ch.Channel), "challenge_id": ch.ID.String()})
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"challenge_id": ch.ID.String(),
 		"channel":      string(ch.Channel),
 		"expires_in":   int(time.Until(ch.ExpiresAt).Seconds()),
-	})
+	}
+	// number_match — число number-matching: показывается на ЭКРАНЕ,
+	// ЗАПРОСИВШЕМ вход (web-страница логина / тайл CP при RDP), а вводится
+	// в приложении-аутентификаторе. Web его рендерит из шаблона; CP раньше
+	// получить не мог — приложение требовало цифры, а на RDP-экране их
+	// не было видно (тупик). Отдаём в ответе start.
+	if nm, ok := ch.Metadata["number_match"].(string); ok && nm != "" {
+		resp["number_match"] = nm
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ---- POST /api/v1/auth/verify ----
