@@ -3602,6 +3602,8 @@ paths:
           description: Запрос на удаленную помощь успешно создан.
         '400':
           description: Некорректный запрос (например, не заполнена суть проблемы).
+        '409':
+          description: "session_already_active — у пользователя уже есть живая сессия (одна на пользователя)."
 
   /api/v1/app/support/current:
     get:
@@ -3634,7 +3636,9 @@ paths:
         '200':
           description: Решение принято.
         '400':
-          description: Неверное контрольное число.
+          description: "number_match_mismatch — неверное контрольное число."
+        '409':
+          description: "invalid_transition / no_operator_connected — нарушение последовательности: сессия не в requested/connecting, оператор не подключался, исчерпаны попытки ввода кода либо сессия уже завершена."
 
   /api/v1/app/support/{id}/signal:
     post:
@@ -3709,6 +3713,8 @@ paths:
       responses:
         '200':
           description: Сессия завершена.
+        '409':
+          description: "invalid_transition — сессия уже завершена, повторное завершение невозможно."
 
   /api/v1/app/support/categories:
     get:
@@ -3754,6 +3760,8 @@ paths:
           description: Подключение инициировано, отправлен 2FA push пользователю.
         '404':
           description: Сессия не найдена.
+        '409':
+          description: "invalid_transition — сессия завершена/просрочена; session_taken — сессию уже ведёт другой оператор."
 
   /api/v1/admin/support/sessions:
     get:
@@ -3835,6 +3843,8 @@ paths:
       responses:
         '200':
           description: Запрос отправлен пользователю.
+        '409':
+          description: "invalid_transition — сессия завершена/просрочена; session_taken — сессию уже ведёт другой оператор."
 
   /api/v1/admin/support/sessions/{id}/signal:
     post:
@@ -3854,6 +3864,10 @@ paths:
       responses:
         '200':
           description: Сигнал доставлен.
+        '403':
+          description: "not_assigned_operator — сигнал доступен назначенному оператору либо админу."
+        '409':
+          description: "invalid_transition — сессия завершена/просрочена."
 
   /api/v1/admin/support/sessions/{id}/transfer:
     post:
@@ -3873,6 +3887,10 @@ paths:
       responses:
         '200':
           description: Токен и ссылка передачи сгенерированы.
+        '400':
+          description: "invalid_recipient — получатель не инженер поддержки этой категории."
+        '409':
+          description: "invalid_transition — переадресация возможна только из active/transferred, то есть после подтверждения пользователем."
 
   /api/v1/admin/support/sessions/{id}/end:
     post:
@@ -3892,6 +3910,8 @@ paths:
       responses:
         '200':
           description: Сессия завершена.
+        '409':
+          description: "invalid_transition — сессия уже завершена, повторное завершение/воскрешение невозможно."
 
   /api/v1/admin/support/colleagues:
     get:

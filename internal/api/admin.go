@@ -1843,6 +1843,7 @@ func (a *AdminAPI) handleLdapSync(w http.ResponseWriter, r *http.Request) {
 // ---- Удаленная техническая поддержка и помощь по 1С ----
 
 // handleAdminSupportSessionsList — GET /api/v1/support/sessions или /api/v1/admin/support/sessions.
+// Инженер поддержки видит только сессии своих категорий; админ — все.
 func (a *AdminAPI) handleAdminSupportSessionsList(w http.ResponseWriter, r *http.Request) {
 	if !a.checkAdminOrSupport(r) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -1850,16 +1851,52 @@ func (a *AdminAPI) handleAdminSupportSessionsList(w http.ResponseWriter, r *http
 	}
 	category := r.URL.Query().Get("category")
 	status := r.URL.Query().Get("status")
-	sessions, err := a.st.SupportSessionList(r.Context(), store.SupportFilter{
+
+	filter := store.SupportFilter{
 		Category: category,
 		Status:   status,
-	})
+	}
+	// Глобальный admin_token (без личности) и роль admin видят всё;
+	// инженер поддержки — только свои категории.
+	if op := a.supportOperatorFrom(r); op != nil && !strings.EqualFold(op.Role, "admin") {
+		if category == "" || category == "all" {
+			filter.Category = ""
+			filter.Categories = op.SupportRoles
+		}
+	}
+	sessions, err := a.st.SupportSessionList(r.Context(), filter)
 	if err != nil {
 		slog.Error("api: admin ошибка чтения сессий поддержки", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+}
+
+// supportCategoryAllowed — доступ оператора к сессии с учётом категории:
+// админ/глобальный токен/назначенный оператор — всегда; инженер поддержки —
+// только сессии своей категории.
+func supportCategoryAllowed(op *store.User, ss *store.SupportSession) bool {
+	if op == nil || strings.EqualFold(op.Role, "admin") {
+		return true
+	}
+	if ss != nil {
+		if ss.AssignedAdminID != nil && *ss.AssignedAdminID == op.ID {
+			return true
+		}
+		if ss.TransferredToID != nil && *ss.TransferredToID == op.ID {
+			return true
+		}
+		if ss.UserID == op.ID {
+			return true // владелец видит собственное обращение
+		}
+	}
+	for _, role := range op.SupportRoles {
+		if ss != nil && strings.EqualFold(role, ss.Category) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleAdminSupportSessionGet — GET /api/v1/support/sessions/{id} или /api/v1/admin/support/sessions/{id}.
@@ -1881,6 +1918,11 @@ func (a *AdminAPI) handleAdminSupportSessionGet(w http.ResponseWriter, r *http.R
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	// Инженер поддержки читает только сессии своей категории (или свои).
+	if op := a.supportOperatorFrom(r); !supportCategoryAllowed(op, session) {
+		writeError(w, http.StatusForbidden, "category_forbidden")
 		return
 	}
 	writeJSON(w, http.StatusOK, session)
@@ -1908,11 +1950,41 @@ func (a *AdminAPI) handleAdminSupportSessionConnect(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// Личность оператора (web-сессия/app-токен) фиксируется на сессии:
+	// доступ к рабочему столу после approve ограничен назначенным
+	// оператором, а не «любым инженером».
+	op := a.supportOperatorFrom(r)
+	actor := supportActorFor(op, session)
+	var adminID *uuid.UUID
+	if op != nil {
+		opID := op.ID
+		adminID = &opID
+	}
+	if op != nil && actor == store.SupportActorOperator {
+		matched := false
+		for _, role := range op.SupportRoles {
+			if strings.EqualFold(role, session.Category) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			writeError(w, http.StatusForbidden, "category_forbidden")
+			return
+		}
+	}
+
 	var req struct {
 		AdminName string `json:"admin_name"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	adminName := req.AdminName
+	if adminName == "" && op != nil {
+		adminName = op.DisplayName
+		if adminName == "" {
+			adminName = op.Username
+		}
+	}
 	if adminName == "" {
 		adminName = "Инженер техподдержки"
 	}
@@ -1928,8 +2000,22 @@ func (a *AdminAPI) handleAdminSupportSessionConnect(w http.ResponseWriter, r *ht
 	numberMatch := fmt.Sprintf("%02d", num)
 	session.NumberMatch = numberMatch
 
-	if err := a.st.SupportSessionUpdateStatus(r.Context(), session.ID, "connecting", nil, numberMatch); err != nil {
-		slog.Error("api: ошибка обновления статуса сессии", "error", err)
+	// Переход через таблицу состояний: подключение — только к живой
+	// requested/connecting-сессии; завершённая/просроченная/занятая
+	// другим оператором сессия подключению не подлежит.
+	if err := a.st.SupportSessionConnect(r.Context(), session.ID, actor, adminID, numberMatch); err != nil {
+		switch {
+		case errors.Is(err, store.ErrSessionTaken):
+			writeError(w, http.StatusConflict, "session_taken")
+		case errors.Is(err, store.ErrInvalidTransition):
+			writeError(w, http.StatusConflict, "invalid_transition")
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "not_found")
+		default:
+			slog.Error("api: ошибка обновления статуса сессии", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal")
+		}
+		return
 	}
 
 	// Отправляем push-запрос на экран пользователя
@@ -1962,6 +2048,9 @@ func (a *AdminAPI) handleAdminSupportSessionConnect(w http.ResponseWriter, r *ht
 }
 
 // handleAdminSupportSessionSignal — POST /api/v1/support/sessions/{id}/signal или /api/v1/admin/support/sessions/{id}/signal.
+// Сигналинг разрешён только по живой сессии и только назначенному
+// оператору (админу — всегда): посторонний инженер не может вклиниться в
+// чужой сеанс.
 func (a *AdminAPI) handleAdminSupportSessionSignal(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
@@ -1979,6 +2068,20 @@ func (a *AdminAPI) handleAdminSupportSessionSignal(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Завершённая/просроченная сессия не сигналит.
+	if store.SupportIsTerminal(session.Status) {
+		writeError(w, http.StatusConflict, "invalid_transition")
+		return
+	}
+	// Сигнал до approve — только назначенному оператору/админу.
+	op := a.supportOperatorFrom(r)
+	if actor := supportActorFor(op, session); actor == store.SupportActorOperator {
+		if session.Status == "active" || session.Status == "transferred" {
+			writeError(w, http.StatusForbidden, "not_assigned_operator")
+			return
+		}
+	}
+
 	var req map[string]any
 	if !decodeJSON(w, r, &req) {
 		return
@@ -1992,6 +2095,8 @@ func (a *AdminAPI) handleAdminSupportSessionSignal(w http.ResponseWriter, r *htt
 }
 
 // handleAdminSupportSessionTransfer — POST /api/v1/support/sessions/{id}/transfer или /api/v1/admin/support/sessions/{id}/transfer.
+// Переадресация — только из active/transferred (подтверждённой пользователем
+// сессии): передать неподтверждённое или завершённое обращение нельзя.
 func (a *AdminAPI) handleAdminSupportSessionTransfer(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
@@ -2008,6 +2113,18 @@ func (a *AdminAPI) handleAdminSupportSessionTransfer(w http.ResponseWriter, r *h
 		writeError(w, http.StatusNotFound, "not_found")
 		return
 	}
+	if store.SupportIsTerminal(session.Status) || session.Status == "requested" || session.Status == "connecting" {
+		// Таблица переходов: transferred только из active/transferred.
+		writeError(w, http.StatusConflict, "invalid_transition")
+		return
+	}
+	// Переадресует назначенный оператор или админ; посторонний инженер
+	// чужую сессию не передаёт.
+	op := a.supportOperatorFrom(r)
+	if actor := supportActorFor(op, session); actor == store.SupportActorOperator {
+		writeError(w, http.StatusForbidden, "not_assigned_operator")
+		return
+	}
 
 	var req struct {
 		ToUserID string `json:"to_user_id"`
@@ -2020,6 +2137,22 @@ func (a *AdminAPI) handleAdminSupportSessionTransfer(w http.ResponseWriter, r *h
 		if tuid, err := uuid.Parse(req.ToUserID); err == nil {
 			toUserID = &tuid
 			toUser, _ = a.st.UserByID(r.Context(), tuid)
+		}
+	}
+	// Получатель переадресации — только инженер поддержки той же категории
+	// или админ (аудит раунд-2, находка C: передача «любому сотруднику»
+	// открывала доступ к рабочему столу людям без support-роли).
+	if toUser != nil && !strings.EqualFold(toUser.Role, "admin") {
+		matched := false
+		for _, role := range toUser.SupportRoles {
+			if strings.EqualFold(role, session.Category) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			writeError(w, http.StatusBadRequest, "invalid_recipient")
+			return
 		}
 	}
 
@@ -2035,6 +2168,10 @@ func (a *AdminAPI) handleAdminSupportSessionTransfer(w http.ResponseWriter, r *h
 	tokenHashBytes := sha256.Sum256([]byte(token))
 
 	if err := a.st.SupportSessionTransfer(r.Context(), session.ID, fromID, toUserID, tokenHashBytes[:]); err != nil {
+		if errors.Is(err, store.ErrInvalidTransition) {
+			writeError(w, http.StatusConflict, "invalid_transition")
+			return
+		}
 		slog.Error("api: ошибка передачи сессии", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal")
 		return
@@ -2071,6 +2208,8 @@ func (a *AdminAPI) handleAdminSupportSessionTransfer(w http.ResponseWriter, r *h
 }
 
 // handleAdminSupportSessionEnd — POST /api/v1/support/sessions/{id}/end или /api/v1/admin/support/sessions/{id}/end.
+// Завершение через таблицу переходов: живую сессию закрывает назначенный
+// оператор или админ; повторное «закрытие» терминальной сессии — 409.
 func (a *AdminAPI) handleAdminSupportSessionEnd(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
@@ -2088,7 +2227,17 @@ func (a *AdminAPI) handleAdminSupportSessionEnd(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	_ = a.st.SupportSessionEnd(r.Context(), session.ID, "ended_by_admin")
+	op := a.supportOperatorFrom(r)
+	actor := supportActorFor(op, session)
+	if err := a.st.SupportSessionEnd(r.Context(), session.ID, "ended_by_admin", actor); err != nil {
+		if errors.Is(err, store.ErrInvalidTransition) {
+			writeError(w, http.StatusConflict, "invalid_transition")
+			return
+		}
+		slog.Error("api: ошибка завершения сессии", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
 
 	if a.hub != nil {
 		a.hub.SendSupportEnd(session.UserID, session.ID)
@@ -2153,6 +2302,60 @@ func (a *AdminAPI) handleAdminSupportSessionsCleanup(w http.ResponseWriter, r *h
 	}
 	a.audit(r.Context(), "support_sessions_cleanup", map[string]any{"deleted_count": deleted})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "deleted": deleted})
+}
+
+// supportOperatorFrom определяет личность оператора, действующего через
+// admin-интерфейс: web-сессия (cookie twofa_session) либо app-токен
+// устройства. nil — запрос авторизован глобальным admin_token (супер-токен
+// без личности) или личность не распознана.
+func (a *AdminAPI) supportOperatorFrom(r *http.Request) *store.User {
+	if c, err := r.Cookie(cookieSession); err == nil && c.Value != "" {
+		tokenHash := secrets.SHA256(c.Value)
+		if userID, _, err := a.st.SessionGet(r.Context(), tokenHash); err == nil {
+			if u, err := a.st.UserByID(r.Context(), userID); err == nil && u.Enabled {
+				return u
+			}
+		}
+	}
+	appToken := bearerToken(r)
+	if appToken == "" {
+		appToken = r.URL.Query().Get("token")
+	}
+	if appToken != "" && !isStreamRequest(r) {
+		tokenHash := secrets.SHA256(appToken)
+		if device, err := a.st.AppDeviceGetByTokenHash(r.Context(), tokenHash); err == nil && device.Active {
+			if u, err := a.st.UserByID(r.Context(), device.UserID); err == nil && u.Enabled {
+				return u
+			}
+		}
+	}
+	return nil
+}
+
+// supportActorFor вычисляет актёра серверной таблицы переходов для
+// оператора admin-интерфейса: админ (роль/глобальный токен), назначенный
+// оператор сессии (assigned_admin_id/transferred_to_id) либо инженер
+// поддержки нужной категории.
+func supportActorFor(op *store.User, ss *store.SupportSession) store.SupportActor {
+	if op == nil {
+		// Глобальный admin_token.
+		return store.SupportActorAdmin
+	}
+	if strings.EqualFold(op.Role, "admin") {
+		return store.SupportActorAdmin
+	}
+	if ss != nil {
+		if ss.AssignedAdminID != nil && *ss.AssignedAdminID == op.ID {
+			return store.SupportActorAssigned
+		}
+		if ss.TransferredToID != nil && *ss.TransferredToID == op.ID {
+			return store.SupportActorAssigned
+		}
+	}
+	// Инженер поддержки (и владелец сессии, дошедший до admin-ручек):
+	// минимальные права — только connect своей категории; signal/transfer/
+	// end чужой сессии таблицей переходов запрещены.
+	return store.SupportActorOperator
 }
 
 // checkAdminOrSupport проверяет права администратора или специалиста техподдержки
@@ -2285,6 +2488,14 @@ func (a *AdminAPI) handleAdminSupportSessionWS(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// WS оператора открыт только для живой сессии: подключиться к
+	// завершённой/просроченной сессии (или «повисеть» на ней, слушая
+	// сигналы) невозможно.
+	if store.SupportIsTerminal(session.Status) {
+		writeError(w, http.StatusConflict, "invalid_transition")
+		return
+	}
+
 	if a.hub == nil {
 		writeError(w, http.StatusServiceUnavailable, "hub_disabled")
 		return
@@ -2359,6 +2570,13 @@ func (a *AdminAPI) handleAdminSupportMessagesGet(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	// Чат — только своей категории (или назначенному/владельцу).
+	if ss, err := a.st.SupportSessionGet(r.Context(), id); err == nil {
+		if op := a.supportOperatorFrom(r); !supportCategoryAllowed(op, ss) {
+			writeError(w, http.StatusForbidden, "category_forbidden")
+			return
+		}
+	}
 
 	msgs, err := a.st.SupportMessagesList(r.Context(), id)
 	if err != nil {
@@ -2388,6 +2606,11 @@ func (a *AdminAPI) handleAdminSupportMessageSend(w http.ResponseWriter, r *http.
 	session, err := a.st.SupportSessionGet(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	// Писать в чат чужой категории нельзя.
+	if op := a.supportOperatorFrom(r); !supportCategoryAllowed(op, session) {
+		writeError(w, http.StatusForbidden, "category_forbidden")
 		return
 	}
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // SupportSession — сессия экстренной удаленной помощи и поддержки.
@@ -59,10 +60,165 @@ const supportPendingTTL = 15 * time.Minute
 // supportTransferTTL — окно действия transfer-токена переадресации.
 const supportTransferTTL = 10 * time.Minute
 
+// supportActiveMaxAge — максимальный срок жизни активной сессии удалённого
+// доступа: активные/переадресованные сессии старше этого срока автоматически
+// переводятся в completed («вечных» сессий не бывает).
+const supportActiveMaxAge = 4 * time.Hour
+
+// SupportMaxNMAttempts — максимум неудачных вводов контрольного числа
+// number-match до принудительного отклонения сессии (код 2 цифры — без
+// лимита он перебирается за ~90 запросов).
+const SupportMaxNMAttempts = 3
+
 // notStalePending — SQL-фрагмент «неразыгранная заявка не просрочена»
 // (используется фильтрами активных сессий).
 const notStalePending = ` NOT (s.status IN ('requested', 'connecting')
-		       AND s.created_at < now() - interval '15 minutes')`
+			       AND s.created_at < now() - interval '15 minutes')`
+
+// notStaleActive — SQL-фрагмент «активная сессия не превысила лимит 4 часа»
+// (читается как completed автоматикой; вечные active-сессии исключены).
+const notStaleActive = ` NOT (s.status IN ('active', 'transferred')
+			       AND s.started_at < now() - interval '4 hours')`
+
+// ---- Машина состояний support_sessions -------------------------------------
+//
+// Единая серверная таблица переходов: любую мутацию статуса сессии поддержки
+// выполняет ТОЛЬКО через store-функции, валидирующие переход
+// (SupportTransitionAllowed) и защищённые атомарным UPDATE по ожидаемому
+// исходному статусу. Нарушение последовательности → ErrInvalidTransition
+// (HTTP 409 invalid_transition).
+//
+// Штатная последовательность:
+//   user: request → requested
+//   operator: connect → connecting (назначает оператора, генерирует number_match)
+//   user: decision(approve, number_match) → active   ← ЕДИНСТВЕННЫЙ путь к active
+//   operator: transfer → transferred (только из active/transferred)
+//   user/assigned/admin: end → completed / ended_by_admin
+//   system: TTL → expired (pending 15м) / completed (active 4ч)
+
+// SupportActor — роль инициатора перехода.
+type SupportActor string
+
+const (
+	SupportActorUser     SupportActor = "user"     // владелец сессии
+	SupportActorOperator SupportActor = "operator" // инженер поддержки с ролью категории (не назначен)
+	SupportActorAssigned SupportActor = "assigned" // назначенный оператор (assigned_admin_id / transferred_to_id)
+	SupportActorAdmin    SupportActor = "admin"    // роль admin либо глобальный admin_token
+	SupportActorSystem   SupportActor = "system"   // автоматика: TTL, cleanup
+)
+
+// Ошибки машины состояний (маппятся в HTTP-коды API).
+var (
+	// ErrInvalidTransition — переход вне таблицы (включая воскрешение
+	// терминальных статусов и гонку состояний).
+	ErrInvalidTransition = errors.New("invalid_transition")
+	// ErrSessionTaken — сессия уже занята другим оператором.
+	ErrSessionTaken = errors.New("session_taken")
+	// ErrDuplicateSession — у пользователя уже есть живая сессия.
+	ErrDuplicateSession = errors.New("duplicate_session")
+)
+
+// supportTerminalStatuses — терминальные статусы: из них нет переходов
+// (завершённую сессию нельзя подключить/переадресовать повторно).
+var supportTerminalStatuses = map[string]bool{
+	"rejected": true, "completed": true, "cancelled": true,
+	"expired": true, "ended_by_admin": true, "ended_by_user": true,
+}
+
+// SupportLiveStatuses возвращает множество «живых» статусов сессии.
+func SupportLiveStatuses() []string {
+	return []string{"requested", "connecting", "authorizing", "approved", "active", "transferred"}
+}
+
+// SupportIsTerminal сообщает, является ли статус терминальным.
+func SupportIsTerminal(status string) bool { return supportTerminalStatuses[status] }
+
+// supportPendingStatuses — статусы ожидания решения (до approve).
+func supportPendingStatuses(s string) bool {
+	return s == "requested" || s == "connecting" || s == "authorizing" || s == "approved"
+}
+
+// SupportTransitionAllowed — единый валидатор переходов машины состояний.
+// Чистая функция: контекстные условия (кто именно назначен, совпадение
+// number_match) проверяются поверх таблицы в store-функциях и хендлерах.
+func SupportTransitionAllowed(from, to string, actor SupportActor) error {
+	if supportTerminalStatuses[from] {
+		return fmt.Errorf("%w: терминальный статус %q", ErrInvalidTransition, from)
+	}
+	allow := func(actors ...SupportActor) error {
+		for _, a := range actors {
+			if a == actor {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: %s не может выполнить %s→%s", ErrInvalidTransition, actor, from, to)
+	}
+	switch to {
+	case "connecting":
+		if from != "requested" && from != "connecting" {
+			return fmt.Errorf("%w: connect возможен только из requested/connecting, не из %q", ErrInvalidTransition, from)
+		}
+		// Подключение/повторный запрос кода — операторское действие.
+		return allow(SupportActorOperator, SupportActorAdmin)
+	case "active":
+		// ГЛАВНЫЙ ИНВАРИАНТ: в active сессию переводит ТОЛЬКО решение
+		// владельца (decision approve с совпавшим number_match). Ни
+		// оператор, ни админ, ни автоматика не могут активировать доступ
+		// к рабочему столу без явного подтверждения пользователя.
+		// Исключение — transferred→active (принятие переадресации):
+		// сессия УЖЕ была подтверждена владельцем до переадресации,
+		// новый доступ с нуля не возникает.
+		if from == "transferred" {
+			return allow(SupportActorAssigned, SupportActorAdmin)
+		}
+		if !supportPendingStatuses(from) {
+			return fmt.Errorf("%w: approve возможен только из pending-статусов, не из %q", ErrInvalidTransition, from)
+		}
+		return allow(SupportActorUser)
+	case "transferred":
+		if from != "active" && from != "transferred" {
+			return fmt.Errorf("%w: переадресация возможна только из active/transferred, не из %q", ErrInvalidTransition, from)
+		}
+		return allow(SupportActorAssigned, SupportActorAdmin)
+	case "rejected":
+		if supportPendingStatuses(from) || from == "active" || from == "transferred" {
+			return allow(SupportActorUser, SupportActorSystem)
+		}
+		return fmt.Errorf("%w: reject невозможен из %q", ErrInvalidTransition, from)
+	case "cancelled":
+		if supportPendingStatuses(from) {
+			return allow(SupportActorUser, SupportActorAdmin, SupportActorSystem)
+		}
+		return fmt.Errorf("%w: cancel возможен только до подключения, не из %q", ErrInvalidTransition, from)
+	case "completed", "ended_by_admin", "ended_by_user":
+		switch {
+		case to == "ended_by_admin":
+			if err := allow(SupportActorAdmin, SupportActorAssigned); err != nil {
+				return err
+			}
+		case to == "ended_by_user":
+			if err := allow(SupportActorUser); err != nil {
+				return err
+			}
+		default:
+			if err := allow(SupportActorUser, SupportActorAssigned, SupportActorAdmin, SupportActorSystem); err != nil {
+				return err
+			}
+		}
+		if supportPendingStatuses(from) || from == "active" || from == "transferred" {
+			return nil
+		}
+		return fmt.Errorf("%w: завершение невозможно из %q", ErrInvalidTransition, from)
+	case "expired":
+		// Истечение — только автоматикой (TTL pending-заявок).
+		if !supportPendingStatuses(from) {
+			return fmt.Errorf("%w: expire возможен только для pending-статусов, не из %q", ErrInvalidTransition, from)
+		}
+		return allow(SupportActorSystem)
+	default:
+		return fmt.Errorf("%w: неизвестный целевой статус %q", ErrInvalidTransition, to)
+	}
+}
 
 // SupportSessionCreate создаёт новую сессию поддержки.
 func (s *Store) SupportSessionCreate(ctx context.Context, ss *SupportSession) error {
@@ -98,6 +254,12 @@ func (s *Store) SupportSessionCreate(ctx context.Context, ss *SupportSession) er
 		ss.TransferTokenHash, ss.NumberMatch, ss.AccessMode, ss.StartedAt, ss.EndedAt,
 		metaJSON)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// Partial unique index «одна живая сессия на пользователя»:
+			// конкурентный запрос уже создал новое обращение.
+			return ErrDuplicateSession
+		}
 		return fmt.Errorf("store: создать support_session: %w", err)
 	}
 	return nil
@@ -184,7 +346,8 @@ func (s *Store) SupportSessionGetByTransferToken(ctx context.Context, tokenHash 
 
 // SupportSessionActiveByUser возвращает активную или ожидающую сессию
 // пользователя (неразыгранные заявки старше supportPendingTTL не считаются
-// активными — окно усталости закрыто).
+// активными; active/transferred старше supportActiveMaxAge — завершены
+// автоматикой и тоже не считаются живыми — «вечных» сессий нет).
 func (s *Store) SupportSessionActiveByUser(ctx context.Context, userID uuid.UUID) (*SupportSession, error) {
 	row := s.Pool().QueryRow(ctx, `
 		SELECT s.id, s.user_id, s.device_id, s.category, s.status, s.problem_summary,
@@ -198,6 +361,7 @@ func (s *Store) SupportSessionActiveByUser(ctx context.Context, userID uuid.UUID
 		LEFT JOIN app_devices d ON d.id = s.device_id
 		WHERE s.user_id = $1 AND s.status IN ('requested', 'connecting', 'authorizing', 'approved', 'active', 'transferred')
 		  AND`+notStalePending+`
+		  AND`+notStaleActive+`
 		ORDER BY s.created_at DESC LIMIT 1`, userID)
 
 	var ss SupportSession
@@ -262,7 +426,8 @@ func (s *Store) SupportSessionList(ctx context.Context, f SupportFilter) ([]Supp
 	}
 	if f.ActiveOnly {
 		query += ` AND s.status IN ('requested', 'connecting', 'authorizing', 'approved', 'active', 'transferred')
-		   AND` + notStalePending
+		   AND ` + notStalePending + `
+		   AND ` + notStaleActive
 	} else if len(f.Statuses) > 0 {
 		query += fmt.Sprintf(" AND s.status = ANY($%d)", argIdx)
 		args = append(args, f.Statuses)
@@ -314,75 +479,175 @@ func (s *Store) SupportSessionList(ctx context.Context, f SupportFilter) ([]Supp
 	return list, nil
 }
 
-// SupportSessionUpdateStatus обновляет статус сессии, назначенного администратора и код 2FA.
-func (s *Store) SupportSessionUpdateStatus(ctx context.Context, id uuid.UUID, status string, adminID *uuid.UUID, numberMatch string) error {
-	now := time.Now()
-	var startedAt *time.Time
-	if status == "active" {
-		startedAt = &now
-	}
-
-	query := `UPDATE support_sessions SET status = $2, updated_at = now()`
-	args := []any{id, status}
-	argIdx := 3
-
-	if adminID != nil {
-		query += fmt.Sprintf(", assigned_admin_id = $%d", argIdx)
-		args = append(args, *adminID)
-		argIdx++
-	}
-	if numberMatch != "" {
-		query += fmt.Sprintf(", number_match = $%d", argIdx)
-		args = append(args, numberMatch)
-		argIdx++
-	}
-	if startedAt != nil {
-		query += fmt.Sprintf(", started_at = COALESCE(started_at, $%d)", argIdx)
-		args = append(args, *startedAt)
-		argIdx++
-	}
-
-	query += ` WHERE id = $1`
-	ct, err := s.Pool().Exec(ctx, query, args...)
+// supportTransitionExec выполняет атомарный переход: UPDATE выполняется
+// только если текущий статус совпадает с ожидаемым (защита от гонок и
+// «воскрешения» терминальных статусов). setFmt обязан содержать только
+// безопасные литералы — параметры передаются через $N.
+func (s *Store) supportTransitionExec(ctx context.Context, id uuid.UUID, fromStatuses []string, setSQL string, args ...any) error {
+	all := append([]any{id, fromStatuses}, args...)
+	ct, err := s.Pool().Exec(ctx, `UPDATE support_sessions SET `+setSQL+`,
+			updated_at = now()
+		WHERE id = $1 AND status = ANY($2)`, all...)
 	if err != nil {
-		return fmt.Errorf("store: обновить статус support_session %s: %w", id, err)
+		return fmt.Errorf("store: переход support_session %s: %w", id, err)
 	}
 	if ct.RowsAffected() == 0 {
+		// Сессии нет вовсе — NotFound; есть, но статус другой —
+		// нарушение последовательности (или гонка).
+		var exists bool
+		if err := s.Pool().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM support_sessions WHERE id = $1)`, id).Scan(&exists); err != nil {
+			return fmt.Errorf("store: проверка support_session %s: %w", id, err)
+		}
+		if !exists {
+			return ErrNotFound
+		}
+		return ErrInvalidTransition
+	}
+	return nil
+}
+
+// SupportSessionConnect — подключение оператора: requested/connecting →
+// connecting с назначением оператора и свежим кодом number-match.
+// Перехват чужой сессии запрещён: если оператор уже назначен и подключается
+// другой — ErrSessionTaken. adminID == nil допустим только для глобального
+// admin_token (актёр admin), сессия остаётся «безымянной» до approve.
+func (s *Store) SupportSessionConnect(ctx context.Context, id uuid.UUID, actor SupportActor, adminID *uuid.UUID, numberMatch string) error {
+	if actor != SupportActorOperator && actor != SupportActorAdmin {
+		return fmt.Errorf("%w: connect доступен только оператору/админу, не %s", ErrInvalidTransition, actor)
+	}
+
+	// Атомарно: только requested/connecting; назначение оператора не
+	// перетирает уже существующее чужое.
+	setSQL := `status = 'connecting',
+		number_match = $3,
+		nm_attempts = 0`
+	args := []any{numberMatch}
+	if adminID != nil {
+		setSQL += `,
+		assigned_admin_id = COALESCE(assigned_admin_id, $4)`
+		args = append(args, *adminID)
+	}
+	err := s.supportTransitionExec(ctx, id, []string{"requested", "connecting"}, setSQL, args...)
+	if errors.Is(err, ErrInvalidTransition) {
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	// Если подключается НЕ назначенный оператор, а сессия уже занята —
+	// назначение не перезаписалось (COALESCE): конфликт владения. Админ
+	// (глобальный токен/роль) может перезапросить код и для чужой сессии.
+	if adminID != nil && actor == SupportActorOperator {
+		var assigned *uuid.UUID
+		if err := s.Pool().QueryRow(ctx,
+			`SELECT assigned_admin_id FROM support_sessions WHERE id = $1`, id).Scan(&assigned); err == nil {
+			if assigned != nil && *assigned != *adminID {
+				return ErrSessionTaken
+			}
+		}
+	}
+	return nil
+}
+
+// SupportSessionApprove — подтверждение доступа пользователем:
+// requested/connecting → active. Единственный легальный путь в active:
+// вызывается только из decision-хендлера владельца после сверки
+// number-match. Код гасится (одноразовость), счётчик попыток сбрасывается.
+func (s *Store) SupportSessionApprove(ctx context.Context, id uuid.UUID) error {
+	return s.supportTransitionExec(ctx, id, []string{"requested", "connecting"},
+		`status = 'active',
+		started_at = COALESCE(started_at, now()),
+		number_match = '',
+		nm_attempts = 0`)
+}
+
+// SupportSessionUpdateStatus — только для служебных переходов (проходят
+// через таблицу). Производственный код использует типизированные функции
+// выше; функция оставлена для диагностики/тестов и валидирует переход.
+func (s *Store) SupportSessionUpdateStatus(ctx context.Context, id uuid.UUID, from, status string, adminID *uuid.UUID, numberMatch string, actor SupportActor) error {
+	if err := SupportTransitionAllowed(from, status, actor); err != nil {
+		return err
+	}
+	setSQL := `status = $3`
+	args := []any{status}
+	if adminID != nil {
+		setSQL += `, assigned_admin_id = $4`
+		args = append(args, *adminID)
+	}
+	if numberMatch != "" {
+		setSQL += `, number_match = $5, nm_attempts = 0`
+		args = append(args, numberMatch)
+	}
+	return s.supportTransitionExec(ctx, id, []string{from}, setSQL, args...)
+}
+
+// SupportSessionFailNumberMatch инкрементирует счётчик несовпадений кода и
+// возвращает новое значение. Достигнут лимит — сессия принудительно
+// отклоняется (автоматика), код больше не принять.
+func (s *Store) SupportSessionFailNumberMatch(ctx context.Context, id uuid.UUID) (int, error) {
+	var attempts int
+	err := s.Pool().QueryRow(ctx,
+		`UPDATE support_sessions SET nm_attempts = nm_attempts + 1, updated_at = now()
+		WHERE id = $1 RETURNING nm_attempts`, id).Scan(&attempts)
+	if err != nil {
+		return 0, fmt.Errorf("store: инкремент nm_attempts %s: %w", id, err)
+	}
+	if attempts >= SupportMaxNMAttempts {
+		_ = s.SupportSessionEnd(ctx, id, "rejected", SupportActorSystem)
+	}
+	return attempts, nil
+}
+
+// SupportSessionTransfer выполняет переадресацию сессии на другого сотрудника:
+// фиксирует момент выдачи transfer-токена (transferred_at — старт окна
+// supportTransferTTL, в течение которого токен можно принять). Переадресация
+// возможна ТОЛЬКО из active/transferred (завершённые и неподтверждённые
+// сессии переадресовать нельзя — доступ без approve пользователя исключён).
+func (s *Store) SupportSessionTransfer(ctx context.Context, id uuid.UUID, fromID uuid.UUID, toID *uuid.UUID, tokenHash []byte) error {
+	ct, err := s.Pool().Exec(ctx, `UPDATE support_sessions SET
+		status = 'transferred',
+		transferred_from_id = $2,
+		transferred_to_id = $3,
+		transfer_token_hash = $4,
+		transferred_at = now(),
+		updated_at = now()
+		WHERE id = $1 AND status IN ('active', 'transferred')`,
+		id, fromID, toID, tokenHash)
+	if err != nil {
+		return fmt.Errorf("store: переадресовать support_session %s: %w", id, err)
+	}
+	if ct.RowsAffected() == 0 {
+		var exists bool
+		if qerr := s.Pool().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM support_sessions WHERE id = $1)`, id).Scan(&exists); qerr == nil && exists {
+			return ErrInvalidTransition
+		}
 		return ErrNotFound
 	}
 	return nil
 }
 
-// SupportSessionTransfer выполняет переадресацию сессии на другого сотрудника:
-// фиксирует момент выдачи transfer-токена (transferred_at — старт окна
-// supportTransferTTL, в течение которого токен можно принять).
-func (s *Store) SupportSessionTransfer(ctx context.Context, id uuid.UUID, fromID uuid.UUID, toID *uuid.UUID, tokenHash []byte) error {
-	_, err := s.Pool().Exec(ctx, `UPDATE support_sessions SET
-		status = 'transferred',
-		transferred_from_id = $2,
-		transferred_to_id = $3,
-		transfer_token_hash = $4,
-		transferred_at = now()
-		WHERE id = $1`,
-		id, fromID, toID, tokenHash)
-	if err != nil {
-		return fmt.Errorf("store: переадресовать support_session %s: %w", id, err)
-	}
-	return nil
-}
-
 // SupportSessionAcceptTransfer принимает переадресованную сессию новым
-// оператором. Transfer-токен одноразовый: хеш очищается, повторное
-// принятие по той же ссылке невозможно.
+// оператором: transferred → active (сессия была подтверждена пользователем
+// до переадресации — повторное согласие не требуется, но и доступа «с нуля»
+// без approve не возникает). Transfer-токен одноразовый: хеш очищается,
+// повторное принятие по той же ссылке невозможно.
 func (s *Store) SupportSessionAcceptTransfer(ctx context.Context, id uuid.UUID, newAdminID uuid.UUID) error {
-	_, err := s.Pool().Exec(ctx, `UPDATE support_sessions SET
+	ct, err := s.Pool().Exec(ctx, `UPDATE support_sessions SET
 		status = 'active',
 		assigned_admin_id = $2,
-		transfer_token_hash = NULL
-		WHERE id = $1`,
+		transfer_token_hash = NULL,
+		updated_at = now()
+		WHERE id = $1 AND status = 'transferred'`,
 		id, newAdminID)
 	if err != nil {
 		return fmt.Errorf("store: принять переадресацию support_session %s: %w", id, err)
+	}
+	if ct.RowsAffected() == 0 {
+		var exists bool
+		if qerr := s.Pool().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM support_sessions WHERE id = $1)`, id).Scan(&exists); qerr == nil && exists {
+			return ErrInvalidTransition
+		}
+		return ErrNotFound
 	}
 	return nil
 }
@@ -398,19 +663,29 @@ func (s *Store) SupportSessionClearNumberMatch(ctx context.Context, id uuid.UUID
 	return nil
 }
 
-// SupportSessionEnd завершает сессию удаленного доступа.
-func (s *Store) SupportSessionEnd(ctx context.Context, id uuid.UUID, finalStatus string) error {
+// SupportSessionEnd завершает сессию удаленного доступа. Переход проходит
+// серверную таблицу: живую сессию завершает владелец, назначенный оператор
+// или админ; терминальный статус не меняется повторно (409 на «дозакрытие»).
+func (s *Store) SupportSessionEnd(ctx context.Context, id uuid.UUID, finalStatus string, actor SupportActor) error {
 	if finalStatus == "" {
 		finalStatus = "completed"
 	}
-	_, err := s.Pool().Exec(ctx, `UPDATE support_sessions SET
-		status = $2,
-		ended_at = now()
-		WHERE id = $1`, id, finalStatus)
-	if err != nil {
-		return fmt.Errorf("store: завершить support_session %s: %w", id, err)
+	// Валидность прав актёра проверяем для каждого живого исходного статуса:
+	// таблица разрешает завершение из pending только владельцу/админу/системе,
+	// из active/transferred — ещё и назначенному оператору.
+	live := SupportLiveStatuses()
+	for _, from := range live {
+		if err := SupportTransitionAllowed(from, finalStatus, actor); err == nil {
+			// Найден допустимый контракт — выполняем атомарный переход
+			// из любого живого статуса (какой есть).
+			return s.supportTransitionExec(ctx, id, live,
+				`status = $3,
+				ended_at = now(),
+				number_match = '',
+				transfer_token_hash = NULL`, finalStatus)
+		}
 	}
-	return nil
+	return fmt.Errorf("%w: %s не может завершить сессию в %q", ErrInvalidTransition, actor, finalStatus)
 }
 
 // SupportSessionDelete удаляет сессию удаленного доступа по ID.
@@ -425,18 +700,31 @@ func (s *Store) SupportSessionDelete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// SupportSessionCleanupClosed переводит «залежавшиеся» неразыгранные заявки
-// (requested/connecting старше supportPendingTTL) в expired и удаляет все
-// завершённые сессии (включая expired).
+// SupportSessionCleanupClosed — автоматика машины состояний (актёр system):
+//   - pending-заявки (requested/connecting + легаси authorizing/approved)
+//     старше supportPendingTTL → expired;
+//   - активные/переадресованные сессии старше supportActiveMaxAge (4 часа)
+//     → completed (защита от «вечных» сессий удалённого доступа);
+//   - завершённые сессии (включая expired) удаляются.
 func (s *Store) SupportSessionCleanupClosed(ctx context.Context) (int64, error) {
 	if _, err := s.Pool().Exec(ctx, `
 		UPDATE support_sessions SET
 			status = 'expired',
 			ended_at = now(),
 			updated_at = now()
-		WHERE status IN ('requested', 'connecting')
+		WHERE status IN ('requested', 'connecting', 'authorizing', 'approved')
 		  AND created_at < now() - interval '15 minutes'`); err != nil {
 		return 0, fmt.Errorf("store: истечь просроченные support_sessions: %w", err)
+	}
+	if _, err := s.Pool().Exec(ctx, `
+		UPDATE support_sessions SET
+			status = 'completed',
+			ended_at = now(),
+			updated_at = now(),
+			transfer_token_hash = NULL
+		WHERE status IN ('active', 'transferred')
+		  AND started_at < now() - interval '4 hours'`); err != nil {
+		return 0, fmt.Errorf("store: завершить просроченные active support_sessions: %w", err)
 	}
 	ct, err := s.Pool().Exec(ctx, `DELETE FROM support_sessions
 		WHERE status IN ('completed', 'ended_by_admin', 'ended_by_user', 'rejected', 'cancelled', 'expired')`)
@@ -444,6 +732,29 @@ func (s *Store) SupportSessionCleanupClosed(ctx context.Context) (int64, error) 
 		return 0, fmt.Errorf("store: очистить завершенные support_sessions: %w", err)
 	}
 	return ct.RowsAffected(), nil
+}
+
+// SupportSessionSweepStale — ленивая автоматика без удаления: переводит
+// просроченные сессии в терминальные статусы (pending → expired,
+// active/transferred > 4ч → completed). Вызывается из часто опрашиваемых
+// ручек (support/current, queue), чтобы TTL работал без внешнего крона.
+func (s *Store) SupportSessionSweepStale(ctx context.Context) error {
+	if _, err := s.Pool().Exec(ctx, `
+		UPDATE support_sessions SET
+			status = 'expired', ended_at = now(), updated_at = now()
+		WHERE status IN ('requested', 'connecting', 'authorizing', 'approved')
+		  AND created_at < now() - interval '15 minutes'`); err != nil {
+		return fmt.Errorf("store: sweep expired support_sessions: %w", err)
+	}
+	if _, err := s.Pool().Exec(ctx, `
+		UPDATE support_sessions SET
+			status = 'completed', ended_at = now(), updated_at = now(),
+			transfer_token_hash = NULL
+		WHERE status IN ('active', 'transferred')
+		  AND started_at < now() - interval '4 hours'`); err != nil {
+		return fmt.Errorf("store: sweep устаревших active support_sessions: %w", err)
+	}
+	return nil
 }
 
 // SupportMessage представляет сохраненное сообщение в чате сессии удаленной поддержки.

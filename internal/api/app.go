@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -51,6 +52,10 @@ type AppAPI struct {
 	notifier *delivery.SupportNotifier
 	rl       *limiterMap // корзины username+IP для /app/login
 	fw       appFirewall // nil — неудачи входа не кормят fail2ban
+
+	// Ленивая автоматика TTL support-сессий (system-актёр таблицы
+	// переходов): троттлинг раз в минуту на часто опрашиваемых ручках.
+	supportSweepAt atomic.Int64 // unix-нanos последнего sweep
 }
 
 // SetSupportNotifier подключает диспетчер оповещений поддержки.
@@ -127,6 +132,22 @@ func (a *AppAPI) audit(ctx context.Context, username, event string, detail map[s
 	}
 	if err := a.st.Audit(ctx, username, event, detail, ip, result); err != nil {
 		slog.Warn("app_api: аудит не записан", "event", event, "error", err)
+	}
+}
+
+// sweepStaleSupport лениво применяет TTL-автоматику машины состояний
+// (pending > 15м → expired, active > 4ч → completed) не чаще раза в минуту.
+func (a *AppAPI) sweepStaleSupport(ctx context.Context) {
+	nowNs := time.Now().UnixNano()
+	last := a.supportSweepAt.Load()
+	if nowNs-last < int64(time.Minute) {
+		return
+	}
+	if !a.supportSweepAt.CompareAndSwap(last, nowNs) {
+		return
+	}
+	if err := a.st.SupportSessionSweepStale(ctx); err != nil {
+		slog.Warn("app_api: sweep просроченных support-сессий", "error", err)
 	}
 }
 
@@ -830,9 +851,21 @@ func (a *AppAPI) handleSupportRequest(w http.ResponseWriter, r *http.Request) {
 		req.AccessMode = "full_control"
 	}
 
-	// Завершаем старую активную сессию, если она была в ожидании
+	// Одна живая сессия на пользователя (жёсткая последовательность
+	// обращений): идёт активный сеанс (уже подтверждён пользователем) —
+	// новое обращение не создаётся; «висящее» обращение (никто не
+	// подключился) — заменяется, старое отменяется владельцем.
 	if old, err := a.st.SupportSessionActiveByUser(r.Context(), user.ID); err == nil && old != nil {
-		_ = a.st.SupportSessionEnd(r.Context(), old.ID, "cancelled")
+		switch old.Status {
+		case "approved", "active", "transferred":
+			writeError(w, http.StatusConflict, "session_already_active")
+			return
+		default:
+			// Юзер перезаписывает собственное незакрытое обращение.
+			if err := a.st.SupportSessionEnd(r.Context(), old.ID, "cancelled", store.SupportActorUser); err != nil && !errors.Is(err, store.ErrInvalidTransition) {
+				slog.Error("app_api: отмена предыдущей support_session", "error", err)
+			}
+		}
 	}
 
 	ss := &store.SupportSession{
@@ -852,6 +885,11 @@ func (a *AppAPI) handleSupportRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.st.SupportSessionCreate(r.Context(), ss); err != nil {
+		if errors.Is(err, store.ErrDuplicateSession) {
+			// Гонка двух обращений: параллельный запрос уже открыл сессию.
+			writeError(w, http.StatusConflict, "session_already_active")
+			return
+		}
 		slog.Error("app_api: ошибка создания support_session", "error", err)
 		writeError(w, http.StatusInternalServerError, "db_error")
 		return
@@ -885,6 +923,9 @@ func (a *AppAPI) handleSupportRequest(w http.ResponseWriter, r *http.Request) {
 // handleSupportCurrent возвращает текущую активную сессию пользователя.
 func (a *AppAPI) handleSupportCurrent(w http.ResponseWriter, r *http.Request) {
 	user, _ := appUserFromCtx(r.Context())
+
+	// Ленивая автоматика TTL: «вечных» сессий не бывает.
+	a.sweepStaleSupport(r.Context())
 
 	ss, err := a.st.SupportSessionActiveByUser(r.Context(), user.ID)
 	if errors.Is(err, store.ErrNotFound) || ss == nil {
@@ -940,36 +981,53 @@ func (a *AppAPI) handleSupportDecision(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 
 	if req.Decision == "approve" {
-		// Переход допустим только из неразыгранных состояний; requested→active
-		// требует назначенного оператора (connect прошёл). connecting сам по
-		// себе — операторское действие (connect), оно могло прийти и по
-		// admin-токену без user_id (аудит раунд-2, находка D).
+		// ГЛАВНЫЙ ИНВАРИАНТ: active возможен только решением владельца с
+		// совпавшим number-match. Подключение оператора (connect) уже
+		// произошло: код сгенерирован; пустой код = аномалия = approve
+		// запрещён (обход number-match исключён на корню).
 		switch ss.Status {
 		case "requested", "connecting":
 		default:
-			writeError(w, http.StatusConflict, "invalid_session_state")
+			writeError(w, http.StatusConflict, "invalid_transition")
 			return
 		}
-		if ss.AssignedAdminID == nil && ss.Status != "connecting" {
-			writeError(w, http.StatusConflict, "no_operator_assigned")
+		if ss.NumberMatch == "" {
+			// Оператор не подключался (код не сгенерирован) — подтверждать
+			// нечего: и запрошенный, и «пустой» код отвергаются.
+			a.audit(r.Context(), user.Username, "support_decision_no_operator", map[string]any{
+				"session_id": ss.ID.String(),
+				"status":     ss.Status,
+			}, ip, "fail")
+			writeError(w, http.StatusConflict, "no_operator_connected")
 			return
 		}
 
-		// Проверка 2FA Number Matching
-		if ss.NumberMatch != "" && strings.TrimSpace(req.NumberMatch) != ss.NumberMatch {
+		// Проверка 2FA Number Matching: код обязателен и одноразов;
+		// после supportMaxNMAttempts несовпадений сессия гасится.
+		if strings.TrimSpace(req.NumberMatch) != ss.NumberMatch {
+			attempts, _ := a.st.SupportSessionFailNumberMatch(r.Context(), ss.ID)
 			a.audit(r.Context(), user.Username, "support_decision_mismatch", map[string]any{
 				"session_id": ss.ID.String(),
-				"expected":   ss.NumberMatch,
-				"entered":    req.NumberMatch,
+				"attempts":   attempts,
 			}, ip, "fail")
+			if attempts >= store.SupportMaxNMAttempts {
+				writeError(w, http.StatusConflict, "invalid_transition")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "number_match_mismatch")
 			return
 		}
 
-		_ = a.st.SupportSessionUpdateStatus(r.Context(), ss.ID, "active", ss.AssignedAdminID, "")
-		// Код number-match одноразовый: после approve гасим, повторно
-		// использовать подсмотренный код нельзя.
-		_ = a.st.SupportSessionClearNumberMatch(r.Context(), ss.ID)
+		if err := a.st.SupportSessionApprove(r.Context(), ss.ID); err != nil {
+			// Гонка статусов (сессия уже завершена/истекла) или повторный
+			// approve — нарушение последовательности.
+			a.audit(r.Context(), user.Username, "support_decision_approve_failed", map[string]any{
+				"session_id": ss.ID.String(),
+				"error":      err.Error(),
+			}, ip, "fail")
+			writeError(w, http.StatusConflict, "invalid_transition")
+			return
+		}
 		if a.hub != nil {
 			a.hub.SendEventToAdmin(ss.ID, "session_approved", map[string]any{"user": user.Username})
 		}
@@ -978,7 +1036,16 @@ func (a *AppAPI) handleSupportDecision(w http.ResponseWriter, r *http.Request) {
 			"session_id": ss.ID.String(),
 		}, ip, "ok")
 	} else {
-		_ = a.st.SupportSessionEnd(r.Context(), ss.ID, "rejected")
+		// Отклонение/прерывание владельцем: только живая сессия; после
+		// терминального статуса действие невозможно (409).
+		if err := a.st.SupportSessionEnd(r.Context(), ss.ID, "rejected", store.SupportActorUser); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "session_not_found")
+				return
+			}
+			writeError(w, http.StatusConflict, "invalid_transition")
+			return
+		}
 		if a.hub != nil {
 			a.hub.SendEventToAdmin(ss.ID, "session_rejected", map[string]any{"user": user.Username})
 		}
@@ -1187,7 +1254,16 @@ func (a *AppAPI) handleSupportEnd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = a.st.SupportSessionEnd(r.Context(), sessID, "completed")
+	if err := a.st.SupportSessionEnd(r.Context(), sessID, "completed", store.SupportActorUser); err != nil {
+		// Повторное завершение терминальной сессии невозможно —
+		// последовательность действий на обращение строго одна.
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session_not_found")
+			return
+		}
+		writeError(w, http.StatusConflict, "invalid_transition")
+		return
+	}
 	if a.hub != nil {
 		a.hub.SendEventToAdmin(sessID, "session_ended", map[string]any{"by": "user"})
 	}
@@ -1221,6 +1297,9 @@ func (a *AppAPI) handleSupportQueue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "not_support_engineer")
 		return
 	}
+
+	// Ленивая автоматика TTL: просроченные сессии уходят из очереди.
+	a.sweepStaleSupport(r.Context())
 
 	var sessions []store.SupportSession
 	var err error
@@ -1310,8 +1389,26 @@ func (a *AppAPI) handleSupportConnect(w http.ResponseWriter, r *http.Request) {
 	numberMatch := fmt.Sprintf("%02d", num)
 	session.NumberMatch = numberMatch
 
-	if err := a.st.SupportSessionUpdateStatus(r.Context(), session.ID, "connecting", &user.ID, numberMatch); err != nil {
-		slog.Error("app_api: ошибка обновления статуса сессии", "error", err)
+	// Переход через серверную таблицу состояний: подключение возможно
+	// только к живой requested/connecting-сессии; чужую (уже занятую
+	// другим оператором), завершённую или просроченную подключить нельзя.
+	actor := store.SupportActorOperator
+	if isAdmin {
+		actor = store.SupportActorAdmin
+	}
+	if err := a.st.SupportSessionConnect(r.Context(), session.ID, actor, &user.ID, numberMatch); err != nil {
+		switch {
+		case errors.Is(err, store.ErrSessionTaken):
+			writeError(w, http.StatusConflict, "session_taken")
+		case errors.Is(err, store.ErrInvalidTransition):
+			writeError(w, http.StatusConflict, "invalid_transition")
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "not_found")
+		default:
+			slog.Error("app_api: ошибка обновления статуса сессии", "error", err)
+			writeError(w, http.StatusInternalServerError, "db_error")
+		}
+		return
 	}
 
 	// Отправляем push-запрос на экран пользователя
