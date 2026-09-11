@@ -1,4 +1,4 @@
-package com.example.ligament_authenticator
+package com.ligament.twofa.authenticator
 
 import io.flutter.embedding.android.FlutterActivity
 
