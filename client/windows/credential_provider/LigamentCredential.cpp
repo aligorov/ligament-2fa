@@ -763,22 +763,28 @@ static void CPLog(const wchar_t* fmt, ...) {
     CloseHandle(h);
 }
 
+// id пакета 0 — ВАЛИДЕН (на части машин Negotiate зарегистрирован именно под 0,
+// диагностика v0.4.63: lookup "Negotiate" status=0 id=0). Признак «нашлось» —
+// только статус lookup, поэтому валидность держим отдельным флагом.
+static ULONG g_authPkgId = 0;
+static bool g_authPkgValid = false;
+
 static ULONG GetNegotiateAuthPackage() {
     // Кэш на процесс: повторные коннекты к LSA на каждый pack — лишняя
     // точка отказа (диагностика v0.4.62: authPkg=0, вход валидными кредами
-    // отвергался). Цепочка фоллбэков: Negotiate → Kerberos → MsV1_0
-    // (KERB_INTERACTIVE_LOGON — нативный формат пакета MsV1_0).
-    static ULONG s_pkgId = 0;
+    // отвергался). Приоритет — Negotiate: это диспетчер, который сам выбирает
+    // MsV1_0 для локальных учёток; прямой Kerberos локальные учётки без
+    // домена не принимает (0xC000006D в v0.4.63). Фоллбэки — на случай,
+    // если Negotiate в системе не зарегистрирован.
     static bool s_resolved = false;
-    if (s_resolved) return s_pkgId;
+    if (s_resolved) return g_authPkgId;
+    s_resolved = true;
 
     HANDLE hLsa = nullptr;
     NTSTATUS status = LsaConnectUntrusted(&hLsa);
     if (status != 0) {
         CPLog(L"lsa: connect failed status=0x%08X", (unsigned)status);
-        s_resolved = true;
-        s_pkgId = 0;
-        return 0;
+        return g_authPkgId; // 0, невалиден
     }
 
     static const char* kNames[] = { NEGOSSP_NAME_A, MICROSOFT_KERBEROS_NAME_A, "MICROSOFT_V1_0" };
@@ -790,14 +796,13 @@ static ULONG GetNegotiateAuthPackage() {
         pkgName.MaximumLength = pkgName.Length + 1;
         NTSTATUS st = LsaLookupAuthenticationPackage(hLsa, &pkgName, &pkgId);
         CPLog(L"lsa: lookup \"%hs\" status=0x%08X id=%lu", kNames[i], (unsigned)st, pkgId);
-        if (st == 0) break; // успех — id валиден даже 0 (у Negotiate бывает 0)
+        if (st == 0) { g_authPkgValid = true; break; }
         pkgId = 0;
     }
     LsaDeregisterLogonProcess(hLsa);
 
-    s_resolved = true;
-    s_pkgId = pkgId;
-    return s_pkgId;
+    g_authPkgId = pkgId;
+    return g_authPkgId;
 }
 
 HRESULT LigamentCredential::KerbInteractiveLogonPack(
@@ -843,11 +848,11 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     pcpcs->cbSerialization = totalSize;
     pcpcs->rgbSerialization = buffer;
 
-    CPLog(L"pack: domain=\"%s\" user=\"%s\" passLen=%u authPkg=%lu totalSize=%lu",
+    CPLog(L"pack: domain=\"%s\" user=\"%s\" passLen=%u authPkg=%lu pkgResolved=%d totalSize=%lu",
         domain.c_str(), user.c_str(), (unsigned)password.length(),
-        pcpcs->ulAuthenticationPackage, (unsigned long)totalSize);
-    if (pcpcs->ulAuthenticationPackage == 0) {
-        CPLog(L"pack: CRITICAL — LSA не отдал Negotiate/Kerberos, сериализация невалидна");
+        pcpcs->ulAuthenticationPackage, g_authPkgValid ? 1 : 0, (unsigned long)totalSize);
+    if (!g_authPkgValid) {
+        CPLog(L"pack: CRITICAL — LSA не отдал ни один пакет, сериализация невалидна");
     }
 
     return S_OK;
