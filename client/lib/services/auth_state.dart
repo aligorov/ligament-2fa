@@ -25,7 +25,14 @@ class AuthState extends ChangeNotifier {
 
   /// Токен сессии устройства хранится в безопасном хранилище
   /// (Keychain / Keystore / DPAPI / libsecret), а не в SharedPreferences.
-  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  ///
+  /// macOS: useDataProtectionKeyChain=false — data-protection keychain
+  /// требует keychain-entitlement и подпись; CI-сборка DMG без сертификата
+  /// получала -34018 errSecMissingEntitlement. Легаси-чейн работает
+  /// без подписи.
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage(
+    mOptions: MacOsOptions(useDataProtectionKeyChain: false),
+  );
 
   ApiClient? api;
   String? serverUrl;
