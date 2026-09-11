@@ -1,5 +1,6 @@
 ﻿// LigamentCredential.cpp — Implementation of Credential tile logic
 #include "LigamentCredential.h"
+#include <wincred.h> // CredProtectW/CredIsProtectedW (wincred.h)
 
 namespace ligament {
 
