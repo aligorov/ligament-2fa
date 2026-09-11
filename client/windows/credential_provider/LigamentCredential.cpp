@@ -691,6 +691,17 @@ HRESULT LigamentCredential::ReportResult(
     case 0xC00000DF: CPLog(L"ReportResult: STATUS_ACCOUNT_RESTRICTION — ограничение входа (часы/RDP-доступ)"); break;
     default: CPLog(L"ReportResult: нераспознанный код — см. ntstatus.h"); break;
     }
+    switch ((unsigned)ntsSubstatus) {
+    case 0: break;
+    case 0xC000005E: CPLog(L"ReportResult: sub=STATUS_LOGON_TYPE_NOT_GRANTED — учётке ЗАПРЕЩЁН этот тип входа (для RDP: нет права \"Вход через удалённый рабочий стол\" / не в группе Remote Desktop Users)"); break;
+    case 0xC0000064: CPLog(L"ReportResult: sub=STATUS_NO_SUCH_USER — нет такой учётки"); break;
+    case 0xC000006A: CPLog(L"ReportResult: sub=STATUS_WRONG_PASSWORD — пароль неверен"); break;
+    case 0xC0000071: CPLog(L"ReportResult: sub=STATUS_PASSWORD_EXPIRED — пароль истёк"); break;
+    case 0xC0000072: CPLog(L"ReportResult: sub=STATUS_ACCOUNT_DISABLED — учётка отключена"); break;
+    case 0xC0000234: CPLog(L"ReportResult: sub=STATUS_ACCOUNT_LOCKED_OUT — учётка заблокирована"); break;
+    case 0xC000015B: CPLog(L"ReportResult: sub=STATUS_LOGON_TYPE_NOT_GRANTED(015B) — тип входа не предоставлен"); break;
+    default: CPLog(L"ReportResult: sub=нераспознан"); break;
+    }
 
     if (!m_password.empty()) {
         SecureZeroMemory(&m_password[0], m_password.size() * sizeof(wchar_t));
@@ -772,14 +783,15 @@ static ULONG GetNegotiateAuthPackage() {
 
     static const char* kNames[] = { NEGOSSP_NAME_A, MICROSOFT_KERBEROS_NAME_A, "MICROSOFT_V1_0" };
     ULONG pkgId = 0;
-    for (int i = 0; i < 3 && pkgId == 0; ++i) {
+    for (int i = 0; i < 3; ++i) {
         LSA_STRING pkgName;
         pkgName.Buffer = const_cast<PCHAR>(kNames[i]);
         pkgName.Length = static_cast<USHORT>(strlen(kNames[i]));
         pkgName.MaximumLength = pkgName.Length + 1;
         NTSTATUS st = LsaLookupAuthenticationPackage(hLsa, &pkgName, &pkgId);
         CPLog(L"lsa: lookup \"%hs\" status=0x%08X id=%lu", kNames[i], (unsigned)st, pkgId);
-        if (st != 0) pkgId = 0;
+        if (st == 0) break; // успех — id валиден даже 0 (у Negotiate бывает 0)
+        pkgId = 0;
     }
     LsaDeregisterLogonProcess(hLsa);
 
