@@ -6,6 +6,7 @@ namespace ligament {
 // Определение — ниже (перед GetNegotiateAuthPackage); вызовы в
 // GetSerialization/ReportResult идут раньше, отсюда форвард-декларация.
 static void CPLog(const wchar_t* fmt, ...);
+static void GetMachineNames(std::wstring& netBios, std::wstring& dnsDomain);
 
 // Field descriptors
 extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[] = {
