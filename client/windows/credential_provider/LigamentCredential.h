@@ -67,13 +67,14 @@ public:
         CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon
     );
 
-    void Initialize(const Config& cfg, bool isRemote);
+    void Initialize(const Config& cfg, bool isRemote, CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus);
 
 private:
     LONG m_cRef = 1;
     ICredentialProviderCredentialEvents* m_pEvents = nullptr;
     Config m_config;
     bool m_isRemoteSession = false;
+    CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus = CPUS_LOGON;
 
     AUTH_FACTOR_MODE m_currentMode = MODE_FIDO2;
     std::wstring m_username;
@@ -114,6 +115,12 @@ private:
         const std::wstring& user,
         const std::wstring& password,
         CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs
+    );
+    HRESULT PackAndFinish(
+        CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
+        CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs,
+        PWSTR* ppszOptionalStatusText,
+        CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon
     );
 };
 

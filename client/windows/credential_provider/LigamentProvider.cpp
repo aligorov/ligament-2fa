@@ -87,7 +87,7 @@ HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
 
     if (m_shouldEnforce2FA && !m_pCredential) {
         m_pCredential = new LigamentCredential();
-        m_pCredential->Initialize(m_config, m_isRemoteSession);
+        m_pCredential->Initialize(m_config, m_isRemoteSession, cpus);
     }
     return S_OK;
 }

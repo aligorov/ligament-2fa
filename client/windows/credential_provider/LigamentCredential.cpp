@@ -88,9 +88,10 @@ LigamentCredential::~LigamentCredential() {
     InterlockedDecrement(&g_cRefDll);
 }
 
-void LigamentCredential::Initialize(const Config& cfg, bool isRemote) {
+void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus) {
     m_config = cfg;
     m_isRemoteSession = isRemote;
+    m_cpus = cpus;
     // Этот клиент работает в потоке LogonUI (GetSerialization/
     // TriggerFIDO2Auth): receive-таймаут 15 c вместо дефолтных 45 c, чтобы
     // один медленный/умерший запрос не замораживал экран входа и RDP-сессию
@@ -269,8 +270,14 @@ HRESULT LigamentCredential::SetStringValue(DWORD dwFieldID, PCWSTR psz) {
             m_domain = raw.substr(0, slash);
             m_username = raw.substr(slash + 1);
         } else {
-            m_domain.clear();
-            m_username = raw;
+            size_t at = raw.find(L'@');
+            if (at != std::wstring::npos && at > 0 && at + 1 < raw.length()) {
+                m_username = raw.substr(0, at);
+                m_domain = raw.substr(at + 1);
+            } else {
+                m_domain.clear();
+                m_username = raw;
+            }
         }
         break;
     }
@@ -524,17 +531,13 @@ HRESULT LigamentCredential::GetSerialization(
     if (m_config.IsBypassAccount(m_username)) {
         // Do not log the user name: this DLL runs in winlogon/LogonUI context
         LogDebug(L"Account is in bypass whitelist, skipping 2FA");
-        KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
-        *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-        return S_OK;
+        return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
     }
 
     // 2. If already validated via FIDO2 / Push:
     if (m_authenticated) {
         CPLog(L"serialize: ветка already_authenticated");
-        KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
-        *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-        return S_OK;
+        return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
     }
 
     // 3. Mode: OTP code (TOTP or YubiKey OTP)
@@ -547,9 +550,7 @@ HRESULT LigamentCredential::GetSerialization(
         std::string err;
         if (m_apiClient->VerifyCombined(m_username, m_password, m_otpCode, err)) {
             m_authenticated = true;
-            KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
-            *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-            return S_OK;
+            return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
         } else {
             std::wstring msg = L"Вход отклонен: " + DescribeServerError(err, m_apiClient->LastRetryAfterSec());
             SHStrDupW(msg.c_str(), ppszOptionalStatusText);
@@ -600,9 +601,7 @@ HRESULT LigamentCredential::GetSerialization(
             // ставится только когда WinHTTP не дошёл до HTTP-ответа).
             if (!m_config.failClose && err == "network_error") {
                 LogDebug(L"Fail-Open allowed due to network error and policy");
-                KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
-                *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-                return S_OK;
+                return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
             }
             std::wstring msg = L"Не удалось отправить Push: " + DescribeServerError(err, m_apiClient->LastRetryAfterSec());
             SHStrDupW(msg.c_str(), ppszOptionalStatusText);
@@ -625,9 +624,7 @@ HRESULT LigamentCredential::GetSerialization(
             CPLog(L"push: approved — сериализация кредов тайла");
             JoinPollThread();
             m_authenticated = true;
-            KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
-            *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-            return S_OK;
+            return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
         }
 
         // denied / expired / timeout — show the reason on the tile (legal
@@ -658,9 +655,7 @@ HRESULT LigamentCredential::GetSerialization(
     if (m_currentMode == MODE_FIDO2) {
         TriggerFIDO2Auth();
         if (m_authenticated) {
-            KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
-            *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-            return S_OK;
+            return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
         }
     }
 
@@ -778,7 +773,7 @@ static ULONG GetNegotiateAuthPackage() {
     // если Negotiate в системе не зарегистрирован.
     static bool s_resolved = false;
     if (s_resolved) return g_authPkgId;
-    s_resolved = true;
+    // Отказ не кэшируем: следующий pack попробует LSA заново.
 
     HANDLE hLsa = nullptr;
     NTSTATUS status = LsaConnectUntrusted(&hLsa);
@@ -802,6 +797,7 @@ static ULONG GetNegotiateAuthPackage() {
     LsaDeregisterLogonProcess(hLsa);
 
     g_authPkgId = pkgId;
+    s_resolved = g_authPkgValid; // кэшируем только успешный lookup
     return g_authPkgId;
 }
 
@@ -811,50 +807,83 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     const std::wstring& password,
     CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs)
 {
-    // Serialize into KERB_INTERACTIVE_LOGON
+    // Канонический формат Winlogon/LSA (SDK-сэмпл, helpers.cpp,
+    // KerbInteractiveUnlockLogonPack): обёртка KERB_INTERACTIVE_UNLOCK_LOGON
+    // (KERB_INTERACTIVE_LOGON + LUID LogonSessionId, его заполняет Winlogon),
+    // а Buffer-поля UNICODE_STRING — байтовые СМЕЩЕНИЯ от начала структуры,
+    // НЕ указатели: блоб уходит в чужие процессы (Winlogon/LSASS), абсолютные
+    // адреса там бессмысленны (v0.4.62–64: 0xC000006D/0xC00000E5 из-за
+    // указателей и голой структуры). Строки без нуль-терминаторов,
+    // MaximumLength = Length. Диагностика v0.4.64 подтвердила: пакет и креды
+    // верны, формат был битый.
     DWORD domainBytes = (DWORD)(domain.length() * sizeof(wchar_t));
     DWORD userBytes = (DWORD)(user.length() * sizeof(wchar_t));
     DWORD passBytes = (DWORD)(password.length() * sizeof(wchar_t));
 
-    DWORD totalSize = sizeof(KERB_INTERACTIVE_LOGON) + domainBytes + userBytes + passBytes;
+    DWORD totalSize = sizeof(KERB_INTERACTIVE_UNLOCK_LOGON) + domainBytes + userBytes + passBytes;
     BYTE* buffer = (BYTE*)CoTaskMemAlloc(totalSize);
     if (!buffer) return E_OUTOFMEMORY;
     ZeroMemory(buffer, totalSize);
 
-    KERB_INTERACTIVE_LOGON* pLogon = (KERB_INTERACTIVE_LOGON*)buffer;
-    pLogon->MessageType = KerbInteractiveLogon;
+    KERB_INTERACTIVE_UNLOCK_LOGON* pKiul = (KERB_INTERACTIVE_UNLOCK_LOGON*)buffer;
+    KERB_INTERACTIVE_LOGON* pLogon = &pKiul->Logon;
+    pLogon->MessageType = (m_cpus == CPUS_UNLOCK_WORKSTATION)
+        ? KerbWorkstationUnlockLogon
+        : KerbInteractiveLogon;
 
-    BYTE* ptr = buffer + sizeof(KERB_INTERACTIVE_LOGON);
+    BYTE* ptr = buffer + sizeof(KERB_INTERACTIVE_UNLOCK_LOGON);
 
     pLogon->LogonDomainName.Length = (USHORT)domainBytes;
     pLogon->LogonDomainName.MaximumLength = (USHORT)domainBytes;
-    pLogon->LogonDomainName.Buffer = (PWSTR)ptr;
+    pLogon->LogonDomainName.Buffer = (PWSTR)(ptr - buffer);
     CopyMemory(ptr, domain.data(), domainBytes);
     ptr += domainBytes;
 
     pLogon->UserName.Length = (USHORT)userBytes;
     pLogon->UserName.MaximumLength = (USHORT)userBytes;
-    pLogon->UserName.Buffer = (PWSTR)ptr;
+    pLogon->UserName.Buffer = (PWSTR)(ptr - buffer);
     CopyMemory(ptr, user.data(), userBytes);
     ptr += userBytes;
 
     pLogon->Password.Length = (USHORT)passBytes;
     pLogon->Password.MaximumLength = (USHORT)passBytes;
-    pLogon->Password.Buffer = (PWSTR)ptr;
+    pLogon->Password.Buffer = (PWSTR)(ptr - buffer);
     CopyMemory(ptr, password.data(), passBytes);
 
+    ULONG authPkg = GetNegotiateAuthPackage();
+    if (!g_authPkgValid) {
+        CPLog(L"pack: CRITICAL — LSA не отдал пакет, сериализация отменена");
+        CoTaskMemFree(buffer);
+        return E_FAIL;
+    }
+
     pcpcs->clsidCredentialProvider = CLSID_LigamentProvider;
-    pcpcs->ulAuthenticationPackage = GetNegotiateAuthPackage();
+    pcpcs->ulAuthenticationPackage = authPkg;
     pcpcs->cbSerialization = totalSize;
     pcpcs->rgbSerialization = buffer;
 
-    CPLog(L"pack: domain=\"%s\" user=\"%s\" passLen=%u authPkg=%lu pkgResolved=%d totalSize=%lu",
+    CPLog(L"pack(kiul): domain=\"%s\" user=\"%s\" passLen=%u authPkg=%lu pkgResolved=%d msgType=%lu totalSize=%lu",
         domain.c_str(), user.c_str(), (unsigned)password.length(),
-        pcpcs->ulAuthenticationPackage, g_authPkgValid ? 1 : 0, (unsigned long)totalSize);
-    if (!g_authPkgValid) {
-        CPLog(L"pack: CRITICAL — LSA не отдал ни один пакет, сериализация невалидна");
-    }
+        authPkg, g_authPkgValid ? 1 : 0,
+        (unsigned long)pLogon->MessageType, (unsigned long)totalSize);
+    return S_OK;
+}
 
+HRESULT LigamentCredential::PackAndFinish(
+    CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
+    CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs,
+    PWSTR* ppszOptionalStatusText,
+    CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon)
+{
+    HRESULT hr = KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
+    if (SUCCEEDED(hr)) {
+        *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+        return S_OK;
+    }
+    CPLog(L"pack: отказ сериализации hr=0x%08X", (unsigned)hr);
+    SHStrDupW(L"Внутренняя ошибка провайдера, попробуйте еще раз", ppszOptionalStatusText);
+    *pcpsiOptionalStatusIcon = CPSI_ERROR;
+    *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
     return S_OK;
 }
 
