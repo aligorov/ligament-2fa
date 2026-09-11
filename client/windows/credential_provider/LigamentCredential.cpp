@@ -804,6 +804,30 @@ static void GetMachineNames(std::wstring& netBios, std::wstring& dnsDomain) {
     if (GetComputerNameExW(ComputerNameDnsDomain, dd, &d)) dnsDomain = dd;
 }
 
+// Каноническая защита пароля (сэмпл helpers.cpp, ProtectIfNecessary-
+// AndCopyPassword): для CPUS_LOGON/UNLOCK штатный вход и все продакшн-
+// провайдеры (privacyIDEA/multiOTP/rdOTP) отправляют пароль CredProtect-
+// блобом; уже защищённый (пришёл из SetSerialization в RDP) не шифруем
+// дважды. LSA принимает и открытый текст, но делаем канонично.
+static HRESULT ProtectPasswordCopy(const std::wstring& pass, std::wstring& out) {
+    if (pass.empty()) { out.clear(); return S_OK; }
+    CRED_PROTECTION_TYPE pt = CredUnprotected;
+    if (CredIsProtectedW(pass.c_str(), &pt) && pt != CredUnprotected) {
+        out = pass;
+        return S_OK;
+    }
+    DWORD cch = (DWORD)pass.size() + 1; // CredProtectW: счётчик С нуль-терминатором
+    PWSTR buf = (PWSTR)CoTaskMemAlloc(cch * sizeof(wchar_t));
+    if (!buf) return E_OUTOFMEMORY;
+    if (!CredProtectW(FALSE, pass.c_str(), cch, buf, &cch, nullptr)) {
+        CoTaskMemFree(buf);
+        return E_FAIL;
+    }
+    out.assign(buf, wcsnlen(buf, cch));
+    CoTaskMemFree(buf);
+    return S_OK;
+}
+
 // id пакета 0 — ВАЛИДЕН (на части машин Negotiate зарегистрирован именно под 0,
 // диагностика v0.4.63: lookup "Negotiate" status=0 id=0). Признак «нашлось» —
 // только статус lookup, поэтому валидность держим отдельным флагом.
@@ -877,9 +901,17 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
         }
     }
 
+    std::wstring protPassword;
+    HRESULT protHr = ProtectPasswordCopy(password, protPassword);
+    bool protUsed = SUCCEEDED(protHr);
+    if (!protUsed) {
+        CPLog(L"pack: CredProtect не удался hr=0x%08X — отправляю открытый пароль", (unsigned)protHr);
+        protPassword = password;
+    }
+
     DWORD domainBytes = (DWORD)(effDomain.length() * sizeof(wchar_t));
     DWORD userBytes = (DWORD)(user.length() * sizeof(wchar_t));
-    DWORD passBytes = (DWORD)(password.length() * sizeof(wchar_t));
+    DWORD passBytes = (DWORD)(protPassword.length() * sizeof(wchar_t));
 
     DWORD totalSize = sizeof(KERB_INTERACTIVE_UNLOCK_LOGON) + domainBytes + userBytes + passBytes;
     BYTE* buffer = (BYTE*)CoTaskMemAlloc(totalSize);
@@ -909,7 +941,7 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     pLogon->Password.Length = (USHORT)passBytes;
     pLogon->Password.MaximumLength = (USHORT)passBytes;
     pLogon->Password.Buffer = (PWSTR)(ptr - buffer);
-    CopyMemory(ptr, password.data(), passBytes);
+    CopyMemory(ptr, protPassword.data(), passBytes);
 
     ULONG authPkg = GetNegotiateAuthPackage();
     if (!g_authPkgValid) {
@@ -923,10 +955,11 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     pcpcs->cbSerialization = totalSize;
     pcpcs->rgbSerialization = buffer;
 
-    CPLog(L"pack(kiul): domain=\"%s\"(forced=%d) user=\"%s\" passLen=%u authPkg=%lu pkgResolved=%d msgType=%lu totalSize=%lu",
+    CPLog(L"pack(kiul): domain=\"%s\"(forced=%d) user=\"%s\" passLen=%u prot=%d authPkg=%lu pkgResolved=%d msgType=%lu totalSize=%lu",
         effDomain.c_str(), forcedLocalDomain ? 1 : 0, user.c_str(), (unsigned)password.length(),
-        authPkg, g_authPkgValid ? 1 : 0,
+        protUsed ? 1 : 0, authPkg, g_authPkgValid ? 1 : 0,
         (unsigned long)pLogon->MessageType, (unsigned long)totalSize);
+    SecureZeroMemory(&protPassword[0], protPassword.size() * sizeof(wchar_t));
     return S_OK;
 }
 

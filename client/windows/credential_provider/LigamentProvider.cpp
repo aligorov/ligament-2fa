@@ -93,8 +93,15 @@ HRESULT LigamentProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
 }
 
 HRESULT LigamentProvider::SetSerialization(const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs) {
-    // If NLA or CredSSP already provided credentials, unpack them if needed
-    return S_OK;
+    // Контракт (V2-сэмпл): S_OK означает «потребил, перечислю дефолтный тайл
+    // под автологон». Мы удалённые креды не потребляем (2FA требует ручного
+    // ввода) — честно возвращаем E_NOTIMPL, иначе LogonUI ждёт от нас тайл,
+    // которого нет (диагноз агентов: сломанный remote-хэндофф).
+    if (pcpcs && pcpcs->rgbSerialization && pcpcs->cbSerialization) {
+        LogDebug(L"setser: получен удалённый блоб cb=%lu authPkg=%lu — не потреблён (E_NOTIMPL)",
+            (unsigned long)pcpcs->cbSerialization, (unsigned long)pcpcs->ulAuthenticationPackage);
+    }
+    return E_NOTIMPL;
 }
 
 HRESULT LigamentProvider::Advise(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext) {
