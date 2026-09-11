@@ -12,6 +12,9 @@
 #include <webauthn.h>
 #include <shlwapi.h>
 #include <wtsapi32.h>
+#include <shlobj.h>   // SHGetFolderPathW (CPLog → %ProgramData%\Ligament)
+#include <stdarg.h>   // va_list (CPLog)
+#include <stdio.h>    // swprintf_s/_vsnwprintf_s (CPLog)
 
 #include <string>
 #include <vector>

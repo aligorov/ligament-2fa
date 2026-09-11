@@ -527,6 +527,7 @@ HRESULT LigamentCredential::GetSerialization(
 
     // 2. If already validated via FIDO2 / Push:
     if (m_authenticated) {
+        CPLog(L"serialize: ветка already_authenticated");
         KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
         *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
         return S_OK;
@@ -617,6 +618,7 @@ HRESULT LigamentCredential::GetSerialization(
         }
 
         if (status == L"approved") {
+            CPLog(L"push: approved — сериализация кредов тайла");
             JoinPollThread();
             m_authenticated = true;
             KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
@@ -667,9 +669,24 @@ HRESULT LigamentCredential::ReportResult(
     PWSTR* ppszOptionalStatusText,
     CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon)
 {
-    UNREFERENCED_PARAMETER(ntsSubstatus);
     *ppszOptionalStatusText = nullptr;
     *pcpsiOptionalStatusIcon = CPSI_NONE;
+
+    CPLog(L"ReportResult: ntsStatus=0x%08X ntsSubstatus=0x%08X",
+        (unsigned)ntsStatus, (unsigned)ntsSubstatus);
+    switch ((unsigned)ntsStatus) {
+    case 0: break;
+    case 0xC0000064: CPLog(L"ReportResult: STATUS_NO_SUCH_USER — учётки с таким именем нет"); break;
+    case 0xC000006A: CPLog(L"ReportResult: STATUS_WRONG_PASSWORD — пароль не подошёл"); break;
+    case 0xC000006D: CPLog(L"ReportResult: STATUS_LOGON_FAILURE — имя или пароль неверны"); break;
+    case 0xC0000072: CPLog(L"ReportResult: STATUS_ACCOUNT_DISABLED — учётка отключена"); break;
+    case 0xC0000234: CPLog(L"ReportResult: STATUS_ACCOUNT_LOCKED_OUT — учётка заблокирована"); break;
+    case 0xC0000071: CPLog(L"ReportResult: STATUS_PASSWORD_EXPIRED — пароль истёк"); break;
+    case 0xC0000193: CPLog(L"ReportResult: STATUS_ACCOUNT_EXPIRED — учётка истекла"); break;
+    case 0xC0000022: CPLog(L"ReportResult: STATUS_ACCESS_DENIED — доступ запрещён (RDP-права/группы)"); break;
+    case 0xC00000DF: CPLog(L"ReportResult: STATUS_ACCOUNT_RESTRICTION — ограничение входа (часы/RDP-доступ)"); break;
+    default: CPLog(L"ReportResult: нераспознанный код — см. ntstatus.h"); break;
+    }
 
     if (!m_password.empty()) {
         SecureZeroMemory(&m_password[0], m_password.size() * sizeof(wchar_t));
@@ -696,6 +713,40 @@ HRESULT LigamentCredential::ReportResult(
 #ifndef MICROSOFT_KERBEROS_NAME_A
 #define MICROSOFT_KERBEROS_NAME_A "Kerberos"
 #endif
+
+// CPLog — файловая диагностика провайдера (winlogon-контекст, прав на
+// отладчик нет): %ProgramData%\Ligament\cp.log. Пишутся ТОЛЬКО несекретные
+// детали (имя/домен/длины/пакет/коды NTSTATUS), никогда пароль.
+static void CPLog(const wchar_t* fmt, ...) {
+    static wchar_t path[MAX_PATH] = {0};
+    if (path[0] == 0) {
+        wchar_t progData[MAX_PATH] = {0};
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, progData))) {
+            wcscat_s(progData, L"\\Ligament");
+            CreateDirectoryW(progData, nullptr);
+            wcscat_s(progData, L"\\cp.log");
+            wcscat_s(path, progData);
+        } else {
+            wcscpy_s(path, L"C:\\Windows\\Temp\\LigamentCP.log");
+        }
+    }
+    HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    SYSTEMTIME st; GetLocalTime(&st);
+    wchar_t line[1024];
+    int n = swprintf_s(line, L"[%02u.%02u %02u:%02u:%02u.%03u tid=%lu] ",
+        st.wDay, st.wMonth, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+        GetCurrentThreadId());
+    va_list args; va_start(args, fmt);
+    int m = _vsnwprintf_s(line + n, (int)(wcslen(line) > 0 ? sizeof(line)/sizeof(wchar_t) - n : 0), _TRUNCATE, fmt, args);
+    va_end(args);
+    (void)m;
+    wcscat_s(line, L"\r\n");
+    DWORD written = 0;
+    WriteFile(h, line, (DWORD)(wcslen(line) * sizeof(wchar_t)), &written, nullptr);
+    CloseHandle(h);
+}
 
 static ULONG GetNegotiateAuthPackage() {
     HANDLE hLsa = nullptr;
@@ -765,6 +816,13 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     pcpcs->ulAuthenticationPackage = GetNegotiateAuthPackage();
     pcpcs->cbSerialization = totalSize;
     pcpcs->rgbSerialization = buffer;
+
+    CPLog(L"pack: domain=\"%s\" user=\"%s\" passLen=%u authPkg=%lu totalSize=%lu",
+        domain.c_str(), user.c_str(), (unsigned)password.length(),
+        pcpcs->ulAuthenticationPackage, (unsigned long)totalSize);
+    if (pcpcs->ulAuthenticationPackage == 0) {
+        CPLog(L"pack: CRITICAL — LSA не отдал Negotiate/Kerberos, сериализация невалидна");
+    }
 
     return S_OK;
 }
