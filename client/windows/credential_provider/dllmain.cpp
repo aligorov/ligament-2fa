@@ -14,6 +14,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
         g_hinstDll = hinstDLL;
         DisableThreadLibraryCalls(hinstDLL);
+        // Первая строка жизни провайдера: если её нет в cp.log после попытки
+        // входа — DLL вообще не загружается в LogonUI (регистрация/битность).
+        ligament::LogDebug(L"dll: загружен Ligament CP v0.4.69 (pid=%lu)",
+            (unsigned long)GetCurrentProcessId());
     }
     return TRUE;
 }
@@ -27,6 +31,7 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv) {
     *ppv = nullptr;
 
     if (IsEqualCLSID(rclsid, CLSID_LigamentProvider)) {
+        ligament::LogDebug(L"dll: DllGetClassObject — запрошен наш провайдер");
         auto* pFactory = new ligament::ClassFactory();
         if (!pFactory) return E_OUTOFMEMORY;
         HRESULT hr = pFactory->QueryInterface(riid, ppv);

@@ -115,7 +115,28 @@ struct Config {
     }
 };
 
-// Logging helper to DebugView / debugger
+// Файловое приложение к cp.log (тот же формат, что CPLog в LigamentCredential).
+// Winlogon/LogonUI-контекст: отладчика нет, файл — единственное «окно».
+inline void LogCPFileLine(const wchar_t* line) {
+    static wchar_t s_path[MAX_PATH] = {0};
+    if (s_path[0] == 0) {
+        wchar_t progData[MAX_PATH] = {0};
+        if (FAILED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, progData))) return;
+        wcscat_s(progData, L"\\Ligament");
+        CreateDirectoryW(progData, nullptr);
+        wcscat_s(progData, L"\\cp.log");
+        wcscpy_s(s_path, progData);
+    }
+    HANDLE h = CreateFileW(s_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    SetFilePointer(h, 0, nullptr, FILE_END);
+    DWORD written = 0;
+    WriteFile(h, line, (DWORD)(wcslen(line) * sizeof(wchar_t)), &written, nullptr);
+    CloseHandle(h);
+}
+
+// Logging helper: DebugView + файл cp.log (с таймстемпом, как CPLog).
 inline void LogDebug(const wchar_t* fmt, ...) {
     wchar_t buf[1024];
     va_list args;
@@ -125,6 +146,13 @@ inline void LogDebug(const wchar_t* fmt, ...) {
     OutputDebugStringW(L"[Ligament2FA] ");
     OutputDebugStringW(buf);
     OutputDebugStringW(L"\n");
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t line[1200];
+    swprintf_s(line, L"[%02d.%02d %02d:%02d:%02d.%03d tid=%lu] %s\r\n",
+        st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+        (unsigned long)GetCurrentThreadId(), buf);
+    LogCPFileLine(line);
 }
 
 // UTF-8 <-> UTF-16 helpers

@@ -155,10 +155,12 @@ HRESULT LigamentProvider::GetCredentialCount(DWORD* pdwCount, DWORD* pdwDefault,
         *pdwCount = 1;
         *pdwDefault = 0;
         *pbAutoLogonWithDefault = FALSE;
+        LogDebug(L"credcount: 1 тайл (enforce), default=0, autologon=0");
     } else {
         *pdwCount = 0;
         *pdwDefault = CREDENTIAL_PROVIDER_NO_DEFAULT;
         *pbAutoLogonWithDefault = FALSE;
+        LogDebug(L"credcount: 0 тайлов (не enforce: cpus/remote/флаги)");
     }
     return S_OK;
 }
@@ -195,14 +197,20 @@ HRESULT LigamentProvider::Filter(
         enforce = (isRemote && cfg.rdp2faEnabled) || (!isRemote && cfg.console2faEnabled);
     }
 
+    DWORD suppressed = 0;
     if (enforce) {
         for (DWORD i = 0; i < cProviders; ++i) {
             if (IsEqualGUID(rgclsidProviders[i], CLSID_PasswordProvider)) {
                 // Suppress standard password-only tile in favor of Ligament 2FA
                 rgbAllow[i] = FALSE;
+                ++suppressed;
             }
         }
     }
+    LogDebug(L"filter: cpus=%lu remote=%d rdp2fa=%d console2fa=%d enforce=%d providers=%lu suppressedStock=%lu",
+        (unsigned long)cpus, isRemote ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0,
+        cfg.console2faEnabled ? 1 : 0, enforce ? 1 : 0,
+        (unsigned long)cProviders, (unsigned long)suppressed);
     return S_OK;
 }
 
@@ -210,7 +218,15 @@ HRESULT LigamentProvider::UpdateRemoteCredential(
     const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcsIn,
     CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcsOut)
 {
-    UNREFERENCED_PARAMETER(pcpcsIn);
+    // NLA-креды от mstsc приходят сюда. Мы их не перехватываем (2FA требует
+    // ручного ввода) — но ФИКСИРУЕМ факт прихода: важный маркер RDP-потока.
+    if (pcpcsIn && pcpcsIn->rgbSerialization && pcpcsIn->cbSerialization) {
+        LogDebug(L"remote-cred: получен блоб cb=%lu authPkg=%lu — не перехватываем",
+            (unsigned long)pcpcsIn->cbSerialization,
+            (unsigned long)pcpcsIn->ulAuthenticationPackage);
+    } else {
+        LogDebug(L"remote-cred: вызов с пустым входом");
+    }
     UNREFERENCED_PARAMETER(pcpcsOut);
     return E_NOTIMPL;
 }

@@ -94,6 +94,9 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
     m_config = cfg;
     m_isRemoteSession = isRemote;
     m_cpus = cpus;
+    CPLog(L"init: тайл создан remote=%d cpus=%u fido2=%d failClose=%d rdp2fa=%d",
+        isRemote ? 1 : 0, (unsigned)cpus, cfg.fido2Enabled ? 1 : 0,
+        cfg.failClose ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0);
     // Этот клиент работает в потоке LogonUI (GetSerialization/
     // TriggerFIDO2Auth): receive-таймаут 15 c вместо дефолтных 45 c, чтобы
     // один медленный/умерший запрос не замораживал экран входа и RDP-сессию
@@ -525,6 +528,8 @@ HRESULT LigamentCredential::GetSerialization(
     *pcpsiOptionalStatusIcon = CPSI_NONE;
 
     if (m_username.empty() || m_password.empty()) {
+        CPLog(L"serialize: submit без логина/пароля (mode=%u auth=%d) — ждём ввод",
+            (unsigned)m_currentMode, m_authenticated ? 1 : 0);
         SHStrDupW(L"Введите имя пользователя и пароль", ppszOptionalStatusText);
         return S_OK;
     }
@@ -554,6 +559,7 @@ HRESULT LigamentCredential::GetSerialization(
             m_authenticated = true;
             return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
         } else {
+            CPLog(L"otp: отклонён err=%hs", err.c_str());
             std::wstring msg = L"Вход отклонен: " + DescribeServerError(err, m_apiClient->LastRetryAfterSec());
             SHStrDupW(msg.c_str(), ppszOptionalStatusText);
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
@@ -573,6 +579,7 @@ HRESULT LigamentCredential::GetSerialization(
             std::wstring challengeId;
             std::wstring numberMatch;
             std::string err;
+            CPLog(L"push: отправка StartPush...");
             if (m_apiClient->StartPush(m_username, m_password, challengeId, numberMatch, err)) {
                 // number-matching: приложение требует ввести контрольное
                 // число — показываем его ЗДЕСЬ, на экране входа (RDP).
@@ -588,6 +595,8 @@ HRESULT LigamentCredential::GetSerialization(
                 m_pollChallengeId = challengeId;
                 LeaveCriticalSection(&m_csPoll);
 
+                CPLog(L"push: старт ок, воркер опроса запущен (number_match=%s)",
+                    numberMatch.empty() ? L"нет" : L"есть");
                 m_hPollThread = CreateThread(nullptr, 0, PushPollThreadProc, this, 0, nullptr);
                 if (!m_hPollThread) {
                     // Cannot wait non-blockingly without the worker thread.
@@ -605,6 +614,7 @@ HRESULT LigamentCredential::GetSerialization(
                 LogDebug(L"Fail-Open allowed due to network error and policy");
                 return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
             }
+            CPLog(L"push: StartPush err=%hs failClose=%d", err.c_str(), m_config.failClose ? 1 : 0);
             std::wstring msg = L"Не удалось отправить Push: " + DescribeServerError(err, m_apiClient->LastRetryAfterSec());
             SHStrDupW(msg.c_str(), ppszOptionalStatusText);
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
