@@ -52,6 +52,10 @@ class AuthState extends ChangeNotifier {
   Timer? _pollingTimer;
   bool _isPollingInFlight = false;
   final Set<String> _resolvedChallengeIds = {};
+  // Челленджи, по которым уже сработал alert (звук + вывод окна/нотификация):
+  // WS и polling оба могут доставить один и тот же prompt — алерт
+  // срабатывает один раз на челлендж, без повторов каждые 4 секунды.
+  final Set<String> _alertedChallengeIds = {};
 
   bool get isLoggedIn => token != null && currentUser != null;
 
@@ -146,23 +150,38 @@ class AuthState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _setupServices() {
-    if (api == null || token == null || serverUrl == null) return;
-
-    // 1. WebSocket для мгновенных push-оповещений
-    ws.onPrompt = (prompt) {
-      final cid = prompt['challenge_id']?.toString();
-      if (cid != null && _resolvedChallengeIds.contains(cid)) {
-        return;
-      }
-      activePrompt = prompt;
+  /// Единая точка появления push-челленджа в UI — вызывается и из WS
+  /// (challenge_prompt), и из polling-фолбэка (pending-список). Гасит
+  /// дубли: уже закрытый пользователем челлендж не всплывает повторно,
+  /// повторная доставка того же челленджа не перезапускает алерт.
+  /// Модалка (ApprovalModal через activePrompt) открывается/обновляется
+  /// из ОБЕИХ цепочек без второго окна.
+  void _surfacePrompt(Map<String, dynamic> prompt) {
+    final cid = prompt['challenge_id']?.toString();
+    if (cid != null && cid.isNotEmpty && _resolvedChallengeIds.contains(cid)) {
+      return;
+    }
+    final isNew = activePrompt == null ||
+        activePrompt!['challenge_id']?.toString() != cid;
+    activePrompt = prompt;
+    if (cid != null && cid.isNotEmpty && isNew && !_alertedChallengeIds.contains(cid)) {
+      _alertedChallengeIds.add(cid);
       alert.triggerAlert(
         title: 'Запрос на авторизацию: ${prompt['service'] ?? 'Ligament 2FA'}',
         body: 'Инициатор: ${prompt['who'] ?? 'Сотрудник'} (IP: ${prompt['ip'] ?? '—'})',
         challengeId: cid,
       );
+    }
+    notifyListeners();
+  }
+
+  void _setupServices() {
+    if (api == null || token == null || serverUrl == null) return;
+
+    // 1. WebSocket для мгновенных push-оповещений
+    ws.onPrompt = (prompt) {
+      _surfacePrompt(prompt);
       loadPendingChallenges();
-      notifyListeners();
     };
 
     ws.onSupportPrompt = (prompt) {
@@ -351,6 +370,8 @@ class AuthState extends ChangeNotifier {
     allowedApps.clear();
     history.clear();
     supportQueue.clear();
+    _resolvedChallengeIds.clear();
+    _alertedChallengeIds.clear();
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auth_token');
@@ -406,21 +427,34 @@ class AuthState extends ChangeNotifier {
         return id != null && !_resolvedChallengeIds.contains(id);
       }).toList();
 
+      final activeId = activePrompt?['challenge_id']?.toString();
+      final stillPending = activeId != null &&
+          pendingChallenges.any((c) => c['id']?.toString() == activeId);
+
       if (pendingChallenges.isEmpty) {
-        activePrompt = null;
-        alert.resetWindowPriority();
-      } else if (activePrompt == null) {
+        // Все челленджи закрыты (подтверждены в другом канале — например в
+        // Telegram — или истекли): гасим модалку и приоритет окна.
+        if (activePrompt != null) {
+          activePrompt = null;
+          alert.resetWindowPriority();
+        }
+      } else if (!stillPending) {
+        // Активного prompt нет, либо он исчез из pending (закрыт в другом
+        // канале) — выводим свежейший из очереди. Это и есть показ
+        // RADIUS-push из polling-фолбэка (WS был offline/в трее).
         final first = pendingChallenges.first;
         final meta = first['metadata'] as Map<String, dynamic>? ?? {};
-        activePrompt = {
+        _surfacePrompt({
           'challenge_id': first['id'],
           'who': meta['username'] ?? currentUser?['username'],
           'ip': meta['ip'] ?? '—',
-          'ua': meta['ua'] ?? '—',
+          // RADIUS-push хранит описание клиента в metadata.device,
+          // web-login — в metadata.ua.
+          'ua': meta['ua'] ?? meta['device'] ?? '—',
           'service': first['purpose'] ?? '2FA Login',
           'number_match': meta['number_match'],
           'expires_in_seconds': first['expires_in_seconds'],
-        };
+        });
       }
       notifyListeners();
     } catch (e) {

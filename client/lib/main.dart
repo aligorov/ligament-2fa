@@ -139,11 +139,10 @@ class _LigamentAppState extends State<LigamentApp> with TrayListener, WindowList
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        colorScheme: ColorScheme.dark(
-          primary: const Color(0xFF38BDF8),
-          secondary: const Color(0xFF0284C7),
-          surface: const Color(0xFF1E293B),
-          background: const Color(0xFF0F172A),
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF38BDF8),
+          secondary: Color(0xFF0284C7),
+          surface: Color(0xFF1E293B),
         ),
         scaffoldBackgroundColor: const Color(0xFF0F172A),
         useMaterial3: true,

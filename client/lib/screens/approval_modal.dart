@@ -13,32 +13,94 @@ class ApprovalModal extends StatefulWidget {
 }
 
 class _ApprovalModalState extends State<ApprovalModal> {
+  /// Актуальный prompt: инициализируется виджетом, затем отслеживает
+  /// AuthState.activePrompt — челлендж могут доставить/обновить и WS, и
+  /// polling-фолбэк. Новый челлендж при открытом окне заменяет содержимое
+  /// ЭТОГО же диалога (без второго окна); исчезнувший — закрывает окно
+  /// (например, подтверждено в Telegram или истёк TTL).
+  late Map<String, dynamic> _prompt;
+  AuthState? _auth;
   late int _secondsLeft;
   Timer? _timer;
   String? _selectedMatch;
   bool _isProcessing = false;
+  bool _closing = false;
   String? _error;
 
   @override
   void initState() {
     super.initState();
-    _secondsLeft = widget.prompt['expires_in_seconds'] as int? ?? 60;
+    _prompt = widget.prompt;
+    _secondsLeft = _prompt['expires_in_seconds'] as int? ?? 60;
+    _restartTimer();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_auth == null) {
+      _auth = context.read<AuthState>();
+      _auth!.addListener(_onAuthStateChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    _auth?.removeListener(_onAuthStateChanged);
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _onAuthStateChanged() {
+    if (!mounted || _closing) return;
+    final live = _auth?.activePrompt;
+    if (live == null) {
+      // Челлендж закрыт в другом канале (Telegram / истёк / подтверждён) —
+      // закрываем окно.
+      _close();
+      return;
+    }
+    final liveId = live['challenge_id']?.toString();
+    final curId = _prompt['challenge_id']?.toString();
+    if (liveId != null && liveId != curId) {
+      // Новый челлендж пришёл, пока окно открыто: обновляем содержимое
+      // этого же окна вместо второго диалога.
+      setState(() {
+        _prompt = Map<String, dynamic>.from(live);
+        _selectedMatch = null;
+        _error = null;
+        _isProcessing = false;
+        _secondsLeft = live['expires_in_seconds'] as int? ?? 60;
+      });
+      _restartTimer();
+    } else if (liveId != null && liveId == curId) {
+      // Тот же челлендж: подтягиваем актуальный остаток TTL из polling
+      // (локальный отсчёт может отставать/спешить).
+      final ttl = live['expires_in_seconds'] as int?;
+      if (ttl != null && ttl > _secondsLeft && !_isProcessing) {
+        setState(() => _secondsLeft = ttl);
+      }
+    }
+  }
+
+  void _restartTimer() {
+    _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_secondsLeft <= 1) {
         timer.cancel();
-        if (mounted) {
-          Navigator.of(context, rootNavigator: true).maybePop();
-        }
+        _close();
       } else {
         setState(() => _secondsLeft--);
       }
     });
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
+  /// Закрытие окна строго один раз: таймер, исчезновение prompt и завершение
+  /// решения могут сработать вместе — повторный pop снял бы чужой маршрут.
+  void _close() {
+    if (_closing || !mounted) return;
+    _closing = true;
+    Navigator.of(context, rootNavigator: true).maybePop();
   }
 
   String _translateError(dynamic e) {
@@ -59,7 +121,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
   }
 
   Future<void> _handleDecision(bool approve) async {
-    final expectedMatch = widget.prompt['number_match']?.toString();
+    final expectedMatch = _prompt['number_match']?.toString();
     if (approve && expectedMatch != null && expectedMatch.isNotEmpty) {
       if (_selectedMatch == null || _selectedMatch != expectedMatch) {
         setState(() => _error = 'Выберите верный номер, показанный на экране входа');
@@ -73,8 +135,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
     });
 
     final auth = context.read<AuthState>();
-    final challengeId = widget.prompt['challenge_id']?.toString() ?? '';
-    final navigator = Navigator.of(context, rootNavigator: true);
+    final challengeId = _prompt['challenge_id']?.toString() ?? '';
 
     try {
       await auth.submitDecision(
@@ -82,9 +143,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
         approve: approve,
         selectedNumberMatch: _selectedMatch,
       );
-      if (mounted && navigator.canPop()) {
-        navigator.pop();
-      }
+      _close();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -97,11 +156,11 @@ class _ApprovalModalState extends State<ApprovalModal> {
 
   @override
   Widget build(BuildContext context) {
-    final expectedMatch = widget.prompt['number_match']?.toString();
-    final who = widget.prompt['who']?.toString() ?? 'Сотрудник';
-    final ip = widget.prompt['ip']?.toString() ?? '127.0.0.1';
-    final ua = widget.prompt['ua']?.toString() ?? 'Браузер / Клиент';
-    final service = widget.prompt['service']?.toString() ?? 'Корпоративный доступ';
+    final expectedMatch = _prompt['number_match']?.toString();
+    final who = _prompt['who']?.toString() ?? 'Сотрудник';
+    final ip = _prompt['ip']?.toString() ?? '127.0.0.1';
+    final ua = _prompt['ua']?.toString() ?? 'Браузер / Клиент';
+    final service = _prompt['service']?.toString() ?? 'Корпоративный доступ';
 
     // Для Number Matching генерируем 3 уникальных варианта: верный + 2 правдоподобных ложных
     final options = <String>[];
@@ -121,7 +180,7 @@ class _ApprovalModalState extends State<ApprovalModal> {
       elevation: 24,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(20),
-        side: BorderSide(color: const Color(0xFF38BDF8).withOpacity(0.4), width: 2),
+          side: BorderSide(color: const Color(0xFF38BDF8).withValues(alpha: 0.4), width: 2),
       ),
       insetPadding: const EdgeInsets.all(16),
       child: ConstrainedBox(

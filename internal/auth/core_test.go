@@ -198,6 +198,54 @@ func (f *fakePush) snapshot() (calls int, chatID int64, who, ip string, chID uui
 	return f.calls, f.seenChatID, f.seenWho, f.seenIP, f.seenChalID
 }
 
+// fakeAppPush — AppPushNotifier с подсчётом доставки (как *delivery.AppHub):
+// записывает вызовы, отвечает online живых клиентов, опционально «нажимает»
+// подтверждение через after; err имитирует отказ рассылки.
+type fakeAppPush struct {
+	st       *store.Store
+	setState string
+	after    time.Duration
+	err      error
+	online   int // ответ SendAppPushCounted
+
+	mu      sync.Mutex
+	calls   int
+	seenID  uuid.UUID
+	seenWho string
+	seenIP  string
+	seenSvc string
+}
+
+func (f *fakeAppPush) SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) error {
+	_, err := f.SendAppPushCounted(ctx, userID, who, ip, ua, service, numberMatch, challengeID, expiresInSeconds)
+	return err
+}
+
+func (f *fakeAppPush) SendAppPushCounted(_ context.Context, _ uuid.UUID, who, ip, _, service, _ string, chID uuid.UUID, _ int) (int, error) {
+	f.mu.Lock()
+	f.calls++
+	f.seenID, f.seenWho, f.seenIP, f.seenSvc = chID, who, ip, service
+	online, err := f.online, f.err
+	f.mu.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	if f.setState != "" {
+		state := f.setState
+		go func() {
+			time.Sleep(f.after)
+			_ = f.st.ChallengeSetPush(context.Background(), chID, state)
+		}()
+	}
+	return online, nil
+}
+
+func (f *fakeAppPush) snapshot() (calls int, chID uuid.UUID, who, ip, svc string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls, f.seenID, f.seenWho, f.seenIP, f.seenSvc
+}
+
 // ---- утилиты ----
 
 func mkUser(t *testing.T, ctx context.Context, st *store.Store, name string, mutate func(*store.User)) *store.User {
@@ -577,6 +625,129 @@ func TestRADIUSAuth(t *testing.T) {
 	rad4 := mkUser(t, ctx, st, "raddisabled", func(u *store.User) { u.Enabled = false })
 	if accept, reason = core.RADIUSAuth(ctx, rad4.Username, testPassword, "10.0.0.9"); accept || reason != "disabled" {
 		t.Fatalf("disabled: accept=%v reason=%q", accept, reason)
+	}
+}
+
+// TestRADIUSAuthPushFanout — фан-аут доставки RADIUS-push: при привязанном
+// Telegram И зарегистрированном app-диспетчере ОДИН челлендж доставляется в
+// ОБА канала (WS/SSE-рассылка + pending-список приложения, SendPush боту);
+// подтвердить можно из любого канала. Отказ одного канала не рвёт другой;
+// отказ обоих — push_send_fail с удалением челленджа (cooldown не отравлен).
+func TestRADIUSAuthPushFanout(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	mustPut(t, ctx, set, "radius.push_wait", `"6s"`)
+
+	waitFor := func(cond func() bool) bool {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if cond() {
+				return true
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return cond()
+	}
+
+	// 1) Оба канала: один и тот же challenge_id в SendAppPush и SendPush;
+	// челлендж channel=app_push виден приложению в pending-списке;
+	// подтверждение со стороны Telegram закрывает тот же челлендж.
+	tg := &fakePush{st: st}
+	app := &fakeAppPush{st: st, online: 2}
+	core := newCore(st, set, box, nil, tg)
+	core.SetAppPush(app)
+
+	u1 := mkUser(t, ctx, st, "fanout-both", func(u *store.User) {
+		chat := int64(5001)
+		u.TelegramChatID = &chat
+		u.RadiusPush = true
+	})
+	var accept1 bool
+	var reason1 string
+	done1 := make(chan struct{})
+	go func() {
+		accept1, reason1 = core.RADIUSAuth(ctx, u1.Username, testPassword, "10.5.5.5")
+		close(done1)
+	}()
+	if !waitFor(func() bool {
+		c, _, _, _, _ := app.snapshot()
+		tc, _, _, _, _ := tg.snapshot()
+		return c >= 1 && tc >= 1
+	}) {
+		t.Fatal("фан-аут: SendAppPush/SendPush не вызваны")
+	}
+	appCalls, appID, appWho, appIP, appSvc := app.snapshot()
+	tgCalls, tgChat, tgWho, tgIP, tgID := tg.snapshot()
+	if appCalls != 1 || tgCalls != 1 {
+		t.Fatalf("фан-аут: app=%d tg=%d вызовов, want 1/1", appCalls, tgCalls)
+	}
+	if appID != tgID || appID == uuid.Nil {
+		t.Fatalf("фан-аут: разные challenge_id: app=%s tg=%s", appID, tgID)
+	}
+	if tgChat != 5001 || tgWho != u1.Username || tgIP != "10.5.5.5" ||
+		appWho != u1.Username || appIP != "10.5.5.5" || appSvc == "" {
+		t.Fatalf("фан-аут: аргументы доставки app=(who=%q ip=%q svc=%q) tg=(chat=%d who=%q ip=%q)",
+			appWho, appIP, appSvc, tgChat, tgWho, tgIP)
+	}
+	chal, err := st.ChallengeGet(ctx, appID)
+	if err != nil || chal.Channel != channel.AppPush {
+		t.Fatalf("челлендж фан-аута: channel=%v err=%v (want app_push)", chal.Channel, err)
+	}
+	pending, err := st.ActiveAppPushChallenges(ctx, u1.ID)
+	if err != nil || len(pending) != 1 || pending[0].ID != appID {
+		t.Fatalf("pending-список приложения не видит RADIUS-push: n=%d err=%v", len(pending), err)
+	}
+	if err := st.ChallengeSetPush(ctx, tgID, "approved"); err != nil {
+		t.Fatalf("approve из Telegram: %v", err)
+	}
+	<-done1
+	if !accept1 || reason1 != "push_ok" {
+		t.Fatalf("фан-аут: accept=%v reason=%q (want push_ok)", accept1, reason1)
+	}
+	evs, err := st.AuditList(ctx, store.AuditFilter{Username: u1.Username, Event: "app_push_sent"})
+	if err != nil || len(evs) == 0 {
+		t.Fatalf("аудит app_push_sent: n=%d err=%v", len(evs), err)
+	}
+
+	// 2) Telegram недоступен — канал приложения продолжает работать.
+	tgDown := &fakePush{st: st, err: errors.New("telegram down")}
+	appOK := &fakeAppPush{st: st, setState: "approved", after: time.Second, online: 0}
+	core2 := newCore(st, set, box, nil, tgDown)
+	core2.SetAppPush(appOK)
+	u2 := mkUser(t, ctx, st, "fanout-tgdown", func(u *store.User) {
+		chat := int64(5002)
+		u.TelegramChatID = &chat
+		u.RadiusPush = true
+	})
+	if accept, reason := core2.RADIUSAuth(ctx, u2.Username, testPassword, "10.5.5.6"); !accept || reason != "push_ok" {
+		t.Fatalf("tg-down: accept=%v reason=%q (want push_ok)", accept, reason)
+	}
+
+	// 3) Только приложение (Telegram не привязан).
+	appOnly := &fakeAppPush{st: st, setState: "approved", after: time.Second, online: 1}
+	core3 := newCore(st, set, box, nil, nil)
+	core3.SetAppPush(appOnly)
+	u3 := mkUser(t, ctx, st, "fanout-apponly", func(u *store.User) { u.RadiusPush = true })
+	if accept, reason := core3.RADIUSAuth(ctx, u3.Username, testPassword, "10.5.5.7"); !accept || reason != "push_ok" {
+		t.Fatalf("app-only: accept=%v reason=%q (want push_ok)", accept, reason)
+	}
+
+	// 4) Оба канала упали — push_send_fail, челлендж удалён.
+	tgDead := &fakePush{st: st, err: errors.New("telegram down")}
+	appDead := &fakeAppPush{st: st, err: errors.New("hub down")}
+	core4 := newCore(st, set, box, nil, tgDead)
+	core4.SetAppPush(appDead)
+	u4 := mkUser(t, ctx, st, "fanout-dead", func(u *store.User) {
+		chat := int64(5003)
+		u.TelegramChatID = &chat
+		u.RadiusPush = true
+	})
+	if accept, reason := core4.RADIUSAuth(ctx, u4.Username, testPassword, "10.5.5.8"); accept || reason != "push_send_fail" {
+		t.Fatalf("all-dead: accept=%v reason=%q (want push_send_fail)", accept, reason)
+	}
+	_, deadID, _, _, _ := appDead.snapshot()
+	if _, err := st.ChallengeGet(ctx, deadID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("челлендж после отказа всех каналов должен быть удалён: err=%v", err)
 	}
 }
 

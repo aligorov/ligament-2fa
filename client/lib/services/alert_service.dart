@@ -17,15 +17,17 @@ class AlertService {
   Future<void> init() async {
     if (_initialized) return;
 
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    // Локальные нотификации: iOS/Android — всегда; macOS — системный баннер
+    // со звуком, когда окно скрыто в трей (фон) и вывод окна легко пропустить.
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS)) {
       const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-      const iosInit = DarwinInitializationSettings(
+      const darwinInit = DarwinInitializationSettings(
         requestAlertPermission: true,
         requestBadgePermission: true,
         requestSoundPermission: true,
       );
       await _localNotifications.initialize(
-        const InitializationSettings(android: androidInit, iOS: iosInit),
+        const InitializationSettings(android: androidInit, iOS: darwinInit, macOS: darwinInit),
       );
     }
 
@@ -45,6 +47,7 @@ class AlertService {
     await init();
 
     if (!kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      bool windowVisible = true;
       try {
         // Показываем окно и разворачиваем, если было скрыто/минимизировано в трей
         if (await windowManager.isMinimized()) {
@@ -52,6 +55,7 @@ class AlertService {
         }
         await windowManager.show();
         await windowManager.focus();
+        windowVisible = await windowManager.isVisible();
 
         if (_gpo.alwaysOnTop) {
           await windowManager.setAlwaysOnTop(true);
@@ -71,6 +75,13 @@ class AlertService {
         } catch (_) {
           // Если файл звука недоступен, продолжаем без краша
         }
+      }
+
+      // macOS: приложение в фоне/трее могло не получить фокус (show/focus
+      // из скрытого состояния не всегда выводит окно на передний план) —
+      // дублируем системным баннером с звуком: запрос 2FA виден всегда.
+      if (Platform.isMacOS && !windowVisible) {
+        await _showDarwinNotification(title, body, challengeId);
       }
     } else if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       const androidDetails = AndroidNotificationDetails(
@@ -95,6 +106,28 @@ class AlertService {
         const NotificationDetails(android: androidDetails, iOS: iosDetails),
         payload: challengeId,
       );
+    }
+  }
+
+  /// Системная нотификация macOS (баннер + звук): срабатывает, когда окно
+  /// приложения скрыто в трей/фон и модалку не видно.
+  Future<void> _showDarwinNotification(String title, String body, String? challengeId) async {
+    try {
+      const darwinDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        interruptionLevel: InterruptionLevel.timeSensitive,
+      );
+      await _localNotifications.show(
+        0,
+        title,
+        body,
+        const NotificationDetails(macOS: darwinDetails),
+        payload: challengeId,
+      );
+    } catch (e) {
+      debugPrint('alert_service: ошибка локального уведомления macOS: $e');
     }
   }
 

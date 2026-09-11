@@ -292,6 +292,17 @@ func (h *AppHub) BroadcastPrompt(userID uuid.UUID, prompt *AppPushPrompt) int {
 
 // SendAppPush отправляет запрос на авторизацию в приложение пользователя.
 func (h *AppHub) SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) error {
+	_, err := h.SendAppPushCounted(ctx, userID, who, ip, ua, service, numberMatch, challengeID, expiresInSeconds)
+	return err
+}
+
+// SendAppPushCounted — SendAppPush с возвратом числа соединений, принявших
+// prompt в очередь (WebSocket writer-горутины + SSE-каналы). 0 — живых
+// клиентов нет: мгновенной доставки не произошло, челлендж остаётся
+// доступным приложению через pending-список (/api/v1/app/challenges/pending,
+// polling-фолбэк клиента). Ошибки не возвращает: рассылка полностью
+// асинхронна (per-conn writer), BroadcastPrompt не блокируется на клиентах.
+func (h *AppHub) SendAppPushCounted(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) (int, error) {
 	if expiresInSeconds <= 0 {
 		expiresInSeconds = 60
 	}
@@ -310,7 +321,7 @@ func (h *AppHub) SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua,
 	delivered := h.BroadcastPrompt(userID, prompt)
 	slog.Info("app_push: отправлен push-запрос",
 		"user_id", userID, "who", who, "challenge_id", challengeID, "online_clients", delivered, "expires_in", expiresInSeconds)
-	return nil
+	return delivered, nil
 }
 
 // SupportPushPrompt — структура оповещения о запросе на удаленное подключение от инженера.

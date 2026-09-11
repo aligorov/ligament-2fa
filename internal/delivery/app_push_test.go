@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -308,6 +309,65 @@ func TestBroadcastPromptDelivers(t *testing.T) {
 		t.Error("sse канал не получил prompt")
 	}
 	h.UnregisterSSE(userID, sse)
+}
+
+// TestSendAppPushCounted: счёт живых получателей фан-аута app-push —
+// 0 при отсутствии соединений (pending-список остаётся фолбэком),
+// ws+sse при подключенных, SendAppPush всегда возвращает nil.
+func TestSendAppPushCounted(t *testing.T) {
+	h := NewAppHub()
+	userID := uuid.New()
+
+	// 1) Ни одного соединения: доставки нет, но ошибки тоже — челлендж
+	// останется доступен приложению через pending-список.
+	got, err := h.SendAppPushCounted(context.Background(), userID, "u", "10.0.0.1", "ua", "Wi-Fi", "", uuid.New(), 60)
+	if err != nil {
+		t.Fatalf("SendAppPushCounted без клиентов: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("SendAppPushCounted без клиентов = %d, want 0", got)
+	}
+	if err := h.SendAppPush(context.Background(), userID, "u", "10.0.0.1", "ua", "Wi-Fi", "", uuid.New(), 60); err != nil {
+		t.Fatalf("SendAppPush без клиентов: %v", err)
+	}
+
+	// 2) ws + sse: счёт по обоим транспортам.
+	p := newWSPair(t)
+	h.RegisterWS(userID, p.server)
+	sse := h.RegisterSSE(userID)
+	defer h.UnregisterSSE(userID, sse)
+
+	chalID := uuid.New()
+	got, err = h.SendAppPushCounted(context.Background(), userID, "u", "10.0.0.1", "ua", "Wi-Fi", "", chalID, 90)
+	if err != nil {
+		t.Fatalf("SendAppPushCounted: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("SendAppPushCounted = %d, want 2 (ws + sse)", got)
+	}
+
+	// Payload доходит по ws и содержит параметры prompt.
+	_ = p.client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, data, err := p.client.ReadMessage()
+	if err != nil {
+		t.Fatalf("чтение из websocket: %v", err)
+	}
+	var parsed AppPushPrompt
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("разбор prompt: %v", err)
+	}
+	if parsed.ChallengeID != chalID || parsed.Who != "u" || parsed.IP != "10.0.0.1" || parsed.Service != "Wi-Fi" {
+		t.Errorf("prompt = %+v (challenge=%s who=%q ip=%q service=%q)", parsed, chalID, parsed.Who, parsed.IP, parsed.Service)
+	}
+
+	select {
+	case b := <-sse:
+		if !strings.Contains(string(b), chalID.String()) {
+			t.Errorf("sse payload без challenge_id: %s", b)
+		}
+	default:
+		t.Error("sse канал не получил prompt")
+	}
 }
 
 // TestCheckOriginPolicy: без Origin — пропуск (нативные клиенты), при

@@ -10,7 +10,6 @@ typedef PushPromptCallback = void Function(Map<String, dynamic> prompt);
 class WebSocketService {
   WebSocketChannel? _channel;
   Timer? _reconnectTimer;
-  Timer? _pingTimer;
   bool _disposed = false;
 
   PushPromptCallback? onPrompt;
@@ -42,12 +41,26 @@ class WebSocketService {
       final uri = Uri.parse(wsUrl);
       // Токен передается в заголовке Authorization (Bearer), а не в query-строке,
       // чтобы не оседать в access-логах прокси и сервера приложений.
+      //
+      // pingInterval — НАСТОЯЩИЕ WebSocket control-ping'и на уровне
+      // протокола (web_socket_channel шлёт их сам, gorilla на сервере
+      // отвечает pong автоматически): соединение не рвётся тихо через
+      // прокси/NAT с таймаутом по неактивности — раньше «мёртвый» WS
+      // мог жить до первого prompt, и push терялся до реконнекта.
       _channel = IOWebSocketChannel.connect(
         uri,
         headers: {'Authorization': 'Bearer $token'},
         connectTimeout: const Duration(seconds: 10),
+        pingInterval: const Duration(seconds: 20),
       );
-      onConnected?.call();
+      // onConnected — только после реального установления соединения
+      // (ready завершается после handshake), а не по факту вызова connect.
+      _channel!.ready.then((_) {
+        if (!_disposed) onConnected?.call();
+      }).catchError((Object e) {
+        debugPrint('ws_service: соединение не установлено: $e');
+        if (!_disposed) onDisconnected?.call();
+      });
 
       _channel!.stream.listen(
         (message) {
@@ -66,8 +79,6 @@ class WebSocketService {
         },
         cancelOnError: true,
       );
-
-      _startPing();
     } catch (e) {
       debugPrint('ws_service: исключение при подключении: $e');
       _scheduleReconnect(baseUrl: baseUrl, token: token);
@@ -103,15 +114,6 @@ class WebSocketService {
     }
   }
 
-  void _startPing() {
-    _pingTimer?.cancel();
-    _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) {
-      try {
-        _channel?.sink.add(jsonEncode({'type': 'ping'}));
-      } catch (_) {}
-    });
-  }
-
   void _scheduleReconnect({required String baseUrl, required String token}) {
     if (_disposed) return;
     _reconnectTimer?.cancel();
@@ -125,7 +127,6 @@ class WebSocketService {
   void disconnect() {
     _disposed = true;
     _reconnectTimer?.cancel();
-    _pingTimer?.cancel();
     _channel?.sink.close();
     _channel = null;
   }

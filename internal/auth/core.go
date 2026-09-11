@@ -598,6 +598,14 @@ func (c *Core) FailLocked(ctx context.Context, userID uuid.UUID) bool {
 	return count >= pol.MaxFail && time.Since(*latest) < pol.BanTime
 }
 
+// countedAppPush — необязательная способность диспетчера app-push
+// (реализация — (*delivery.AppHub).SendAppPushCounted): вернуть число живых
+// соединений, принявших prompt в очередь. Диспетчер без этой способности
+// (тестовые фейки) считается доставившим: количество неизвестно.
+type countedAppPush interface {
+	SendAppPushCounted(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) (int, error)
+}
+
 // RADIUSAuth — полный алгоритм Access-Request (спека §3.1 + §3.6):
 // lookup → enabled → FailLocked → сплиты «пароль+код» (код дёшево по
 // всем, пароль — ровно один argon2: у первого split с подошедшим кодом,
@@ -683,15 +691,24 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 	push := c.pushNotifier()
 	appPush := c.appPushNotifier()
 	radiusPush := c.st.UserEffectiveRadiusPush(ctx, user)
-	hasApp, _ := c.st.AppDeviceHasActive(ctx, user.ID)
 
-	useAppPush := radiusPush && hasApp && appPush != nil
-	useTgPush := radiusPush && user.TelegramChatID != nil && push != nil
+	// Фан-аут каналов доставки RADIUS-push: приложение (WS/SSE-рассылка +
+	// pending-список для polling-фолбэка) — всегда, когда зарегистрирован
+	// диспетчер; Telegram — при привязке. Раньше выбирался ОДИН канал
+	// (app при активной регистрации устройства, иначе Telegram): при
+	// отсутствии/истечении регистрации приложения пуш уходил только в
+	// Telegram, и приложение не показывало подтверждение — челлендж
+	// channel=telegram_push не попадает ни в BroadcastPrompt, ни в
+	// pending-список приложения (ActiveAppPushChallenges фильтрует по
+	// channel=app_push). Теперь оба канала доставляют ОДИН и тот же
+	// челлендж: подтвердить можно из любого.
+	sendApp := radiusPush && appPush != nil
+	sendTg := radiusPush && user.TelegramChatID != nil && push != nil
 
-	if !useAppPush && !useTgPush {
+	if !sendApp && !sendTg {
 		// Пароль верен, но кода нет и push недоступен — Reject.
 		if radiusPush {
-			slog.Warn("radius: для пользователя включен RADIUS Push, но приложение и Telegram не привязаны — отказ", "user", username)
+			slog.Warn("radius: для пользователя включен RADIUS Push, но диспетчер app-push и Telegram не привязаны — отказ", "user", username)
 		}
 		audit("bad_credentials", false)
 		return false, "bad_credentials"
@@ -737,66 +754,86 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		clientDesc = d
 	}
 
-	// Push-челлендж (pending) и отправка в приложение или Telegram.
+	// Push-челлендж (pending) и фан-аут доставки: приложение (WS/SSE)
+	// всегда + Telegram при привязке — один челлендж, оба канала. Для
+	// RADIUS (Wi-Fi 802.1X / VPN) клиент подключается через сетевой стек
+	// ОС, где невозможно показать проверочный номер на экране, поэтому
+	// подтверждение в один клик (Принять / Отклонить) без Number Match.
 	// При возобновлении живого челленджа — не создаём и не шлём заново.
 	if !resumed {
-		if useAppPush {
-			// Для RADIUS (Wi-Fi 802.1X / VPN) клиент подключается через сетевой стек ОС,
-			// где невозможно показать проверочный номер на экране.
-			// Поэтому подтверждение выполняется в один клик (Принять / Отклонить) без Number Match.
-			meta := map[string]any{
-				"ip":       srcIP,
-				"purpose":  svc,
-				"device":   clientDesc,
-				"username": username,
+		meta := map[string]any{
+			"ip":       srcIP,
+			"purpose":  svc,
+			"device":   clientDesc,
+			"username": username,
+		}
+		chChannel := channel.TelegramPush
+		if sendApp {
+			chChannel = channel.AppPush
+		}
+		pushCh = &store.Challenge{
+			UserID:       user.ID,
+			Channel:      chChannel,
+			PushState:    ptrString("pending"),
+			ExpiresAt:    time.Now().Add(pol.CodeTTL),
+			AttemptsLeft: 1,
+			Purpose:      svc,
+			Metadata:     meta,
+		}
+		if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
+			audit("push_send_fail", false)
+			return false, "push_send_fail"
+		}
+		expiresSecs := int(time.Until(pushCh.ExpiresAt).Seconds())
+
+		// Канал 1: приложение — WS/SSE-рассылка + запись в pending-список
+		// (само создание челленджа channel=app_push). 0 живых клиентов не
+		// ошибка: polling-фолбэк клиента подхватит челлендж из pending.
+		delivered := 0
+		var appErr error
+		if sendApp {
+			if counted, ok := appPush.(countedAppPush); ok {
+				delivered, appErr = counted.SendAppPushCounted(ctx, user.ID, username, srcIP, clientDesc, svc, "", pushCh.ID, expiresSecs)
+			} else {
+				appErr = appPush.SendAppPush(ctx, user.ID, username, srcIP, clientDesc, svc, "", pushCh.ID, expiresSecs)
+				delivered = 1 // количество неизвестно — считаем доставленным
 			}
-			pushCh = &store.Challenge{
-				UserID:       user.ID,
-				Channel:      channel.AppPush,
-				PushState:    ptrString("pending"),
-				ExpiresAt:    time.Now().Add(pol.CodeTTL),
-				AttemptsLeft: 1,
-				Purpose:      svc,
-				Metadata:     meta,
+			if appErr != nil {
+				c.audit(ctx, username, "app_push_sent",
+					map[string]any{"purpose": svc, "error": redactErrText(appErr)}, srcIP, "fail")
+			} else {
+				c.audit(ctx, username, "app_push_sent",
+					map[string]any{"purpose": svc, "challenge_id": pushCh.ID.String(), "online_clients": delivered}, srcIP, "ok")
 			}
-			if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
-				audit("push_send_fail", false)
-				return false, "push_send_fail"
+		}
+
+		// Канал 2: Telegram-бот (как и раньше: inline-кнопки, тот же
+		// challenge ID — кнопка бота аппрувит тот же челлендж).
+		tgOK := false
+		if sendTg {
+			if err := push.SendPush(ctx, *user.TelegramChatID, username, srcIP, clientDesc, pushCh.ID); err != nil {
+				c.audit(ctx, username, "push_sent",
+					map[string]any{"purpose": svc, "error": redactErrText(err)}, srcIP, "fail")
+				slog.Warn("radius: доставка telegram-push не удалась (канал приложения продолжает работать)",
+					"user", username, "error", err)
+			} else {
+				tgOK = true
+				c.audit(ctx, username, "push_sent",
+					map[string]any{"purpose": svc, "challenge_id": pushCh.ID.String()}, srcIP, "ok")
 			}
-			expiresSecs := int(time.Until(pushCh.ExpiresAt).Seconds())
-			if err := appPush.SendAppPush(ctx, user.ID, username, srcIP, clientDesc, svc, "", pushCh.ID, expiresSecs); err != nil {
-				if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
-					`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
-					slog.Warn("auth: удаление app_push челленджа после ошибки доставки",
-						"id", pushCh.ID, "error", derr)
-				}
-				audit("push_send_fail", false)
-				return false, "push_send_fail"
+		}
+
+		// Ни один канал не доставлен: рассылка в приложение упала И
+		// Telegram не отправлен — челлендж удаляем (осиротевший держал бы
+		// cooldown следующего push) и Reject.
+		if appErr != nil && delivered == 0 && !tgOK {
+			if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
+				`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
+				slog.Warn("auth: удаление push-челленджа после ошибки доставки",
+					"id", pushCh.ID, "error", derr)
 			}
-		} else {
-			pushCh = &store.Challenge{
-				UserID:       user.ID,
-				Channel:      channel.TelegramPush,
-				PushState:    ptrString("pending"),
-				ExpiresAt:    time.Now().Add(pol.CodeTTL),
-				AttemptsLeft: 1,
-				Purpose:      "radius",
-			}
-			if err := c.st.ChallengeCreate(ctx, pushCh); err != nil {
-				audit("push_send_fail", false)
-				return false, "push_send_fail"
-			}
-			if err := push.SendPush(ctx, *user.TelegramChatID, username, srcIP, "", pushCh.ID); err != nil {
-				// Осиротевший челлендж держал бы cooldown следующего push —
-				// удаляем (WithoutCancel: доставка могла упасть из-за отмены ctx).
-				if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
-					`DELETE FROM challenges WHERE id = $1`, pushCh.ID); derr != nil {
-					slog.Warn("auth: удаление push-челленджа после ошибки доставки",
-						"id", pushCh.ID, "error", derr)
-				}
-				audit("push_send_fail", false)
-				return false, "push_send_fail"
-			}
+			audit("push_send_fail", false)
+			return false, "push_send_fail"
 		}
 	}
 
