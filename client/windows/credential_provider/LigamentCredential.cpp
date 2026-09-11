@@ -753,29 +753,39 @@ static void CPLog(const wchar_t* fmt, ...) {
 }
 
 static ULONG GetNegotiateAuthPackage() {
+    // Кэш на процесс: повторные коннекты к LSA на каждый pack — лишняя
+    // точка отказа (диагностика v0.4.62: authPkg=0, вход валидными кредами
+    // отвергался). Цепочка фоллбэков: Negotiate → Kerberos → MsV1_0
+    // (KERB_INTERACTIVE_LOGON — нативный формат пакета MsV1_0).
+    static ULONG s_pkgId = 0;
+    static bool s_resolved = false;
+    if (s_resolved) return s_pkgId;
+
     HANDLE hLsa = nullptr;
     NTSTATUS status = LsaConnectUntrusted(&hLsa);
     if (status != 0) {
+        CPLog(L"lsa: connect failed status=0x%08X", (unsigned)status);
+        s_resolved = true;
+        s_pkgId = 0;
         return 0;
     }
 
-    LSA_STRING pkgName;
-    pkgName.Buffer = const_cast<PCHAR>(NEGOSSP_NAME_A);
-    pkgName.Length = static_cast<USHORT>(strlen(NEGOSSP_NAME_A));
-    pkgName.MaximumLength = pkgName.Length + 1;
-
+    static const char* kNames[] = { NEGOSSP_NAME_A, MICROSOFT_KERBEROS_NAME_A, "MICROSOFT_V1_0" };
     ULONG pkgId = 0;
-    status = LsaLookupAuthenticationPackage(hLsa, &pkgName, &pkgId);
-    if (status != 0) {
-        // Fallback to Kerberos
-        pkgName.Buffer = const_cast<PCHAR>(MICROSOFT_KERBEROS_NAME_A);
-        pkgName.Length = static_cast<USHORT>(strlen(MICROSOFT_KERBEROS_NAME_A));
+    for (int i = 0; i < 3 && pkgId == 0; ++i) {
+        LSA_STRING pkgName;
+        pkgName.Buffer = const_cast<PCHAR>(kNames[i]);
+        pkgName.Length = static_cast<USHORT>(strlen(kNames[i]));
         pkgName.MaximumLength = pkgName.Length + 1;
-        status = LsaLookupAuthenticationPackage(hLsa, &pkgName, &pkgId);
+        NTSTATUS st = LsaLookupAuthenticationPackage(hLsa, &pkgName, &pkgId);
+        CPLog(L"lsa: lookup \"%hs\" status=0x%08X id=%lu", kNames[i], (unsigned)st, pkgId);
+        if (st != 0) pkgId = 0;
     }
     LsaDeregisterLogonProcess(hLsa);
 
-    return (status == 0) ? pkgId : 0;
+    s_resolved = true;
+    s_pkgId = pkgId;
+    return s_pkgId;
 }
 
 HRESULT LigamentCredential::KerbInteractiveLogonPack(
