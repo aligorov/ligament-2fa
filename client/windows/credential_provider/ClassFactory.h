@@ -1,4 +1,4 @@
-// ClassFactory.h — IClassFactory for LigamentProvider
+﻿// ClassFactory.h — IClassFactory for LigamentProvider
 #pragma once
 
 #include "common.h"

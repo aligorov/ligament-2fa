@@ -1,4 +1,4 @@
-// LigamentCredential.h — ICredentialProviderCredential implementation
+﻿// LigamentCredential.h — ICredentialProviderCredential implementation
 #pragma once
 
 #include "common.h"

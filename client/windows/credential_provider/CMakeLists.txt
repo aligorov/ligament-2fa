@@ -6,6 +6,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_definitions(-DUNICODE -D_UNICODE -D_WINDLL)
 
+# Исходники сохранены в UTF-8 (русские L"..."-литералы интерфейса тайла).
+# Без /utf-8 MSVC декодирует литералы по системной кодовой странице машины,
+# где идёт сборка (на en-US CI-раннере это CP1252): кириллица «запекается»
+# в DLL кракозябрами ровно того вида, что виден на тайле входа. Флаг задаёт
+# и source-, и execution-charset = UTF-8 независимо от локали сборщика.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 set(SOURCES
     dllmain.cpp
     ClassFactory.cpp

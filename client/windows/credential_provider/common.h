@@ -1,4 +1,4 @@
-// common.h — Common definitions, logging, and configuration for Ligament 2FA Credential Provider
+﻿// common.h — Common definitions, logging, and configuration for Ligament 2FA Credential Provider
 #pragma once
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -249,6 +249,25 @@ inline bool ExtractJsonBool(const std::string& json, const std::string& key) {
         return true;
     }
     return false;
+}
+
+// Числовой поле-экстрактор для ответов вида {"error":"rate_limited",
+// "retry_after":30}: ExtractJsonString не видит значения без кавычек.
+// Возвращает fallback, если ключа или числа нет.
+inline int ExtractJsonInt(const std::string& json, const std::string& key, int fallback = 0) {
+    std::string needle = "\"" + key + "\"";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) return fallback;
+
+    pos = json.find(':', pos + needle.length());
+    if (pos == std::string::npos) return fallback;
+
+    ++pos;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
+    size_t end = pos;
+    while (end < json.size() && json[end] >= '0' && json[end] <= '9') ++end;
+    if (end == pos) return fallback;
+    return atoi(json.substr(pos, end - pos).c_str());
 }
 
 } // namespace ligament

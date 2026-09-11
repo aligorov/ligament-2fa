@@ -1,4 +1,4 @@
-// HttpApiClient.h — WinHTTP REST client for Ligament 2FA backend
+﻿// HttpApiClient.h — WinHTTP REST client for Ligament 2FA backend
 #pragma once
 
 #include "common.h"
@@ -36,6 +36,11 @@ public:
     WebAuthnBeginResult WebAuthnBegin(const std::wstring& username, const std::wstring& password);
     bool WebAuthnFinish(const std::string& handle, const std::string& assertionJson, std::string& outError);
 
+    // retry_after из последнего ответа сервера (429 rate_limited / cooldown),
+    // в секундах; 0 — поля в ответе не было. Читается после неудачного вызова
+    // любого метода выше, чтобы тайл показал внятный срок ожидания.
+    int LastRetryAfterSec() const { return m_lastRetryAfterSec; }
+
 private:
     std::wstring m_serverUrl;
     std::wstring m_host;
@@ -43,6 +48,7 @@ private:
     bool m_isHttps = true;
     bool m_allowSelfSigned = false;
     HINTERNET m_hSession = nullptr;
+    int m_lastRetryAfterSec = 0;
 
     bool ParseUrl(const std::wstring& url);
     bool SendRequest(

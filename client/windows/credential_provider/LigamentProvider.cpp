@@ -1,4 +1,4 @@
-// LigamentProvider.cpp — Implementation of ICredentialProvider and ICredentialProviderFilter
+﻿// LigamentProvider.cpp — Implementation of ICredentialProvider and ICredentialProviderFilter
 #include "LigamentProvider.h"
 
 namespace ligament {

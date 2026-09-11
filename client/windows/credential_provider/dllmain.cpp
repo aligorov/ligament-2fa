@@ -1,4 +1,4 @@
-// dllmain.cpp — DLL exports and COM in-process registration
+﻿// dllmain.cpp — DLL exports and COM in-process registration
 #include "common.h"
 #include "ClassFactory.h"
 

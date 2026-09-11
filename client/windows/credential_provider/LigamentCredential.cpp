@@ -1,4 +1,4 @@
-// LigamentCredential.cpp — Implementation of Credential tile logic
+﻿// LigamentCredential.cpp — Implementation of Credential tile logic
 #include "LigamentCredential.h"
 
 namespace ligament {
@@ -22,6 +22,54 @@ LigamentCredential::LigamentCredential() {
     m_statusText = L"Подтвердите вход вторым фактором";
 }
 
+// Человеческие тексты для кодов ошибок сервера и транспорта. Сырые коды
+// ("locked", "rate_limited", "status_423"...) пользователю не показываются;
+// неизвестный код сервера конвертируется из UTF-8 и выводится как есть
+// (сервер может прислать свой текст). retryAfterSec — поле retry_after из
+// ответов 429 (см. HttpApiClient::LastRetryAfterSec).
+static std::wstring DescribeServerError(const std::string& err, int retryAfterSec) {
+    if (err == "network_error") {
+        return L"сервер 2FA недоступен (проверьте сеть и настройку ServerURL)";
+    }
+    if (err == "bad_credentials" || err == "status_401") {
+        return L"неверное имя пользователя или пароль";
+    }
+    if (err == "locked" || err == "status_423") {
+        return L"вход временно заблокирован из-за неудачных попыток";
+    }
+    if (err == "rate_limited" || err == "status_429") {
+        if (retryAfterSec > 0) {
+            return L"слишком много попыток, повторите через " + std::to_wstring(retryAfterSec) + L" с";
+        }
+        return L"слишком много попыток, подождите немного";
+    }
+    if (err == "cooldown") {
+        if (retryAfterSec > 0) {
+            return L"повторная отправка возможна через " + std::to_wstring(retryAfterSec) + L" с";
+        }
+        return L"повторная отправка пока недоступна, подождите";
+    }
+    if (err == "no_channel") {
+        return L"у пользователя не настроен канал доставки 2FA";
+    }
+    if (err == "no_credentials") {
+        return L"нет зарегистрированных ключей FIDO2";
+    }
+    if (err == "webauthn_disabled" || err == "status_503") {
+        return L"этот способ входа отключен на сервере";
+    }
+    if (err == "internal" || err == "status_500") {
+        return L"внутренняя ошибка сервера 2FA";
+    }
+    if (err.rfind("status_", 0) == 0) {
+        return L"сервер 2FA ответил ошибкой HTTP " + Utf8ToWide(err.substr(7));
+    }
+    if (err.empty()) {
+        return L"сервер 2FA вернул пустой ответ";
+    }
+    return Utf8ToWide(err);
+}
+
 LigamentCredential::~LigamentCredential() {
     StopPollThread();
     DeleteCriticalSection(&m_csPoll);
@@ -39,7 +87,11 @@ LigamentCredential::~LigamentCredential() {
 void LigamentCredential::Initialize(const Config& cfg, bool isRemote) {
     m_config = cfg;
     m_isRemoteSession = isRemote;
-    m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned);
+    // Этот клиент работает в потоке LogonUI (GetSerialization/
+    // TriggerFIDO2Auth): receive-таймаут 15 c вместо дефолтных 45 c, чтобы
+    // один медленный/умерший запрос не замораживал экран входа и RDP-сессию
+    // на отведённый WinHTTP срок (connect 10 c + receive 45 c ~ минута).
+    m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned, 15000);
     m_webAuthn = std::make_unique<WebAuthnClient>();
 
     if (cfg.fido2Enabled && m_webAuthn->IsAvailable()) {
@@ -300,7 +352,7 @@ void LigamentCredential::TriggerFIDO2Auth() {
 
     WebAuthnBeginResult beginRes = m_apiClient->WebAuthnBegin(m_username, m_password);
     if (!beginRes.success) {
-        m_statusText = L"Ошибка WebAuthn: " + Utf8ToWide(beginRes.error);
+        m_statusText = L"Ошибка WebAuthn: " + DescribeServerError(beginRes.error, m_apiClient->LastRetryAfterSec());
         NotifyFieldChanged(FID_STATUS_TEXT);
         return;
     }
@@ -339,7 +391,7 @@ void LigamentCredential::TriggerFIDO2Auth() {
         m_statusText = L"Ключ успешно подтвержден! Нажмите 'Войти'";
         NotifyFieldChanged(FID_STATUS_TEXT);
     } else {
-        m_statusText = L"Ошибка валидации ключа: " + Utf8ToWide(finishErr);
+        m_statusText = L"Ошибка валидации ключа: " + DescribeServerError(finishErr, m_apiClient->LastRetryAfterSec());
         NotifyFieldChanged(FID_STATUS_TEXT);
     }
 }
@@ -494,7 +546,7 @@ HRESULT LigamentCredential::GetSerialization(
             *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
             return S_OK;
         } else {
-            std::wstring msg = L"Неверный пароль или код 2FA (" + Utf8ToWide(err) + L")";
+            std::wstring msg = L"Вход отклонен: " + DescribeServerError(err, m_apiClient->LastRetryAfterSec());
             SHStrDupW(msg.c_str(), ppszOptionalStatusText);
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
             return S_OK;
@@ -531,14 +583,16 @@ HRESULT LigamentCredential::GetSerialization(
                 return S_OK;
             }
 
-            // StartPush failed — check fail-close policy
+            // StartPush failed — check fail-close policy. Условие не менялось:
+            // fail-open строго для транспортных отказов ("network_error"
+            // ставится только когда WinHTTP не дошёл до HTTP-ответа).
             if (!m_config.failClose && err == "network_error") {
                 LogDebug(L"Fail-Open allowed due to network error and policy");
                 KerbInteractiveLogonPack(m_domain, m_username, m_password, pcpcs);
                 *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
                 return S_OK;
             }
-            std::wstring msg = L"Ошибка отправки Push (" + Utf8ToWide(err) + L")";
+            std::wstring msg = L"Не удалось отправить Push: " + DescribeServerError(err, m_apiClient->LastRetryAfterSec());
             SHStrDupW(msg.c_str(), ppszOptionalStatusText);
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
             return S_OK;

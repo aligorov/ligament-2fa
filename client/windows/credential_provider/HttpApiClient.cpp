@@ -1,4 +1,4 @@
-// HttpApiClient.cpp — WinHTTP REST client implementation
+﻿// HttpApiClient.cpp — WinHTTP REST client implementation
 #include "HttpApiClient.h"
 
 namespace ligament {
@@ -150,6 +150,7 @@ bool HttpApiClient::StartPush(
 
     std::string body = "{\"username\":\"" + u8User + "\",\"password\":\"" + u8Pass + "\"}";
 
+    m_lastRetryAfterSec = 0;
     int statusCode = 0;
     std::string response;
     if (!SendRequest(L"POST", L"/api/v1/auth/start", body, statusCode, response)) {
@@ -165,6 +166,11 @@ bool HttpApiClient::StartPush(
         }
     }
 
+    // Серверные коды (401 bad_credentials, 423 locked, 429 rate_limited/
+    // cooldown, 409 no_channel, 500) остаются серверными строками —
+    // "network_error" ставится только при транспортном отказе WinHTTP
+    // выше, поэтому fail-open остаётся строго transport-only.
+    m_lastRetryAfterSec = ExtractJsonInt(response, "retry_after");
     outError = ExtractJsonString(response, "error");
     if (outError.empty()) outError = "status_" + std::to_string(statusCode);
     return false;
@@ -209,6 +215,7 @@ bool HttpApiClient::VerifyCombined(
 
     std::string body = "{\"username\":\"" + u8User + "\",\"password\":\"" + u8Pass + "\",\"code\":\"" + u8Code + "\"}";
 
+    m_lastRetryAfterSec = 0;
     int statusCode = 0;
     std::string response;
     if (!SendRequest(L"POST", L"/api/v1/auth/combined", body, statusCode, response)) {
@@ -220,6 +227,9 @@ bool HttpApiClient::VerifyCombined(
         return true;
     }
 
+    // 401 приходит как {"ok":false} без поля error — fallback status_401;
+    // 423 locked / 429 rate_limited несут код в "error".
+    m_lastRetryAfterSec = ExtractJsonInt(response, "retry_after");
     outError = ExtractJsonString(response, "error");
     if (outError.empty()) outError = "status_" + std::to_string(statusCode);
     return false;
@@ -235,6 +245,7 @@ WebAuthnBeginResult HttpApiClient::WebAuthnBegin(
 
     std::string body = "{\"username\":\"" + u8User + "\",\"password\":\"" + u8Pass + "\"}";
 
+    m_lastRetryAfterSec = 0;
     int statusCode = 0;
     std::string response;
     if (!SendRequest(L"POST", L"/api/v1/auth/webauthn/begin", body, statusCode, response)) {
@@ -249,6 +260,7 @@ WebAuthnBeginResult HttpApiClient::WebAuthnBegin(
         return res;
     }
 
+    m_lastRetryAfterSec = ExtractJsonInt(response, "retry_after");
     res.error = ExtractJsonString(response, "error");
     if (res.error.empty()) res.error = "status_" + std::to_string(statusCode);
     return res;
@@ -263,6 +275,7 @@ bool HttpApiClient::WebAuthnFinish(
     std::string response;
     std::wstring path = L"/api/v1/auth/webauthn/finish?handle=" + Utf8ToWide(handle);
 
+    m_lastRetryAfterSec = 0;
     if (!SendRequest(L"POST", path, assertionJson, statusCode, response)) {
         outError = "network_error";
         return false;
@@ -272,6 +285,7 @@ bool HttpApiClient::WebAuthnFinish(
         return true;
     }
 
+    m_lastRetryAfterSec = ExtractJsonInt(response, "retry_after");
     outError = ExtractJsonString(response, "error");
     if (outError.empty()) outError = "status_" + std::to_string(statusCode);
     return false;

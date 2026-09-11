@@ -1,4 +1,4 @@
-// WebAuthnClient.h — Win32 WebAuthn API client for FIDO2/YubiKey over RDP
+﻿// WebAuthnClient.h — Win32 WebAuthn API client for FIDO2/YubiKey over RDP
 #pragma once
 
 #include "common.h"

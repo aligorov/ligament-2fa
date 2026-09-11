@@ -1,4 +1,4 @@
-// WebAuthnClient.cpp — Win32 WebAuthn API client implementation
+﻿// WebAuthnClient.cpp — Win32 WebAuthn API client implementation
 #include "WebAuthnClient.h"
 
 namespace ligament {

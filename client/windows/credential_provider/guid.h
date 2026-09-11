@@ -1,4 +1,4 @@
-// guid.h — COM GUIDs for Ligament 2FA Windows Credential Provider
+﻿// guid.h — COM GUIDs for Ligament 2FA Windows Credential Provider
 #pragma once
 
 #include <initguid.h>
