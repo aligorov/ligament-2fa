@@ -683,9 +683,13 @@ HRESULT LigamentCredential::ReportResult(
     case 0xC0000071: CPLog(L"ReportResult: STATUS_PASSWORD_EXPIRED — пароль истёк"); break;
     case 0xC0000193: CPLog(L"ReportResult: STATUS_ACCOUNT_EXPIRED — учётка истекла"); break;
     case 0xC0000022: CPLog(L"ReportResult: STATUS_ACCESS_DENIED — доступ запрещён (RDP-права/группы)"); break;
-    case 0xC00000DF: CPLog(L"ReportResult: STATUS_ACCOUNT_RESTRICTION — ограничение входа (часы/RDP-доступ)"); break;
+    case 0xC000006E: CPLog(L"ReportResult: STATUS_ACCOUNT_RESTRICTION — ограничение входа (часы/RDP-доступ)"); break;
+    case 0xC00000E5: CPLog(L"ReportResult: STATUS_INTERNAL_ERROR — внутренняя ошибка обработки (обычно битая сериализация)"); break;
     default: CPLog(L"ReportResult: нераспознанный код — см. ntstatus.h"); break;
     }
+    // дубль подстатуса десятичным числом: OCR скриншотов путает 0xC00000E5
+    // и 0xC0000065, десятичная запись читается однозначно
+    CPLog(L"ReportResult: sub_dec=%lu", (unsigned long)(unsigned)ntsSubstatus);
     switch ((unsigned)ntsSubstatus) {
     case 0: break;
     case 0xC000005E: CPLog(L"ReportResult: sub=STATUS_LOGON_TYPE_NOT_GRANTED — учётке ЗАПРЕЩЁН этот тип входа (для RDP: нет права \"Вход через удалённый рабочий стол\" / не в группе Remote Desktop Users)"); break;
@@ -695,7 +699,26 @@ HRESULT LigamentCredential::ReportResult(
     case 0xC0000072: CPLog(L"ReportResult: sub=STATUS_ACCOUNT_DISABLED — учётка отключена"); break;
     case 0xC0000234: CPLog(L"ReportResult: sub=STATUS_ACCOUNT_LOCKED_OUT — учётка заблокирована"); break;
     case 0xC000015B: CPLog(L"ReportResult: sub=STATUS_LOGON_TYPE_NOT_GRANTED(015B) — тип входа не предоставлен"); break;
+    case 0xC000006E: CPLog(L"ReportResult: sub=STATUS_ACCOUNT_RESTRICTION — ограничение учётки"); break;
+    case 0xC00000E5: CPLog(L"ReportResult: sub=STATUS_INTERNAL_ERROR — пакет не смог обработать блоб/запрос"); break;
     default: CPLog(L"ReportResult: sub=нераспознан"); break;
+    }
+
+    // САМОПРОВЕРКА кредов против локального SAM (LogonUser): разделяет
+    // «Windows отверг ИМЕННО имя/пароль» и «проблема в пути провайдера».
+    // Выполняется только при неудачном входе; неудачная проба увеличивает
+    // счётчик плохих паролей ещё на 1 — не спамить попытками (лок-аут).
+    if (ntsStatus != 0 && !m_password.empty() && !m_username.empty()) {
+        const wchar_t* samDomain = m_domain.empty() ? L"." : m_domain.c_str();
+        HANDLE hToken = nullptr;
+        if (LogonUserW(m_username.c_str(), samDomain, m_password.c_str(),
+                       LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &hToken)) {
+            CPLog(L"sam-probe: LogonUser OK — имя/пароль ВАЛИДНЫ для Windows; проблема в пути провайдера, НЕ в пароле");
+            CloseHandle(hToken);
+        } else {
+            DWORD samErr = GetLastError();
+            CPLog(L"sam-probe: LogonUser FAIL err=%lu (1326=имя/пароль НЕ подходят Windows — пароль не тот; 1907=истёк; 1331=заблокирована)", (unsigned long)samErr);
+        }
     }
 
     if (!m_password.empty()) {
