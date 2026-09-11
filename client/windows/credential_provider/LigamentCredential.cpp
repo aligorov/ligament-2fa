@@ -709,16 +709,27 @@ HRESULT LigamentCredential::ReportResult(
     // Выполняется только при неудачном входе; неудачная проба увеличивает
     // счётчик плохих паролей ещё на 1 — не спамить попытками (лок-аут).
     if (ntsStatus != 0 && !m_password.empty() && !m_username.empty()) {
-        const wchar_t* samDomain = m_domain.empty() ? L"." : m_domain.c_str();
-        HANDLE hToken = nullptr;
-        if (LogonUserW(m_username.c_str(), samDomain, m_password.c_str(),
-                       LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &hToken)) {
-            CPLog(L"sam-probe: LogonUser OK — имя/пароль ВАЛИДНЫ для Windows; проблема в пути провайдера, НЕ в пароле");
-            CloseHandle(hToken);
-        } else {
-            DWORD samErr = GetLastError();
-            CPLog(L"sam-probe: LogonUser FAIL err=%lu (1326=имя/пароль НЕ подходят Windows — пароль не тот; 1907=истёк; 1331=заблокирована)", (unsigned long)samErr);
+        std::wstring nb, dd;
+        GetMachineNames(nb, dd);
+        CPLog(L"env: computer=%s dnsDomain=%s", nb.c_str(), dd.c_str());
+        // Пробуем резолв учётки по трём доменам; стоп на первом успехе.
+        // Каждая НЕУДАЧНАЯ проба +1 к счётчику плохих паролей (лок-аут).
+        const wchar_t* tries[3] = { L".", nb.c_str(), dd.c_str() };
+        const wchar_t* names[3] = { L"local(.)", L"machine", L"domain" };
+        bool anyOk = false;
+        for (int i = 0; i < 3 && !anyOk; ++i) {
+            if (!tries[i] || !tries[i][0]) continue;
+            HANDLE hToken = nullptr;
+            if (LogonUserW(m_username.c_str(), tries[i], m_password.c_str(),
+                           LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &hToken)) {
+                CPLog(L"sam-probe[%s]: OK — креды ВАЛИДНЫ (домен резолва \"%s\")", names[i], tries[i]);
+                CloseHandle(hToken);
+                anyOk = true;
+            } else {
+                CPLog(L"sam-probe[%s]: FAIL err=%lu (1326=имя/пароль не подходят)", names[i], (unsigned long)GetLastError());
+            }
         }
+        if (!anyOk) CPLog(L"sam-probe: ИТОГ — креды не прошли ни одним способом; проверь имя учётки и пароль Windows");
     }
 
     if (!m_password.empty()) {
@@ -781,6 +792,17 @@ static void CPLog(const wchar_t* fmt, ...) {
     CloseHandle(h);
 }
 
+// Имена машины: NetBIOS (домен для ЛОКАЛЬНЫХ учёток у MsV1_0) и DNS-домен
+// (пустой = рабочая группа, не в домене).
+static void GetMachineNames(std::wstring& netBios, std::wstring& dnsDomain) {
+    wchar_t nb[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+    DWORD n = ARRAYSIZE(nb);
+    if (GetComputerNameW(nb, &n)) netBios = nb;
+    wchar_t dd[256] = {0};
+    DWORD d = ARRAYSIZE(dd);
+    if (GetComputerNameExW(ComputerNameDnsDomain, dd, &d)) dnsDomain = dd;
+}
+
 // id пакета 0 — ВАЛИДЕН (на части машин Negotiate зарегистрирован именно под 0,
 // диагностика v0.4.63: lookup "Negotiate" status=0 id=0). Признак «нашлось» —
 // только статус lookup, поэтому валидность держим отдельным флагом.
@@ -839,7 +861,22 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     // указателей и голой структуры). Строки без нуль-терминаторов,
     // MaximumLength = Length. Диагностика v0.4.64 подтвердила: пакет и креды
     // верны, формат был битый.
-    DWORD domainBytes = (DWORD)(domain.length() * sizeof(wchar_t));
+    // Голое имя пользователя на машине БЕЗ домена (рабочая группа): пустой
+    // LogonDomainName — единственное значение, которым мы отличались от
+    // рабочего штатного входа; штатный вход для локальных учёток резолвит
+    // SAM по ИМЕНИ МАШИНЫ. Подставляем его принудительно.
+    std::wstring effDomain = domain;
+    bool forcedLocalDomain = false;
+    if (effDomain.empty()) {
+        std::wstring nb, dd;
+        GetMachineNames(nb, dd);
+        if (dd.empty() && !nb.empty()) {
+            effDomain = nb;
+            forcedLocalDomain = true;
+        }
+    }
+
+    DWORD domainBytes = (DWORD)(effDomain.length() * sizeof(wchar_t));
     DWORD userBytes = (DWORD)(user.length() * sizeof(wchar_t));
     DWORD passBytes = (DWORD)(password.length() * sizeof(wchar_t));
 
@@ -859,7 +896,7 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     pLogon->LogonDomainName.Length = (USHORT)domainBytes;
     pLogon->LogonDomainName.MaximumLength = (USHORT)domainBytes;
     pLogon->LogonDomainName.Buffer = (PWSTR)(ptr - buffer);
-    CopyMemory(ptr, domain.data(), domainBytes);
+    CopyMemory(ptr, effDomain.data(), domainBytes);
     ptr += domainBytes;
 
     pLogon->UserName.Length = (USHORT)userBytes;
@@ -885,8 +922,8 @@ HRESULT LigamentCredential::KerbInteractiveLogonPack(
     pcpcs->cbSerialization = totalSize;
     pcpcs->rgbSerialization = buffer;
 
-    CPLog(L"pack(kiul): domain=\"%s\" user=\"%s\" passLen=%u authPkg=%lu pkgResolved=%d msgType=%lu totalSize=%lu",
-        domain.c_str(), user.c_str(), (unsigned)password.length(),
+    CPLog(L"pack(kiul): domain=\"%s\"(forced=%d) user=\"%s\" passLen=%u authPkg=%lu pkgResolved=%d msgType=%lu totalSize=%lu",
+        effDomain.c_str(), forcedLocalDomain ? 1 : 0, user.c_str(), (unsigned)password.length(),
         authPkg, g_authPkgValid ? 1 : 0,
         (unsigned long)pLogon->MessageType, (unsigned long)totalSize);
     return S_OK;
