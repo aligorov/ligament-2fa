@@ -59,3 +59,12 @@ regsvr32.exe /u build\Release\LigamentCredentialProvider.dll
 | `FailClose` | `REG_DWORD` | `1` | 1 = Блокировать вход при недоступности сервера 2FA; 0 = Пропускать ВСЕХ пользователей при недоступности сервера (не только администраторов) |
 | `BypassAccounts` | `REG_SZ` | `""` | Список логинов через запятую (например: `Administrator,admin`); записи матчатся по полному имени и по локальной части UPN (`administrator@corp.local` → `administrator`) |
 | `AllowSelfSigned` | `REG_DWORD` | `0` | 1 = Доверять самоподписанному сертификату сервера: игнорируется только неизвестый издатель (CA); имя сертификата (CN/SAN) и срок действия проверяются всегда |
+
+## Быстрая настройка реестра
+
+В поставке (ZIP) лежит `ligament-cp-settings.reg`: открой в Блокноте, впиши
+свой `ServerURL`, сохрани и запусти двойным кликом (права администратора).
+Файл создаёт ветку `HKLM\SOFTWARE\Policies\Ligament\2FA` со всеми параметрами
+(ServerURL, FailClose, RDP2FAEnabled, Console2FAEnabled, FIDO2Enabled,
+PushTimeoutSeconds; закомментированы AllowSelfSigned и BypassAccounts).
+Без заданного ServerURL и при FailClose=1 вход по RDP заблокирован.
