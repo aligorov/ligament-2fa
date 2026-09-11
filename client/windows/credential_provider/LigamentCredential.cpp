@@ -813,14 +813,14 @@ static void GetMachineNames(std::wstring& netBios, std::wstring& dnsDomain) {
 static HRESULT ProtectPasswordCopy(const std::wstring& pass, std::wstring& out) {
     if (pass.empty()) { out.clear(); return S_OK; }
     CRED_PROTECTION_TYPE pt = CredUnprotected;
-    if (CredIsProtectedW(pass.c_str(), &pt) && pt != CredUnprotected) {
+    if (CredIsProtectedW(const_cast<LPWSTR>(pass.c_str()), &pt) && pt != CredUnprotected) {
         out = pass;
         return S_OK;
     }
     DWORD cch = (DWORD)pass.size() + 1; // CredProtectW: счётчик С нуль-терминатором
     PWSTR buf = (PWSTR)CoTaskMemAlloc(cch * sizeof(wchar_t));
     if (!buf) return E_OUTOFMEMORY;
-    if (!CredProtectW(FALSE, pass.c_str(), cch, buf, &cch, nullptr)) {
+    if (!CredProtectW(FALSE, const_cast<LPWSTR>(pass.c_str()), cch, buf, &cch, nullptr)) {
         CoTaskMemFree(buf);
         return E_FAIL;
     }
