@@ -23,10 +23,11 @@
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
     <!-- SERVERURL: адрес сервера 2FA при установке из командной строки:
          msiexec /i Ligament-2FA-Windows-x64.msi SERVERURL=https://2fa.example.corp
-         Пустое значение (по умолчанию) записывает пустую строку — CP её
-         игнорирует и использует свой дефолт; после установки адрес можно
-         задать/изменить через HKLM\SOFTWARE\Policies\Ligament\2FA\ServerURL. -->
-    <Property Id="SERVERURL" Value="" Secure="yes" />
+         Свойство не задано — в реестр уйдёт пустая строка, CP её игнорирует
+         и использует свой дефолт; после установки адрес можно задать/изменить
+         через HKLM\SOFTWARE\Policies\Ligament\2FA\ServerURL или
+         ligament-cp-settings.reg из RDP-ZIP. -->
+    <Property Id="SERVERURL" Secure="yes" />
   </Product>
 
   <Fragment>
