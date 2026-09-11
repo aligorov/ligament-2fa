@@ -3,6 +3,10 @@
 
 namespace ligament {
 
+// Определение — ниже (перед GetNegotiateAuthPackage); вызовы в
+// GetSerialization/ReportResult идут раньше, отсюда форвард-декларация.
+static void CPLog(const wchar_t* fmt, ...);
+
 // Field descriptors
 extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[] = {
     { FID_LOGO, CPFT_TILE_IMAGE, L"Логотип", GUID_NULL },
