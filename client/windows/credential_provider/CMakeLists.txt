@@ -46,6 +46,8 @@ target_link_libraries(LigamentCredentialProvider PRIVATE
     ole32
     user32
     advapi32
+    ws2_32
+    iphlpapi
 )
 
 set_target_properties(LigamentCredentialProvider PROPERTIES

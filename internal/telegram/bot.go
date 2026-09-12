@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
 	"github.com/aligorov/twofa/internal/secrets"
@@ -300,8 +301,34 @@ func (b *Bot) handleCallback(ctx context.Context, queryID string, chatID, msgID 
 	if u, err := b.st.UserByID(ctx, ch.UserID); err == nil {
 		username = u.Username
 	}
-	if err := b.st.Audit(ctx, username, "tg_push",
-		map[string]any{"action": action, "challenge": id.String()}, "", state); err != nil {
+	detail := map[string]any{
+		"action":    action,
+		"challenge": id.String(),
+		"method":    "telegram_push",
+	}
+	srcIP := ""
+	if ch.Metadata != nil {
+		if s, _ := ch.Metadata["service"].(string); s != "" {
+			detail["service"] = s
+		}
+		if cip, _ := ch.Metadata["client_ip"].(string); cip != "" {
+			detail["client_ip"] = cip
+			srcIP = cip
+		} else if tip, _ := ch.Metadata["ip"].(string); tip != "" {
+			detail["target_ip"] = tip
+			srcIP = tip
+		}
+		if hip, _ := ch.Metadata["host_ip"].(string); hip != "" {
+			detail["host_ip"] = hip
+		}
+		if tua, _ := ch.Metadata["ua"].(string); tua != "" {
+			detail["target_ua"] = tua
+		}
+		if host, _ := ch.Metadata["host"].(string); host != "" {
+			detail["host"] = host
+		}
+	}
+	if err := b.st.Audit(ctx, username, "tg_push", detail, srcIP, state); err != nil {
 		slog.Error("telegram: аудит tg_push", "challenge", id, "err", err)
 	}
 	answer()
@@ -310,14 +337,34 @@ func (b *Bot) handleCallback(ctx context.Context, queryID string, chatID, msgID 
 // SendPush отправляет в чат запрос push-подтверждения входа с кнопками
 // "✅ Подтвердить" / "❌ Это не я"; callback_data — approve:<id> / deny:<id>.
 func (b *Bot) SendPush(ctx context.Context, chatID int64, who, ip, ua string, challengeID uuid.UUID) error {
+	return b.SendPushWithService(ctx, chatID, who, ip, ua, "", "", challengeID)
+}
+
+// SendPushWithService отправляет в чат push-подтверждение с указанием сервиса и IP сервера.
+func (b *Bot) SendPushWithService(ctx context.Context, chatID int64, who, ip, ua, service, hostIP string, challengeID uuid.UUID) error {
 	snap := snap0(b.set)
 	pushTpl := snap.Messages.TelegramPush
 	if strings.TrimSpace(pushTpl) == "" {
 		pushTpl = settings.DefaultTelegramPush // тесты без менеджера настроек
 	}
 	loc := snap.Location()
+	if service == "" {
+		service = "Корпоративный доступ"
+	}
+	devStr, browserStr := auth.FormatDeviceAndBrowser(ua)
+	formattedUA := ua
+	if devStr != "" && devStr != "Неизвестное устройство" {
+		formattedUA = devStr
+		if browserStr != "" {
+			formattedUA += " (" + browserStr + ")"
+		}
+	}
+	formattedIP := auth.FormatIPDescription(ip)
+	if hostIP != "" && hostIP != ip {
+		formattedIP += " • Сервер: " + auth.FormatIPDescription(hostIP)
+	}
 	vars := map[string]string{
-		"username": who, "ip": ip, "ua": ua,
+		"username": who, "ip": formattedIP, "ua": formattedUA, "service": service,
 		"time": time.Now().In(loc).Format("15:04:05"),
 	}
 	text := delivery.RenderTemplate(pushTpl, "", vars)

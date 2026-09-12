@@ -35,7 +35,7 @@ const (
 	DefaultEmailBody    = "Ваш код подтверждения: {code}\n\nКод действителен {ttl}.\nЗапросили не вы — смените пароль: {domain}/me/password"
 	DefaultSMSText      = "Код подтверждения: {code} (действ. {ttl})"
 	DefaultTelegramCode = "🔑 Код подтверждения: {code}\nДействителен {ttl}. Никому не сообщайте код."
-	DefaultTelegramPush = "🔑 Подтверждение входа\nПользователь: {username}\nIP: {ip}\nУстройство: {ua}\nВремя: {time}"
+	DefaultTelegramPush = "🔑 Подтверждение входа\nПользователь: {username}\nСервис: {service}\nIP: {ip}\nУстройство: {ua}\nВремя: {time}"
 )
 
 type T struct {

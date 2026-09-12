@@ -122,9 +122,19 @@ type PushNotifier interface {
 	SendNotification(ctx context.Context, chatID int64, text string) error
 }
 
+// PushNotifierWithService — расширенный интерфейс Telegram-пуша с указанием целевого сервиса и IP сервера.
+type PushNotifierWithService interface {
+	SendPushWithService(ctx context.Context, chatID int64, who, ip, ua, service, hostIP string, challengeID uuid.UUID) error
+}
+
 // AppPushNotifier — отправка push-подтверждения на мобильные и десктопные приложения пользователя.
 type AppPushNotifier interface {
 	SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) error
+}
+
+// AppPushNotifierWithMeta — расширенный интерфейс app_push с поддержкой метаданных («Куда, Где, Чем»).
+type AppPushNotifierWithMeta interface {
+	SendAppPushWithMeta(ctx context.Context, userID uuid.UUID, who, ip, clientIP, hostIP, host, ua, device, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) (int, error)
 }
 
 // BackupChannel — псевдоканал в возвращаемом значении VerifyAnyCode:
@@ -135,6 +145,12 @@ const BackupChannel channel.Channel = "backup"
 type CtxKey string
 
 const (
-	CtxKeyService CtxKey = "auth_service"
-	CtxKeyDevice  CtxKey = "auth_device"
+	CtxKeyService  CtxKey = "auth_service"
+	CtxKeyDevice   CtxKey = "auth_device"
+	CtxKeyClientIP CtxKey = "auth_client_ip"
+	CtxKeyHostIP   CtxKey = "auth_host_ip"
+	CtxKeyHost     CtxKey = "auth_host"
+
+	// PurposeUIConfirm — purpose челленджа подтверждения чувствительной операции в веб-кабинете.
+	PurposeUIConfirm = "ui_confirm"
 )

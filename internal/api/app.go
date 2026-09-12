@@ -642,29 +642,90 @@ func (a *AppAPI) handleChallengeDecision(w http.ResponseWriter, r *http.Request)
 			}
 		}
 
+		buildDetail := func(decision string) map[string]any {
+			m := map[string]any{
+				"challenge_id": ch.ID.String(),
+				"decision":     decision,
+				"device_id":    device.ID.String(),
+				"device_name":  device.DeviceName,
+				"method":       "app_push",
+			}
+			if ch.Metadata != nil {
+				if s, _ := ch.Metadata["service"].(string); s != "" {
+					m["service"] = s
+				} else if ch.Purpose != "" {
+					m["service"] = ch.Purpose
+				}
+				if cip, _ := ch.Metadata["client_ip"].(string); cip != "" {
+					m["client_ip"] = cip
+				}
+				if hip, _ := ch.Metadata["host_ip"].(string); hip != "" {
+					m["host_ip"] = hip
+				}
+				if tip, _ := ch.Metadata["ip"].(string); tip != "" {
+					m["target_ip"] = tip
+				}
+				if tua, _ := ch.Metadata["ua"].(string); tua != "" {
+					m["target_ua"] = tua
+				}
+				if host, _ := ch.Metadata["host"].(string); host != "" {
+					m["host"] = host
+				}
+				if cl, _ := ch.Metadata["client"].(string); cl != "" {
+					m["client"] = cl
+				}
+			}
+			return m
+		}
+
 		if err := a.st.ChallengeSetPush(r.Context(), ch.ID, "approved"); err != nil {
 			writeError(w, http.StatusInternalServerError, "db_error")
 			return
 		}
 
-		a.audit(r.Context(), user.Username, "app_push_decision",
-			map[string]any{
-				"challenge_id": ch.ID.String(),
-				"decision":     "approve",
-				"device_id":    device.ID.String(),
-				"device_name":  device.DeviceName,
-			}, ip, "ok")
+		a.audit(r.Context(), user.Username, "app_push_decision", buildDetail("approve"), ip, "ok")
 	} else {
 		// Отклонение запроса: фиксируем статус "denied" в push_state,
 		// не вызывая ChallengeMarkUsed, чтобы RADIUS и pollStatus зафиксировали отказ.
 		_ = a.st.ChallengeSetPush(r.Context(), ch.ID, "denied")
 
-		a.audit(r.Context(), user.Username, "app_push_decision",
-			map[string]any{
+		buildDetail := func(decision string) map[string]any {
+			m := map[string]any{
 				"challenge_id": ch.ID.String(),
-				"decision":     "deny",
+				"decision":     decision,
 				"device_id":    device.ID.String(),
-			}, ip, "ok")
+				"device_name":  device.DeviceName,
+				"method":       "app_push",
+			}
+			if ch.Metadata != nil {
+				if s, _ := ch.Metadata["service"].(string); s != "" {
+					m["service"] = s
+				} else if ch.Purpose != "" {
+					m["service"] = ch.Purpose
+				}
+				if cip, _ := ch.Metadata["client_ip"].(string); cip != "" {
+					m["client_ip"] = cip
+				}
+				if hip, _ := ch.Metadata["host_ip"].(string); hip != "" {
+					m["host_ip"] = hip
+				}
+				if tip, _ := ch.Metadata["ip"].(string); tip != "" {
+					m["target_ip"] = tip
+				}
+				if tua, _ := ch.Metadata["ua"].(string); tua != "" {
+					m["target_ua"] = tua
+				}
+				if host, _ := ch.Metadata["host"].(string); host != "" {
+					m["host"] = host
+				}
+				if cl, _ := ch.Metadata["client"].(string); cl != "" {
+					m["client"] = cl
+				}
+			}
+			return m
+		}
+
+		a.audit(r.Context(), user.Username, "app_push_decision", buildDetail("deny"), ip, "ok")
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -733,13 +794,22 @@ func (a *AppAPI) handleAllowedApps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleHistory возвращает недавний аудит-лог входов пользователя.
+func effectiveIP(cip, src string) string {
+	if cip != "" {
+		return cip
+	}
+	return src
+}
+
+// handleHistory возвращает недавний аудит-лог входов пользователя с детальной информацией («Куда, Где, Чем»).
 func (a *AppAPI) handleHistory(w http.ResponseWriter, r *http.Request) {
 	user, _ := appUserFromCtx(r.Context())
 
+	// Исключаем фоновую телеметрию устройств app_telemetry, чтобы не вытеснять реальные входы
 	list, err := a.st.AuditList(r.Context(), store.AuditFilter{
-		Username: user.Username,
-		Limit:    50,
+		Username:      user.Username,
+		ExcludeEvents: []string{"app_telemetry"},
+		Limit:         50,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db_error")
@@ -747,23 +817,235 @@ func (a *AppAPI) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type historyItem struct {
-		ID        int64          `json:"id"`
-		Timestamp time.Time      `json:"timestamp"`
-		Event     string         `json:"event"`
-		Result    string         `json:"result"`
-		IP        string         `json:"ip"`
-		Detail    map[string]any `json:"detail"`
+		ID          int64          `json:"id"`
+		Timestamp   time.Time      `json:"timestamp"`
+		Event       string         `json:"event"`
+		EventTitle  string         `json:"event_title"`
+		Result      string         `json:"result"`
+		ResultTitle string         `json:"result_title"`
+		IP          string         `json:"ip"`
+		ClientIP    string         `json:"client_ip,omitempty"`
+		HostIP      string         `json:"host_ip,omitempty"`
+		Location    string         `json:"location"`
+		Service     string         `json:"service"`
+		Device      string         `json:"device"`
+		Browser     string         `json:"browser,omitempty"`
+		Method      string         `json:"method"`
+		Description string         `json:"description"`
+		Detail      map[string]any `json:"detail"`
 	}
 
 	out := make([]historyItem, 0, len(list))
 	for _, it := range list {
+		det := it.Detail
+		if det == nil {
+			det = make(map[string]any)
+		}
+
+		// 1. Определение сервиса («Куда»)
+		service := ""
+		if s, ok := det["service"].(string); ok && s != "" {
+			service = s
+		} else if s, ok := det["client_name"].(string); ok && s != "" {
+			service = s
+		} else if s, ok := det["client_id"].(string); ok && s != "" {
+			service = s
+		} else if s, ok := det["target"].(string); ok && s != "" {
+			service = s
+		} else if it.Event == "radius_auth" {
+			service = "Корпоративный Wi-Fi / Сеть"
+		} else if it.Event == "app_login" {
+			service = "Приложение Ligament 2FA"
+		} else if strings.HasPrefix(it.Event, "oidc_") {
+			service = "Единый вход (SSO)"
+		} else if host, ok := det["host"].(string); ok && host != "" {
+			service = "Windows RDP (" + host + ")"
+		} else {
+			service = "Корпоративный доступ"
+		}
+
+		// 2. Внутренние и внешние IP-адреса («Где / Откуда»)
+		clientIP := it.SrcIP
+		if cip, ok := det["client_ip"].(string); ok && cip != "" {
+			clientIP = cip
+		} else if tip, ok := det["target_ip"].(string); ok && tip != "" {
+			clientIP = tip
+		}
+		hostIP := ""
+		if hip, ok := det["host_ip"].(string); ok && hip != "" {
+			hostIP = hip
+		} else if nip, ok := det["nas_ip"].(string); ok && nip != "" {
+			hostIP = nip
+		}
+
+		location := ""
+		if clientIP != "" && hostIP != "" && clientIP != hostIP {
+			location = "Клиент: " + auth.FormatIPDescription(clientIP) + " • Сервер: " + auth.FormatIPDescription(hostIP)
+		} else if clientIP != "" {
+			location = auth.FormatIPDescription(clientIP)
+		} else if it.SrcIP != "" {
+			location = auth.FormatIPDescription(it.SrcIP)
+		}
+
+		// 3. Устройство и клиент
+		ua := ""
+		if tua, ok := det["target_ua"].(string); ok && tua != "" {
+			ua = tua
+		} else if u, ok := det["ua"].(string); ok && u != "" {
+			ua = u
+		}
+		devStr, brStr := auth.FormatDeviceAndBrowser(ua)
+		if devStr == "" || devStr == "Неизвестное устройство" {
+			if dn, ok := det["device_name"].(string); ok && dn != "" {
+				devStr = dn
+			} else if cl, ok := det["client"].(string); ok && cl != "" {
+				devStr = cl
+			} else if it.Event == "radius_auth" {
+				devStr = "Сетевое устройство"
+			} else {
+				devStr = "Устройство пользователя"
+			}
+		}
+
+		// 4. Способ («Чем»)
+		method := ""
+		if m, ok := det["method"].(string); ok && m != "" {
+			method = m
+		} else if ch, ok := det["channel"].(string); ok && ch != "" {
+			method = ch
+		} else if md, ok := det["mode"].(string); ok && md != "" {
+			method = md
+		}
+		switch method {
+		case "app_push", "push":
+			method = "Push в приложении"
+		case "telegram_push", "telegram":
+			method = "Telegram"
+		case "totp":
+			method = "TOTP-код"
+		case "sms":
+			method = "SMS-код"
+		case "email":
+			method = "Email-код"
+		case "fido2", "webauthn":
+			method = "Ключ FIDO2"
+		case "backup":
+			method = "Резервный код"
+		case "password+code":
+			method = "Пароль + 2FA"
+		case "password":
+			method = "Пароль"
+		default:
+			if it.Event == "app_push_decision" {
+				method = "Push в приложении"
+			} else if it.Event == "tg_push" {
+				method = "Telegram"
+			} else if it.Event == "radius_auth" {
+				method = "802.1X / RADIUS"
+			} else if method == "" {
+				method = "Пароль / 2FA"
+			}
+		}
+
+		// 5. Заголовок события (event_title)
+		eventTitle := ""
+		decision, _ := det["decision"].(string)
+		action, _ := det["action"].(string)
+		switch it.Event {
+		case "app_push_decision":
+			if decision == "approve" {
+				eventTitle = "Подтверждение входа (Push)"
+			} else if decision == "deny" {
+				eventTitle = "Вход отклонён (Push)"
+			} else {
+				eventTitle = "Запрос 2FA подтверждения"
+			}
+		case "tg_push":
+			if action == "approve" {
+				eventTitle = "Подтверждение входа (Telegram)"
+			} else if action == "deny" {
+				eventTitle = "Вход отклонён (Telegram)"
+			} else {
+				eventTitle = "Запрос 2FA (Telegram)"
+			}
+		case "login_ok":
+			if strings.Contains(service, "RDP") {
+				eventTitle = "Вход через Windows RDP"
+			} else if strings.Contains(service, "Wi-Fi") {
+				eventTitle = "Подключение к Wi-Fi"
+			} else {
+				eventTitle = "Успешный вход в систему"
+			}
+		case "login_fail":
+			reason, _ := det["reason"].(string)
+			if reason == "bad_credentials" {
+				eventTitle = "Неверный логин или пароль"
+			} else if reason == "bad_code" {
+				eventTitle = "Неверный 2FA код"
+			} else if reason == "locked" {
+				eventTitle = "Учётная запись заблокирована"
+			} else {
+				eventTitle = "Неудачная попытка входа"
+			}
+		case "app_login":
+			eventTitle = "Вход в приложение Ligament"
+		case "code_sent":
+			eventTitle = "Отправлен код подтверждения"
+		case "code_fail":
+			eventTitle = "Неверный проверочный код"
+		case "radius_auth":
+			eventTitle = "Авторизация в сети Wi-Fi/VPN"
+		case "oidc_consent":
+			eventTitle = "Предоставление доступа SSO"
+		case "oidc_token":
+			eventTitle = "Вход через SSO (OpenID)"
+		case "api_start":
+			if it.Result == "fail" {
+				eventTitle = "Неудачная проверка пароля"
+			} else {
+				eventTitle = "Запрос 2FA входа"
+			}
+		case "api_verify_ok":
+			eventTitle = "Успешная 2FA авторизация"
+		case "api_verify_fail":
+			eventTitle = "Ошибка 2FA авторизации"
+		case "app_device_register":
+			eventTitle = "Привязка устройства"
+		case "app_device_revoke":
+			eventTitle = "Отзыв устройства"
+		case "password_change":
+			eventTitle = "Смена пароля"
+		default:
+			eventTitle = it.Event
+		}
+
+		// 6. Статус и описание
+		resultTitle := "Успешно"
+		if decision == "deny" || action == "deny" {
+			resultTitle = "Отклонено пользователем"
+		} else if it.Result == "fail" {
+			resultTitle = "Ошибка"
+		}
+
+		desc := fmt.Sprintf("%s: сервис %s, способ %s (%s)", eventTitle, service, method, resultTitle)
+
 		out = append(out, historyItem{
-			ID:        it.ID,
-			Timestamp: it.Ts,
-			Event:     it.Event,
-			Result:    it.Result,
-			IP:        it.SrcIP,
-			Detail:    it.Detail,
+			ID:          it.ID,
+			Timestamp:   it.Ts,
+			Event:       it.Event,
+			EventTitle:  eventTitle,
+			Result:      it.Result,
+			ResultTitle: resultTitle,
+			IP:          effectiveIP(clientIP, it.SrcIP),
+			ClientIP:    clientIP,
+			HostIP:      hostIP,
+			Location:    location,
+			Service:     service,
+			Device:      devStr,
+			Browser:     brStr,
+			Method:      method,
+			Description: desc,
+			Detail:      det,
 		})
 	}
 

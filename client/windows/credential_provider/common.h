@@ -5,6 +5,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
 #include <windows.h>
 #include <credentialprovider.h>
 #include <ntsecapi.h>
@@ -28,6 +31,8 @@
 #pragma comment(lib, "credui.lib")
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "wtsapi32.lib")
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "iphlpapi.lib")
 
 namespace ligament {
 

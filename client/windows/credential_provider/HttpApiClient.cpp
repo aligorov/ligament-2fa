@@ -144,6 +144,112 @@ bool HttpApiClient::SendRequest(
     return bResult;
 }
 
+struct SessionEndpointInfo {
+    std::string clientIp;      // RDP client IPv4 (e.g. 192.168.1.55) or local console
+    std::string clientName;    // RDP client computer name (e.g. LAPTOP-ALEX)
+    std::string hostName;      // Local host computer name (e.g. WIN-SRV)
+    std::string hostIp;        // Local host IPv4 (e.g. 192.168.1.100)
+    std::string service;       // "Windows RDP (WIN-SRV)" or "Windows (WIN-SRV)"
+    std::string clientDesc;    // "Windows RDP (LAPTOP-ALEX)" or "Локальная консоль"
+    bool isRemote = false;
+};
+
+static SessionEndpointInfo GetSessionEndpointInfo() {
+    SessionEndpointInfo info;
+
+    // 1. Local computer name
+    wchar_t compName[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+    DWORD compLen = _countof(compName);
+    if (GetComputerNameW(compName, &compLen)) {
+        info.hostName = WideToUtf8(compName);
+    }
+
+    // 2. Query WTS for RDP client IP
+    PWTS_CLIENT_ADDRESS pAddr = nullptr;
+    DWORD bytes = 0;
+    if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTSClientAddress, (LPWSTR*)&pAddr, &bytes) && pAddr) {
+        if (pAddr->AddressFamily == AF_INET) {
+            char ipBuf[64] = {0};
+            snprintf(ipBuf, sizeof(ipBuf), "%u.%u.%u.%u",
+                pAddr->Address[2], pAddr->Address[3], pAddr->Address[4], pAddr->Address[5]);
+            if (strcmp(ipBuf, "0.0.0.0") != 0) {
+                info.clientIp = ipBuf;
+                info.isRemote = true;
+            }
+        }
+        WTSFreeMemory(pAddr);
+    }
+
+    // Query WTS for RDP client computer name
+    LPWSTR pClientName = nullptr;
+    if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTSClientName, &pClientName, &bytes) && pClientName) {
+        if (wcslen(pClientName) > 0) {
+            info.clientName = WideToUtf8(pClientName);
+            info.isRemote = true;
+        }
+        WTSFreeMemory(pClientName);
+    }
+
+    // 3. Local machine IPv4 via GetAdaptersAddresses
+    ULONG outBufLen = 15000;
+    PIP_ADAPTER_ADDRESSES pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
+    if (pAddresses) {
+        DWORD dwRetVal = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER, NULL, pAddresses, &outBufLen);
+        if (dwRetVal == ERROR_BUFFER_OVERFLOW) {
+            free(pAddresses);
+            pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
+            if (pAddresses) {
+                dwRetVal = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER, NULL, pAddresses, &outBufLen);
+            }
+        }
+        if (dwRetVal == NO_ERROR && pAddresses) {
+            for (PIP_ADAPTER_ADDRESSES pCurr = pAddresses; pCurr != nullptr; pCurr = pCurr->Next) {
+                if (pCurr->OperStatus != IfOperStatusUp) continue;
+                if (pCurr->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+
+                for (PIP_ADAPTER_UNICAST_ADDRESS pUnicast = pCurr->FirstUnicastAddress; pUnicast != nullptr; pUnicast = pUnicast->Next) {
+                    if (pUnicast->Address.lpSockaddr && pUnicast->Address.lpSockaddr->sa_family == AF_INET) {
+                        sockaddr_in* sa_in = (sockaddr_in*)pUnicast->Address.lpSockaddr;
+                        char ipStr[INET_ADDRSTRLEN] = {0};
+                        if (inet_ntop(AF_INET, &(sa_in->sin_addr), ipStr, sizeof(ipStr))) {
+                            if (strncmp(ipStr, "127.", 4) != 0 && strcmp(ipStr, "0.0.0.0") != 0) {
+                                info.hostIp = ipStr;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!info.hostIp.empty()) break;
+            }
+        }
+        if (pAddresses) free(pAddresses);
+    }
+
+    // Formulate descriptive strings
+    if (info.isRemote) {
+        info.service = "Windows RDP (" + (info.hostName.empty() ? "Сервер" : info.hostName) + ")";
+        info.clientDesc = "Windows RDP (" + (info.clientName.empty() ? "Клиент" : info.clientName) + ")";
+    } else {
+        info.service = "Windows (" + (info.hostName.empty() ? "Консоль" : info.hostName) + ")";
+        info.clientDesc = "Локальная консоль (" + (info.hostName.empty() ? "Консоль" : info.hostName) + ")";
+        if (info.clientIp.empty()) {
+            info.clientIp = info.hostIp.empty() ? "127.0.0.1" : info.hostIp;
+        }
+        if (info.clientName.empty()) {
+            info.clientName = info.hostName;
+        }
+    }
+
+    LogDebug(L"Endpoint info: remote=%d, host=%S, hostIp=%S, clientIp=%S, clientName=%S",
+        info.isRemote ? 1 : 0,
+        info.hostName.c_str(),
+        info.hostIp.c_str(),
+        info.clientIp.c_str(),
+        info.clientName.c_str());
+
+    return info;
+}
+
 bool HttpApiClient::StartPush(
     const std::wstring& username,
     const std::wstring& password,
@@ -151,12 +257,19 @@ bool HttpApiClient::StartPush(
     std::wstring& outNumberMatch,
     std::string& outError)
 {
-    // Server contract: {"username":"...","password":"..."} — the password is
-    // verified first and the push channel is selected server-side.
     std::string u8User = EscapeJson(WideToUtf8(username));
     std::string u8Pass = EscapeJson(WideToUtf8(password));
 
-    std::string body = "{\"username\":\"" + u8User + "\",\"password\":\"" + u8Pass + "\"}";
+    SessionEndpointInfo ep = GetSessionEndpointInfo();
+
+    std::string body = "{\"username\":\"" + u8User +
+                       "\",\"password\":\"" + u8Pass +
+                       "\",\"service\":\"" + EscapeJson(ep.service) +
+                       "\",\"client\":\"" + EscapeJson(ep.clientDesc) +
+                       "\",\"host\":\"" + EscapeJson(ep.hostName) +
+                       "\",\"client_ip\":\"" + EscapeJson(ep.clientIp) +
+                       "\",\"host_ip\":\"" + EscapeJson(ep.hostIp) +
+                       "\",\"client_name\":\"" + EscapeJson(ep.clientName) + "\"}";
 
     m_lastRetryAfterSec = 0;
     int statusCode = 0;
@@ -224,7 +337,17 @@ bool HttpApiClient::VerifyCombined(
     std::string u8Pass = EscapeJson(WideToUtf8(password));
     std::string u8Code = EscapeJson(WideToUtf8(code));
 
-    std::string body = "{\"username\":\"" + u8User + "\",\"password\":\"" + u8Pass + "\",\"code\":\"" + u8Code + "\"}";
+    SessionEndpointInfo ep = GetSessionEndpointInfo();
+
+    std::string body = "{\"username\":\"" + u8User +
+                       "\",\"password\":\"" + u8Pass +
+                       "\",\"code\":\"" + u8Code +
+                       "\",\"service\":\"" + EscapeJson(ep.service) +
+                       "\",\"client\":\"" + EscapeJson(ep.clientDesc) +
+                       "\",\"host\":\"" + EscapeJson(ep.hostName) +
+                       "\",\"client_ip\":\"" + EscapeJson(ep.clientIp) +
+                       "\",\"host_ip\":\"" + EscapeJson(ep.hostIp) +
+                       "\",\"client_name\":\"" + EscapeJson(ep.clientName) + "\"}";
 
     m_lastRetryAfterSec = 0;
     int statusCode = 0;
@@ -254,7 +377,16 @@ WebAuthnBeginResult HttpApiClient::WebAuthnBegin(
     std::string u8User = EscapeJson(WideToUtf8(username));
     std::string u8Pass = EscapeJson(WideToUtf8(password));
 
-    std::string body = "{\"username\":\"" + u8User + "\",\"password\":\"" + u8Pass + "\"}";
+    SessionEndpointInfo ep = GetSessionEndpointInfo();
+
+    std::string body = "{\"username\":\"" + u8User +
+                       "\",\"password\":\"" + u8Pass +
+                       "\",\"service\":\"" + EscapeJson(ep.service) +
+                       "\",\"client\":\"" + EscapeJson(ep.clientDesc) +
+                       "\",\"host\":\"" + EscapeJson(ep.hostName) +
+                       "\",\"client_ip\":\"" + EscapeJson(ep.clientIp) +
+                       "\",\"host_ip\":\"" + EscapeJson(ep.hostIp) +
+                       "\",\"client_name\":\"" + EscapeJson(ep.clientName) + "\"}";
 
     m_lastRetryAfterSec = 0;
     int statusCode = 0;

@@ -617,8 +617,12 @@ func (mgr *Manager) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reques
 		redirectWithError(w, r, ar.RedirectURI, "server_error", ar.State)
 		return
 	}
+	serviceName := client.Name
+	if strings.TrimSpace(serviceName) == "" {
+		serviceName = client.ClientID
+	}
 	mgr.audit(r, user.Username, "oidc_consent", "ok", map[string]any{
-		"client_id": client.ClientID, "scope": FilterScopes(ar.Scope),
+		"client_id": client.ClientID, "client_name": client.Name, "service": serviceName, "scope": FilterScopes(ar.Scope),
 	})
 
 	if mgr.notifier != nil {
@@ -770,8 +774,12 @@ func (mgr *Manager) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeOIDCError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
+	tokenServiceName := client.Name
+	if strings.TrimSpace(tokenServiceName) == "" {
+		tokenServiceName = client.ClientID
+	}
 	mgr.audit(r, user.Username, "oidc_token", "ok", map[string]any{
-		"client_id": client.ClientID, "scope": claimed.Scope,
+		"client_id": client.ClientID, "client_name": client.Name, "service": tokenServiceName, "scope": claimed.Scope,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": access,

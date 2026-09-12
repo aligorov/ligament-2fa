@@ -29,7 +29,11 @@ type AppPushPrompt struct {
 	ChallengeID      uuid.UUID `json:"challenge_id"`
 	Who              string    `json:"who"`
 	IP               string    `json:"ip"`
+	ClientIP         string    `json:"client_ip,omitempty"`
+	HostIP           string    `json:"host_ip,omitempty"`
+	Host             string    `json:"host,omitempty"`
 	UA               string    `json:"ua"`
+	Device           string    `json:"device,omitempty"`
 	Service          string    `json:"service"`
 	NumberMatch      string    `json:"number_match"`
 	ExpiresInSeconds int       `json:"expires_in_seconds"`
@@ -296,13 +300,8 @@ func (h *AppHub) SendAppPush(ctx context.Context, userID uuid.UUID, who, ip, ua,
 	return err
 }
 
-// SendAppPushCounted — SendAppPush с возвратом числа соединений, принявших
-// prompt в очередь (WebSocket writer-горутины + SSE-каналы). 0 — живых
-// клиентов нет: мгновенной доставки не произошло, челлендж остаётся
-// доступным приложению через pending-список (/api/v1/app/challenges/pending,
-// polling-фолбэк клиента). Ошибки не возвращает: рассылка полностью
-// асинхронна (per-conn writer), BroadcastPrompt не блокируется на клиентах.
-func (h *AppHub) SendAppPushCounted(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) (int, error) {
+// SendAppPushWithMeta отправляет запрос на авторизацию в приложение пользователя с расширенными метаданными («Куда, Где, Чем»).
+func (h *AppHub) SendAppPushWithMeta(ctx context.Context, userID uuid.UUID, who, ip, clientIP, hostIP, host, ua, device, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) (int, error) {
 	if expiresInSeconds <= 0 {
 		expiresInSeconds = 60
 	}
@@ -311,7 +310,11 @@ func (h *AppHub) SendAppPushCounted(ctx context.Context, userID uuid.UUID, who, 
 		ChallengeID:      challengeID,
 		Who:              who,
 		IP:               ip,
+		ClientIP:         clientIP,
+		HostIP:           hostIP,
+		Host:             host,
 		UA:               ua,
+		Device:           device,
 		Service:          service,
 		NumberMatch:      numberMatch,
 		ExpiresInSeconds: expiresInSeconds,
@@ -320,8 +323,19 @@ func (h *AppHub) SendAppPushCounted(ctx context.Context, userID uuid.UUID, who, 
 
 	delivered := h.BroadcastPrompt(userID, prompt)
 	slog.Info("app_push: отправлен push-запрос",
-		"user_id", userID, "who", who, "challenge_id", challengeID, "online_clients", delivered, "expires_in", expiresInSeconds)
+		"user_id", userID, "who", who, "challenge_id", challengeID, "online_clients", delivered, "expires_in", expiresInSeconds,
+		"service", service, "client_ip", clientIP, "host_ip", hostIP)
 	return delivered, nil
+}
+
+// SendAppPushCounted — SendAppPush с возвратом числа соединений, принявших
+// prompt в очередь (WebSocket writer-горутины + SSE-каналы). 0 — живых
+// клиентов нет: мгновенной доставки не произошло, челлендж остаётся
+// доступным приложению через pending-список (/api/v1/app/challenges/pending,
+// polling-фолбэк клиента). Ошибки не возвращает: рассылка полностью
+// асинхронна (per-conn writer), BroadcastPrompt не блокируется на клиентах.
+func (h *AppHub) SendAppPushCounted(ctx context.Context, userID uuid.UUID, who, ip, ua, service, numberMatch string, challengeID uuid.UUID, expiresInSeconds int) (int, error) {
+	return h.SendAppPushWithMeta(ctx, userID, who, ip, "", "", "", ua, "", service, numberMatch, challengeID, expiresInSeconds)
 }
 
 // SupportPushPrompt — структура оповещения о запросе на удаленное подключение от инженера.

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -180,8 +181,14 @@ func (p *PublicAPI) allow(w http.ResponseWriter, r *http.Request, username strin
 // ---- POST /api/v1/auth/start ----
 
 type startReq struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	Service    string `json:"service,omitempty"`
+	Client     string `json:"client,omitempty"`
+	Host       string `json:"host,omitempty"`
+	ClientIP   string `json:"client_ip,omitempty"`
+	HostIP     string `json:"host_ip,omitempty"`
+	ClientName string `json:"client_name,omitempty"`
 }
 
 // handleStart — первый шаг: проверка пароля и выдача челленджа по
@@ -223,12 +230,52 @@ func (p *PublicAPI) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch, err := p.core.StartWithMeta(ctx, user, purposeAPI, ip, r.UserAgent())
+	svc := strings.TrimSpace(req.Service)
+	if svc == "" {
+		if strings.Contains(r.UserAgent(), "CredentialProvider") {
+			if req.Host != "" {
+				svc = "Windows RDP (" + req.Host + ")"
+			} else {
+				svc = "Windows Вход / RDP"
+			}
+		} else {
+			svc = "Корпоративный доступ"
+		}
+	}
+	ctx = context.WithValue(ctx, auth.CtxKeyService, svc)
+	if req.Host != "" {
+		ctx = context.WithValue(ctx, auth.CtxKeyHost, req.Host)
+	}
+	clientDesc := req.Client
+	if req.ClientName != "" {
+		if clientDesc != "" {
+			clientDesc += " (" + req.ClientName + ")"
+		} else {
+			clientDesc = req.ClientName
+		}
+	}
+	if clientDesc != "" {
+		ctx = context.WithValue(ctx, auth.CtxKeyDevice, clientDesc)
+	}
+	if req.ClientIP != "" {
+		ctx = context.WithValue(ctx, auth.CtxKeyClientIP, req.ClientIP)
+	}
+	if req.HostIP != "" {
+		ctx = context.WithValue(ctx, auth.CtxKeyHostIP, req.HostIP)
+	}
+
+	effectiveIP := ip
+	if req.ClientIP != "" {
+		effectiveIP = req.ClientIP
+		ctx = firewall.WithIP(ctx, effectiveIP)
+	}
+
+	ch, err := p.core.StartWithService(ctx, user, purposeAPI, effectiveIP, r.UserAgent(), svc, req.Host, clientDesc, req.ClientIP, req.HostIP)
 	switch {
 	case err == nil:
 	case errors.Is(err, auth.ErrNoChannel):
-		p.audit(ctx, user.Username, "api_start", ip, "fail",
-			map[string]any{"reason": "no_channel"})
+		p.audit(ctx, user.Username, "api_start", effectiveIP, "fail",
+			map[string]any{"reason": "no_channel", "service": svc})
 		writeError(w, http.StatusConflict, "no_channel")
 		return
 	case errors.Is(err, auth.ErrCooldown):
@@ -244,8 +291,24 @@ func (p *PublicAPI) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.audit(ctx, user.Username, "api_start", ip, "ok",
-		map[string]any{"channel": string(ch.Channel), "challenge_id": ch.ID.String()})
+	auditDetail := map[string]any{
+		"channel":      string(ch.Channel),
+		"challenge_id": ch.ID.String(),
+		"service":      svc,
+	}
+	if req.Host != "" {
+		auditDetail["host"] = req.Host
+	}
+	if req.HostIP != "" {
+		auditDetail["host_ip"] = req.HostIP
+	}
+	if req.ClientIP != "" {
+		auditDetail["client_ip"] = req.ClientIP
+	}
+	if clientDesc != "" {
+		auditDetail["client"] = clientDesc
+	}
+	p.audit(ctx, user.Username, "api_start", effectiveIP, "ok", auditDetail)
 	resp := map[string]any{
 		"challenge_id": ch.ID.String(),
 		"channel":      string(ch.Channel),
@@ -352,9 +415,15 @@ func (p *PublicAPI) handleVerify(w http.ResponseWriter, r *http.Request) {
 // ---- POST /api/v1/auth/combined ----
 
 type combinedReq struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Code     string `json:"code"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	Code       string `json:"code"`
+	Service    string `json:"service,omitempty"`
+	Client     string `json:"client,omitempty"`
+	Host       string `json:"host,omitempty"`
+	ClientIP   string `json:"client_ip,omitempty"`
+	HostIP     string `json:"host_ip,omitempty"`
+	ClientName string `json:"client_name,omitempty"`
 }
 
 // handleCombined — вход одним вызовом «пароль + код» (код любой:
@@ -382,7 +451,48 @@ func (p *PublicAPI) handleCombined(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"error": "rate_limited", "retry_after": rlRetryAfterSec})
 		return
 	}
-	user, ok, err := p.core.VerifyPasswordAndCode(r.Context(), req.Username, req.Password, req.Code, auth.LoginCodePurposes...)
+
+	svc := strings.TrimSpace(req.Service)
+	if svc == "" {
+		if strings.Contains(r.UserAgent(), "CredentialProvider") {
+			if req.Host != "" {
+				svc = "Windows RDP (" + req.Host + ")"
+			} else {
+				svc = "Windows Вход / RDP"
+			}
+		} else {
+			svc = "Корпоративный доступ"
+		}
+	}
+	ctx = context.WithValue(ctx, auth.CtxKeyService, svc)
+	if req.Host != "" {
+		ctx = context.WithValue(ctx, auth.CtxKeyHost, req.Host)
+	}
+	clientDesc := req.Client
+	if req.ClientName != "" {
+		if clientDesc != "" {
+			clientDesc += " (" + req.ClientName + ")"
+		} else {
+			clientDesc = req.ClientName
+		}
+	}
+	if clientDesc != "" {
+		ctx = context.WithValue(ctx, auth.CtxKeyDevice, clientDesc)
+	}
+	if req.ClientIP != "" {
+		ctx = context.WithValue(ctx, auth.CtxKeyClientIP, req.ClientIP)
+	}
+	if req.HostIP != "" {
+		ctx = context.WithValue(ctx, auth.CtxKeyHostIP, req.HostIP)
+	}
+
+	effectiveIP := clientIP(r)
+	if req.ClientIP != "" {
+		effectiveIP = req.ClientIP
+	}
+	ctx = firewall.WithIP(ctx, effectiveIP)
+
+	user, ok, err := p.core.VerifyPasswordAndCode(ctx, req.Username, req.Password, req.Code, auth.LoginCodePurposes...)
 	switch {
 	case err == nil && ok && user != nil:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": user.Username})

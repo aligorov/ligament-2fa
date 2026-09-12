@@ -593,6 +593,14 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildChallengeItem(AuthState auth, Map<String, dynamic> ch) {
     final meta = ch['metadata'] as Map<String, dynamic>? ?? {};
 
+    final clientIp = meta['client_ip']?.toString();
+    final hostIp = meta['host_ip']?.toString();
+    final serviceName = meta['service']?.toString() ?? ch['purpose']?.toString() ?? 'Запрос входа';
+    final effectiveClientIp = (clientIp != null && clientIp.isNotEmpty) ? clientIp : (meta['ip'] ?? '—');
+    final ipText = (hostIp != null && hostIp.isNotEmpty && hostIp != effectiveClientIp)
+        ? '$effectiveClientIp → $hostIp'
+        : effectiveClientIp;
+
     return Card(
       color: const Color(0xFF1E293B),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -604,11 +612,11 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Icon(Icons.security, color: Colors.white),
         ),
         title: Text(
-          ch['purpose']?.toString() ?? 'Запрос входа',
+          serviceName,
           style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
         subtitle: Text(
-          'IP: ${meta['ip'] ?? '—'} • ${ch['expires_in_seconds']} сек',
+          'IP: $ipText • ${ch['expires_in_seconds']} сек',
           style: const TextStyle(color: Color(0xFF94A3B8)),
         ),
         trailing: ElevatedButton(
@@ -618,9 +626,13 @@ class _HomeScreenState extends State<HomeScreen> {
             final promptData = {
               'challenge_id': ch['id'],
               'who': meta['username'] ?? auth.currentUser?['username'],
-              'ip': meta['ip'] ?? '—',
-              'ua': meta['ua'] ?? '—',
-              'service': ch['purpose'] ?? '2FA Login',
+              'ip': effectiveClientIp,
+              'client_ip': clientIp,
+              'host_ip': hostIp,
+              'host': meta['host'],
+              'ua': meta['ua'] ?? meta['device'] ?? '—',
+              'device': meta['device'] ?? meta['client'],
+              'service': serviceName,
               'number_match': meta['number_match'],
               'expires_in_seconds': ch['expires_in_seconds'],
             };

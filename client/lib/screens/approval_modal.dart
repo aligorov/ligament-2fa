@@ -158,9 +158,11 @@ class _ApprovalModalState extends State<ApprovalModal> {
   Widget build(BuildContext context) {
     final expectedMatch = _prompt['number_match']?.toString();
     final who = _prompt['who']?.toString() ?? 'Сотрудник';
-    final ip = _prompt['ip']?.toString() ?? '127.0.0.1';
-    final ua = _prompt['ua']?.toString() ?? 'Браузер / Клиент';
+    final clientIp = _prompt['client_ip']?.toString() ?? _prompt['ip']?.toString() ?? '—';
+    final hostIp = _prompt['host_ip']?.toString();
+    final host = _prompt['host']?.toString();
     final service = _prompt['service']?.toString() ?? 'Корпоративный доступ';
+    final device = _prompt['device']?.toString() ?? _formatDeviceUA(_prompt['ua']?.toString() ?? '');
 
     // Для Number Matching генерируем 3 уникальных варианта: верный + 2 правдоподобных ложных
     final options = <String>[];
@@ -260,13 +262,21 @@ class _ApprovalModalState extends State<ApprovalModal> {
                 ),
                 child: Column(
                   children: [
-                    _metaRow(Icons.apps, 'Сервис:', service),
+                    _metaRow(Icons.apps, 'Куда (сервис):', service),
                     const SizedBox(height: 8),
                     _metaRow(Icons.person, 'Пользователь:', who),
                     const SizedBox(height: 8),
-                    _metaRow(Icons.language, 'IP-адрес:', ip),
+                    _metaRow(Icons.wifi, 'IP клиента:', _formatIPBadge(clientIp)),
+                    if (hostIp != null && hostIp.isNotEmpty && hostIp != clientIp) ...[
+                      const SizedBox(height: 8),
+                      _metaRow(Icons.dns, 'Сервер (IP):', _formatIPBadge(hostIp)),
+                    ],
+                    if (host != null && host.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      _metaRow(Icons.computer, 'Имя сервера:', host),
+                    ],
                     const SizedBox(height: 8),
-                    _metaRow(Icons.devices, service.contains('Wi-Fi') ? 'Устройство:' : 'Клиент:', ua),
+                    _metaRow(Icons.devices, 'Устройство:', device),
                   ],
                 ),
               ),
@@ -380,5 +390,38 @@ class _ApprovalModalState extends State<ApprovalModal> {
         ),
       ],
     );
+  }
+
+  static bool _isPrivateIP(String ip) {
+    if (ip.startsWith('10.') || ip.startsWith('192.168.') || ip == '127.0.0.1' || ip == '::1') {
+      return true;
+    }
+    if (ip.startsWith('172.')) {
+      final parts = ip.split('.');
+      if (parts.length >= 2) {
+        final second = int.tryParse(parts[1]) ?? 0;
+        if (second >= 16 && second <= 31) return true;
+      }
+    }
+    return false;
+  }
+
+  static String _formatIPBadge(String ip) {
+    if (ip == '—' || ip.isEmpty) return '—';
+    if (_isPrivateIP(ip)) {
+      return '$ip (внутренний IP)';
+    }
+    return ip;
+  }
+
+  static String _formatDeviceUA(String raw) {
+    if (raw.isEmpty || raw == '—') return 'Рабочая станция';
+    if (raw.contains('CredentialProvider')) return 'Windows (Credential Provider)';
+    if (raw.contains('Windows NT 10.0')) return 'Windows 10 / 11';
+    if (raw.contains('Macintosh') || raw.contains('Mac OS')) return 'macOS';
+    if (raw.contains('Android')) return 'Android Устройство';
+    if (raw.contains('iPhone') || raw.contains('iPad')) return 'iOS Устройство';
+    if (raw.contains('Linux')) return 'Linux';
+    return raw;
   }
 }

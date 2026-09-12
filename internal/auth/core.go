@@ -124,6 +124,12 @@ func (c *Core) appPushNotifier() AppPushNotifier {
 // audit записывает событие аудита, не ломая основной поток: ошибка записи
 // логируется и проглатывается (аудит не должен блокировать аутентификацию).
 func (c *Core) audit(ctx context.Context, username, event string, detail map[string]any, ip, result string) {
+	if ip == "" {
+		ip = firewall.IPFrom(ctx)
+	}
+	if cip, ok := ctx.Value(CtxKeyClientIP).(string); ok && cip != "" && (ip == "" || ip == "127.0.0.1") {
+		ip = cip
+	}
 	if err := c.st.Audit(ctx, username, event, detail, ip, result); err != nil {
 		slog.Warn("auth: аудит не записан", "event", event, "error", err)
 	}
@@ -135,9 +141,6 @@ func (c *Core) audit(ctx context.Context, username, event string, detail map[str
 	// fail-счётчик (FailLocked + radius.max_fail_per_user по audit_log);
 	// событие radius_fail продолжает писаться в аудит.
 	if result == "fail" && c.fw != nil {
-		if ip == "" {
-			ip = firewall.IPFrom(ctx)
-		}
 		switch event {
 		case "login_fail", "code_fail":
 			if ip != "" {
@@ -212,6 +215,11 @@ func (c *Core) Start(ctx context.Context, user *store.User, purpose string) (*st
 // StartWithMeta — Start с метаданными запроса (IP, User-Agent): они
 // передаются в push-сообщение для режима approve.
 func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip, ua string) (*store.Challenge, error) {
+	return c.StartWithService(ctx, user, purpose, ip, ua, "", "", "", "", "")
+}
+
+// StartWithService — Start с расширенными метаданными контекста (сервис, хост, клиент, внутренние IP).
+func (c *Core) StartWithService(ctx context.Context, user *store.User, purpose, ip, ua, service, host, client, clientIP, hostIP string) (*store.Challenge, error) {
 	pol := c.set.Get().Policy
 	prefer := user.PreferChannels
 	if len(prefer) == 0 {
@@ -237,6 +245,46 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 		}
 	}
 	now := time.Now()
+
+	if service == "" {
+		if s, ok := ctx.Value(CtxKeyService).(string); ok && s != "" {
+			service = s
+		} else if strings.Contains(ua, "CredentialProvider") {
+			if host != "" {
+				service = "Windows RDP (" + host + ")"
+			} else {
+				service = "Windows Вход / RDP"
+			}
+		} else if purpose == PurposeUIConfirm {
+			service = "Личный кабинет (Подтверждение)"
+		} else {
+			service = "Корпоративный доступ"
+		}
+	}
+	if host == "" {
+		if h, ok := ctx.Value(CtxKeyHost).(string); ok && h != "" {
+			host = h
+		}
+	}
+	if client == "" {
+		if cl, ok := ctx.Value(CtxKeyDevice).(string); ok && cl != "" {
+			client = cl
+		}
+	}
+	if clientIP == "" {
+		if cip, ok := ctx.Value(CtxKeyClientIP).(string); ok && cip != "" {
+			clientIP = cip
+		}
+	}
+	if hostIP == "" {
+		if hip, ok := ctx.Value(CtxKeyHostIP).(string); ok && hip != "" {
+			hostIP = hip
+		}
+	}
+	effectiveIP := ip
+	if clientIP != "" && (ip == "" || ip == "127.0.0.1" || strings.HasPrefix(ip, "172.")) {
+		effectiveIP = clientIP
+	}
 
 	for _, ch := range prefer {
 		switch ch {
@@ -278,8 +326,8 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 			code := secrets.GenDigits(pol.CodeLength)
 			if err := sender.Send(ctx, to, code); err != nil {
 				c.audit(ctx, user.Username, "code_sent",
-					map[string]any{"channel": string(ch), "purpose": purpose, "error": redactErrText(err)},
-					ip, "fail")
+					map[string]any{"channel": string(ch), "purpose": purpose, "service": service, "error": redactErrText(err)},
+					effectiveIP, "fail")
 				continue // канал недоступен — следующий в списке
 			}
 			c2 := &store.Challenge{
@@ -294,7 +342,7 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 				return nil, err
 			}
 			c.audit(ctx, user.Username, "code_sent",
-				map[string]any{"channel": string(ch), "purpose": purpose}, ip, "ok")
+				map[string]any{"channel": string(ch), "purpose": purpose, "service": service}, effectiveIP, "ok")
 			return c2, nil
 
 		case channel.TelegramPush:
@@ -314,6 +362,17 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 			} else if n >= pol.PushPerHour {
 				return nil, ErrCooldown
 			}
+			meta := map[string]any{
+				"ip":        effectiveIP,
+				"client_ip": clientIP,
+				"host_ip":   hostIP,
+				"ua":        ua,
+				"service":   service,
+				"host":      host,
+				"client":    client,
+				"purpose":   purpose,
+				"username":  user.Username,
+			}
 			c2 := &store.Challenge{
 				UserID:       user.ID,
 				Channel:      channel.TelegramPush,
@@ -321,11 +380,18 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 				ExpiresAt:    now.Add(pol.CodeTTL),
 				AttemptsLeft: 1,
 				Purpose:      purpose,
+				Metadata:     meta,
 			}
 			if err := c.st.ChallengeCreate(ctx, c2); err != nil {
 				return nil, err
 			}
-			if err := push.SendPush(ctx, *user.TelegramChatID, user.Username, ip, ua, c2.ID); err != nil {
+			var pushErr error
+			if pushSvc, ok := push.(PushNotifierWithService); ok {
+				pushErr = pushSvc.SendPushWithService(ctx, *user.TelegramChatID, user.Username, effectiveIP, ua, service, hostIP, c2.ID)
+			} else {
+				pushErr = push.SendPush(ctx, *user.TelegramChatID, user.Username, effectiveIP, ua, c2.ID)
+			}
+			if pushErr != nil {
 				// Осиротевший челлендж держал бы cooldown следующего
 				// push — удаляем (WithoutCancel: доставка могла упасть
 				// из-за отмены ctx).
@@ -335,9 +401,11 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 						"id", c2.ID, "error", derr)
 				}
 				c.audit(ctx, user.Username, "push_sent",
-					map[string]any{"purpose": purpose, "error": redactErrText(err)}, ip, "fail")
+					map[string]any{"purpose": purpose, "service": service, "error": redactErrText(pushErr)}, effectiveIP, "fail")
 				continue
 			}
+			c.audit(ctx, user.Username, "push_sent",
+				map[string]any{"purpose": purpose, "service": service, "challenge_id": c2.ID.String()}, effectiveIP, "ok")
 			return c2, nil
 
 		case channel.AppPush:
@@ -362,9 +430,14 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 
 			numMatch := secrets.GenDigits(2)
 			meta := map[string]any{
-				"ip":           ip,
+				"ip":           effectiveIP,
+				"client_ip":    clientIP,
+				"host_ip":      hostIP,
 				"ua":           ua,
 				"purpose":      purpose,
+				"service":      service,
+				"host":         host,
+				"client":       client,
 				"number_match": numMatch,
 				"username":     user.Username,
 			}
@@ -381,18 +454,28 @@ func (c *Core) StartWithMeta(ctx context.Context, user *store.User, purpose, ip,
 				return nil, err
 			}
 			expiresSecs := int(time.Until(c2.ExpiresAt).Seconds())
-			if err := appPush.SendAppPush(ctx, user.ID, user.Username, ip, ua, purpose, numMatch, c2.ID, expiresSecs); err != nil {
+			displayService := service
+			if hostIP != "" && !strings.Contains(displayService, hostIP) {
+				displayService = service + " [" + hostIP + "]"
+			}
+			var pushErr error
+			if apm, ok := appPush.(AppPushNotifierWithMeta); ok {
+				_, pushErr = apm.SendAppPushWithMeta(ctx, user.ID, user.Username, effectiveIP, clientIP, hostIP, host, ua, client, displayService, numMatch, c2.ID, expiresSecs)
+			} else {
+				pushErr = appPush.SendAppPush(ctx, user.ID, user.Username, effectiveIP, ua, displayService, numMatch, c2.ID, expiresSecs)
+			}
+			if pushErr != nil {
 				if _, derr := c.st.Pool().Exec(context.WithoutCancel(ctx),
 					`DELETE FROM challenges WHERE id = $1`, c2.ID); derr != nil {
 					slog.Warn("auth: удаление app_push челленджа после ошибки доставки",
 						"id", c2.ID, "error", derr)
 				}
 				c.audit(ctx, user.Username, "app_push_sent",
-					map[string]any{"purpose": purpose, "error": redactErrText(err)}, ip, "fail")
+					map[string]any{"purpose": purpose, "service": service, "error": redactErrText(pushErr)}, effectiveIP, "fail")
 				continue
 			}
 			c.audit(ctx, user.Username, "app_push_sent",
-				map[string]any{"purpose": purpose, "challenge_id": c2.ID.String(), "number_match": numMatch}, ip, "ok")
+				map[string]any{"purpose": purpose, "service": service, "challenge_id": c2.ID.String(), "number_match": numMatch}, effectiveIP, "ok")
 			return c2, nil
 		}
 	}
@@ -547,6 +630,25 @@ func (c *Core) VerifyPasswordAndCode(ctx context.Context, username, password, co
 		return nil, false, ErrLocked
 	}
 
+	auditDetail := func(base map[string]any) map[string]any {
+		if s, ok := ctx.Value(CtxKeyService).(string); ok && s != "" {
+			base["service"] = s
+		}
+		if h, ok := ctx.Value(CtxKeyHost).(string); ok && h != "" {
+			base["host"] = h
+		}
+		if hip, ok := ctx.Value(CtxKeyHostIP).(string); ok && hip != "" {
+			base["host_ip"] = hip
+		}
+		if cip, ok := ctx.Value(CtxKeyClientIP).(string); ok && cip != "" {
+			base["client_ip"] = cip
+		}
+		if cl, ok := ctx.Value(CtxKeyDevice).(string); ok && cl != "" {
+			base["client"] = cl
+		}
+		return base
+	}
+
 	// Кандидаты «пароль+код»: явный код или сплиты строки пароля.
 	cands := []Split{{Password: password, Code: code}}
 	if code == "" {
@@ -560,20 +662,20 @@ func (c *Core) VerifyPasswordAndCode(ctx context.Context, username, password, co
 			continue
 		}
 		if _, err := c.pv.Verify(ctx, username, cands[i].Password); err == nil {
-			c.audit(ctx, username, "login_ok", map[string]any{"mode": "password+code"}, "", "ok")
+			c.audit(ctx, username, "login_ok", auditDetail(map[string]any{"mode": "password+code"}), "", "ok")
 			return user, true, nil
 		}
-		c.audit(ctx, username, "login_fail", map[string]any{"reason": "bad_credentials"}, "", "fail")
+		c.audit(ctx, username, "login_fail", auditDetail(map[string]any{"reason": "bad_credentials"}), "", "fail")
 		return nil, false, nil
 	}
 
 	// Фаза 2: код не опознан ни в одном кандидате — верен ли сам пароль
 	// (полная строка, ровно одна проверка)?
 	if _, err := c.pv.Verify(ctx, username, password); err == nil {
-		c.audit(ctx, username, "login_fail", map[string]any{"reason": "bad_code"}, "", "fail")
+		c.audit(ctx, username, "login_fail", auditDetail(map[string]any{"reason": "bad_code"}), "", "fail")
 		return user, false, nil
 	}
-	c.audit(ctx, username, "login_fail", map[string]any{"reason": "bad_credentials"}, "", "fail")
+	c.audit(ctx, username, "login_fail", auditDetail(map[string]any{"reason": "bad_credentials"}), "", "fail")
 	return nil, false, nil
 }
 
@@ -761,6 +863,15 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		clientDesc = d
 	}
 
+	clientIP := srcIP
+	if cip, ok := ctx.Value(CtxKeyClientIP).(string); ok && cip != "" {
+		clientIP = cip
+	}
+	nasIP := srcIP
+	if nip, ok := ctx.Value(CtxKeyHostIP).(string); ok && nip != "" {
+		nasIP = nip
+	}
+
 	// Push-челлендж (pending) и фан-аут доставки: приложение (WS/SSE)
 	// всегда + Telegram при привязке — один челлендж, оба канала. Для
 	// RADIUS (Wi-Fi 802.1X / VPN) клиент подключается через сетевой стек
@@ -769,10 +880,13 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 	// При возобновлении живого челленджа — не создаём и не шлём заново.
 	if !resumed {
 		meta := map[string]any{
-			"ip":       srcIP,
-			"purpose":  svc,
-			"device":   clientDesc,
-			"username": username,
+			"ip":        clientIP,
+			"client_ip": clientIP,
+			"host_ip":   nasIP,
+			"service":   svc,
+			"purpose":   svc,
+			"device":    clientDesc,
+			"username":  username,
 		}
 		chChannel := channel.TelegramPush
 		if sendApp {
@@ -800,17 +914,17 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		var appErr error
 		if sendApp {
 			if counted, ok := appPush.(countedAppPush); ok {
-				delivered, appErr = counted.SendAppPushCounted(ctx, user.ID, username, srcIP, clientDesc, svc, "", pushCh.ID, expiresSecs)
+				delivered, appErr = counted.SendAppPushCounted(ctx, user.ID, username, clientIP, clientDesc, svc, "", pushCh.ID, expiresSecs)
 			} else {
-				appErr = appPush.SendAppPush(ctx, user.ID, username, srcIP, clientDesc, svc, "", pushCh.ID, expiresSecs)
+				appErr = appPush.SendAppPush(ctx, user.ID, username, clientIP, clientDesc, svc, "", pushCh.ID, expiresSecs)
 				delivered = 1 // количество неизвестно — считаем доставленным
 			}
 			if appErr != nil {
 				c.audit(ctx, username, "app_push_sent",
-					map[string]any{"purpose": svc, "error": redactErrText(appErr)}, srcIP, "fail")
+					map[string]any{"purpose": svc, "service": svc, "error": redactErrText(appErr)}, clientIP, "fail")
 			} else {
 				c.audit(ctx, username, "app_push_sent",
-					map[string]any{"purpose": svc, "challenge_id": pushCh.ID.String(), "online_clients": delivered}, srcIP, "ok")
+					map[string]any{"purpose": svc, "service": svc, "challenge_id": pushCh.ID.String(), "online_clients": delivered}, clientIP, "ok")
 			}
 		}
 
@@ -818,15 +932,21 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 		// challenge ID — кнопка бота аппрувит тот же челлендж).
 		tgOK := false
 		if sendTg {
-			if err := push.SendPush(ctx, *user.TelegramChatID, username, srcIP, clientDesc, pushCh.ID); err != nil {
+			var tgErr error
+			if pushSvc, ok := push.(PushNotifierWithService); ok {
+				tgErr = pushSvc.SendPushWithService(ctx, *user.TelegramChatID, username, clientIP, clientDesc, svc, nasIP, pushCh.ID)
+			} else {
+				tgErr = push.SendPush(ctx, *user.TelegramChatID, username, clientIP, clientDesc, pushCh.ID)
+			}
+			if tgErr != nil {
 				c.audit(ctx, username, "push_sent",
-					map[string]any{"purpose": svc, "error": redactErrText(err)}, srcIP, "fail")
+					map[string]any{"purpose": svc, "service": svc, "error": redactErrText(tgErr)}, clientIP, "fail")
 				slog.Warn("radius: доставка telegram-push не удалась (канал приложения продолжает работать)",
-					"user", username, "error", err)
+					"user", username, "error", tgErr)
 			} else {
 				tgOK = true
 				c.audit(ctx, username, "push_sent",
-					map[string]any{"purpose": svc, "challenge_id": pushCh.ID.String()}, srcIP, "ok")
+					map[string]any{"purpose": svc, "service": svc, "challenge_id": pushCh.ID.String()}, clientIP, "ok")
 			}
 		}
 

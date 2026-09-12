@@ -77,6 +77,14 @@ func ParseUserAgent(ua string) DeviceDetails {
 	case strings.Contains(ua, "Macintosh") || strings.Contains(ua, "Mac OS X"):
 		details.Device = "Apple Mac"
 		details.OS = "macOS"
+	case strings.Contains(ua, "Ligament-2FA-CredentialProvider"):
+		details.Device = "Windows Компьютер"
+		details.OS = "Windows (RDP / Вход)"
+		details.Browser = "Credential Provider"
+	case strings.Contains(ua, "Ligament-2FA-Client") || strings.Contains(ua, "LigamentClient"):
+		details.Device = "Клиентское приложение"
+		details.OS = "Ligament Authenticator"
+		details.Browser = "Ligament App"
 	case strings.Contains(ua, "Windows NT 10.0"):
 		details.Device = "ПК"
 		details.OS = "Windows 10/11"
@@ -214,3 +222,13 @@ func FormatIPDescription(ipStr string) string {
 	}
 	return ipStr
 }
+
+// IsPrivateIP проверяет, является ли IP частным адресом локальной сети (RFC 1918 / RFC 4193).
+func IsPrivateIP(ipStr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	if ip == nil {
+		return false
+	}
+	return ip.IsPrivate() || ip.IsLoopback()
+}
+

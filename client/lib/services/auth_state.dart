@@ -166,9 +166,12 @@ class AuthState extends ChangeNotifier {
     activePrompt = prompt;
     if (cid != null && cid.isNotEmpty && isNew && !_alertedChallengeIds.contains(cid)) {
       _alertedChallengeIds.add(cid);
+      final clientIp = prompt['client_ip'] ?? prompt['ip'] ?? '—';
+      final hostIp = prompt['host_ip'];
+      final ipText = hostIp != null ? '$clientIp → $hostIp' : '$clientIp';
       alert.triggerAlert(
-        title: 'Запрос на авторизацию: ${prompt['service'] ?? 'Ligament 2FA'}',
-        body: 'Инициатор: ${prompt['who'] ?? 'Сотрудник'} (IP: ${prompt['ip'] ?? '—'})',
+        title: 'Запрос на вход: ${prompt['service'] ?? 'Ligament 2FA'}',
+        body: '${prompt['who'] ?? 'Сотрудник'} (IP: $ipText)',
         challengeId: cid,
       );
     }
@@ -445,14 +448,19 @@ class AuthState extends ChangeNotifier {
         // RADIUS-push из polling-фолбэка (WS был offline/в трее).
         final first = pendingChallenges.first;
         final meta = first['metadata'] as Map<String, dynamic>? ?? {};
+        final clientIp = meta['client_ip']?.toString();
+        final hostIp = meta['host_ip']?.toString();
+        final serviceName = meta['service']?.toString() ?? first['purpose']?.toString() ?? '2FA Login';
         _surfacePrompt({
           'challenge_id': first['id'],
           'who': meta['username'] ?? currentUser?['username'],
-          'ip': meta['ip'] ?? '—',
-          // RADIUS-push хранит описание клиента в metadata.device,
-          // web-login — в metadata.ua.
+          'ip': (clientIp != null && clientIp.isNotEmpty) ? clientIp : (meta['ip'] ?? '—'),
+          'client_ip': clientIp,
+          'host_ip': hostIp,
+          'host': meta['host'],
+          'device': meta['device'] ?? meta['client'],
           'ua': meta['ua'] ?? meta['device'] ?? '—',
-          'service': first['purpose'] ?? '2FA Login',
+          'service': serviceName,
           'number_match': meta['number_match'],
           'expires_in_seconds': first['expires_in_seconds'],
         });

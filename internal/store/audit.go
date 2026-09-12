@@ -26,11 +26,12 @@ type AuditRow struct {
 // AuditFilter — необязательные фильтры AuditList; нулевые значения не
 // ограничивают выборку.
 type AuditFilter struct {
-	Username string
-	Event    string
-	Since    time.Time
-	Until    time.Time
-	Limit    int // <=0 → 100
+	Username      string
+	Event         string
+	ExcludeEvents []string
+	Since         time.Time
+	Until         time.Time
+	Limit         int // <=0 → 100
 }
 
 // Audit записывает событие в audit_log. detail == nil сохраняется как NULL;
@@ -91,6 +92,12 @@ func (s *Store) AuditList(ctx context.Context, f AuditFilter) ([]*AuditRow, erro
 	if f.Event != "" {
 		args = append(args, f.Event)
 		fmt.Fprintf(&where, " AND event = $%d", len(args))
+	}
+	for _, ex := range f.ExcludeEvents {
+		if ex != "" {
+			args = append(args, ex)
+			fmt.Fprintf(&where, " AND event <> $%d", len(args))
+		}
 	}
 	if !f.Since.IsZero() {
 		args = append(args, f.Since)
