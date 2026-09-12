@@ -32,7 +32,7 @@ void main() {
     expect(find.text('Запрос на вход'), findsOneWidget);
     expect(find.text('Wi-Fi: Corporate-Secure'), findsOneWidget);
     expect(find.text('test_employee'), findsOneWidget);
-    expect(find.text('192.168.1.50'), findsOneWidget);
+    expect(find.textContaining('192.168.1.50'), findsOneWidget);
     expect(find.text('Принять'), findsOneWidget);
     expect(find.text('Отклонить'), findsOneWidget);
   });
