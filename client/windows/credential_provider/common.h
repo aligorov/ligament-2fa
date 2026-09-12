@@ -1,4 +1,4 @@
-﻿// common.h — Common definitions, logging, and configuration for Ligament 2FA Credential Provider
+// common.h — Common definitions, logging, and configuration for Ligament 2FA Credential Provider
 #pragma once
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -46,70 +46,131 @@ struct Config {
 
     static Config LoadFromRegistry() {
         Config cfg;
-        HKEY hKey = nullptr;
-        // Priority 1: GPO policy
-        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Ligament\\2FA", 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
-            // Priority 2: Local app settings
-            RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Ligament\\2FA", 0, KEY_READ, &hKey);
-        }
 
-        if (hKey) {
+        HKEY hKeyPolicy = nullptr;
+        RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Ligament\\2FA", 0, KEY_READ | KEY_WOW64_64KEY, &hKeyPolicy);
+
+        HKEY hKeyLocal = nullptr;
+        RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Ligament\\2FA", 0, KEY_READ | KEY_WOW64_64KEY, &hKeyLocal);
+
+        auto readString = [&](const wchar_t* name, std::wstring& outVal) -> bool {
             wchar_t buf[2048] = {0};
             DWORD dwType = 0, dwSize = sizeof(buf);
-            if (RegQueryValueExW(hKey, L"ServerURL", nullptr, &dwType, (LPBYTE)buf, &dwSize) == ERROR_SUCCESS && dwType == REG_SZ) {
-                if (wcslen(buf) > 0) cfg.serverUrl = buf;
-            }
-
-            DWORD dwVal = 0;
-            dwSize = sizeof(dwVal);
-            if (RegQueryValueExW(hKey, L"RDP2FAEnabled", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
-                cfg.rdp2faEnabled = (dwVal != 0);
-            }
-            if (RegQueryValueExW(hKey, L"Console2FAEnabled", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
-                cfg.console2faEnabled = (dwVal != 0);
-            }
-            if (RegQueryValueExW(hKey, L"FIDO2Enabled", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
-                cfg.fido2Enabled = (dwVal != 0);
-            }
-            if (RegQueryValueExW(hKey, L"PushTimeoutSeconds", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS && dwVal > 0) {
-                cfg.pushTimeoutSec = (int)dwVal;
-            }
-            if (RegQueryValueExW(hKey, L"FailClose", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
-                cfg.failClose = (dwVal != 0);
-            }
-            if (RegQueryValueExW(hKey, L"AllowSelfSigned", nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS) {
-                cfg.allowSelfSigned = (dwVal != 0);
-            }
-
-            // Bypass accounts (comma separated)
-            dwSize = sizeof(buf);
-            if (RegQueryValueExW(hKey, L"BypassAccounts", nullptr, &dwType, (LPBYTE)buf, &dwSize) == ERROR_SUCCESS && dwType == REG_SZ) {
-                std::wstringstream ss(buf);
-                std::wstring item;
-                while (std::getline(ss, item, L',')) {
-                    // Trim spaces
-                    size_t first = item.find_first_not_of(L" \t");
-                    if (first != std::wstring::npos) {
-                        size_t last = item.find_last_not_of(L" \t");
-                        cfg.bypassAccounts.push_back(item.substr(first, (last - first + 1)));
-                    }
+            // 1. Check GPO policy first
+            if (hKeyPolicy && RegQueryValueExW(hKeyPolicy, name, nullptr, &dwType, (LPBYTE)buf, &dwSize) == ERROR_SUCCESS && (dwType == REG_SZ || dwType == REG_EXPAND_SZ)) {
+                std::wstring s = buf;
+                size_t first = s.find_first_not_of(L" \t\r\n");
+                if (first != std::wstring::npos) {
+                    size_t last = s.find_last_not_of(L" \t\r\n");
+                    outVal = s.substr(first, last - first + 1);
+                    return true;
                 }
             }
+            // 2. Fallback to Local machine settings
+            dwSize = sizeof(buf);
+            if (hKeyLocal && RegQueryValueExW(hKeyLocal, name, nullptr, &dwType, (LPBYTE)buf, &dwSize) == ERROR_SUCCESS && (dwType == REG_SZ || dwType == REG_EXPAND_SZ)) {
+                std::wstring s = buf;
+                size_t first = s.find_first_not_of(L" \t\r\n");
+                if (first != std::wstring::npos) {
+                    size_t last = s.find_last_not_of(L" \t\r\n");
+                    outVal = s.substr(first, last - first + 1);
+                    return true;
+                }
+            }
+            return false;
+        };
 
-            RegCloseKey(hKey);
+        auto readDword = [&](const wchar_t* name, bool& outVal) -> bool {
+            DWORD dwVal = 0, dwType = 0, dwSize = sizeof(dwVal);
+            if (hKeyPolicy && RegQueryValueExW(hKeyPolicy, name, nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS && (dwType == REG_DWORD)) {
+                outVal = (dwVal != 0);
+                return true;
+            }
+            if (hKeyLocal && RegQueryValueExW(hKeyLocal, name, nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS && (dwType == REG_DWORD)) {
+                outVal = (dwVal != 0);
+                return true;
+            }
+            return false;
+        };
+
+        auto readInt = [&](const wchar_t* name, int& outVal) -> bool {
+            DWORD dwVal = 0, dwType = 0, dwSize = sizeof(dwVal);
+            if (hKeyPolicy && RegQueryValueExW(hKeyPolicy, name, nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS && (dwType == REG_DWORD)) {
+                if (dwVal > 0) outVal = (int)dwVal;
+                return true;
+            }
+            if (hKeyLocal && RegQueryValueExW(hKeyLocal, name, nullptr, &dwType, (LPBYTE)&dwVal, &dwSize) == ERROR_SUCCESS && (dwType == REG_DWORD)) {
+                if (dwVal > 0) outVal = (int)dwVal;
+                return true;
+            }
+            return false;
+        };
+
+        readString(L"ServerURL", cfg.serverUrl);
+        readDword(L"RDP2FAEnabled", cfg.rdp2faEnabled);
+        readDword(L"Console2FAEnabled", cfg.console2faEnabled);
+        readDword(L"FIDO2Enabled", cfg.fido2Enabled);
+        readInt(L"PushTimeoutSeconds", cfg.pushTimeoutSec);
+        readDword(L"FailClose", cfg.failClose);
+        readDword(L"AllowSelfSigned", cfg.allowSelfSigned);
+
+        std::wstring bypassRaw;
+        if (readString(L"BypassAccounts", bypassRaw)) {
+            cfg.bypassAccounts.clear();
+            for (auto& ch : bypassRaw) {
+                if (ch == L';' || ch == L'|') ch = L',';
+            }
+            std::wstringstream ss(bypassRaw);
+            std::wstring item;
+            while (std::getline(ss, item, L',')) {
+                size_t first = item.find_first_not_of(L" \t\r\n");
+                if (first != std::wstring::npos) {
+                    size_t last = item.find_last_not_of(L" \t\r\n");
+                    cfg.bypassAccounts.push_back(item.substr(first, (last - first + 1)));
+                }
+            }
         }
+
+        if (hKeyPolicy) RegCloseKey(hKeyPolicy);
+        if (hKeyLocal) RegCloseKey(hKeyLocal);
+
         return cfg;
     }
 
-    bool IsBypassAccount(const std::wstring& username) const {
-        // A UPN input (user@corp.local) is additionally matched by its
-        // local part, so "administrator@corp.local" hits the SAM-name
-        // whitelist entry "administrator".
-        size_t at = username.find(L'@');
+    bool IsBypassAccount(const std::wstring& username, const std::wstring& domain = L"") const {
+        if (username.empty() || bypassAccounts.empty()) return false;
+
+        // Clean user: extract pure username (without domain/UPN/slashes)
+        std::wstring rawUser = username;
+        size_t slash = rawUser.find_last_of(L"\\/");
+        if (slash != std::wstring::npos && slash + 1 < rawUser.length()) {
+            rawUser = rawUser.substr(slash + 1);
+        }
+        size_t at = rawUser.find(L'@');
+        if (at != std::wstring::npos) {
+            rawUser = rawUser.substr(0, at);
+        }
+
+        std::wstring fullNetbios = domain.empty() ? username : domain + L"\\" + rawUser;
+        std::wstring fullUpn = domain.empty() ? username : rawUser + L"@" + domain;
+
         for (const auto& acc : bypassAccounts) {
             if (_wcsicmp(acc.c_str(), username.c_str()) == 0) return true;
-            if (at != std::wstring::npos &&
-                _wcsicmp(acc.c_str(), username.substr(0, at).c_str()) == 0) return true;
+            if (_wcsicmp(acc.c_str(), rawUser.c_str()) == 0) return true;
+            if (_wcsicmp(acc.c_str(), fullNetbios.c_str()) == 0) return true;
+            if (_wcsicmp(acc.c_str(), fullUpn.c_str()) == 0) return true;
+
+            // Also check if acc itself has domain/slash/@ and compare pure parts
+            std::wstring pureAcc = acc;
+            size_t accSlash = pureAcc.find_last_of(L"\\/");
+            if (accSlash != std::wstring::npos && accSlash + 1 < pureAcc.length()) {
+                pureAcc = pureAcc.substr(accSlash + 1);
+            }
+            size_t accAt = pureAcc.find(L'@');
+            if (accAt != std::wstring::npos) {
+                pureAcc = pureAcc.substr(0, accAt);
+            }
+            if (_wcsicmp(pureAcc.c_str(), rawUser.c_str()) == 0) return true;
         }
         return false;
     }

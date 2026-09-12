@@ -63,6 +63,8 @@
       <string id="FailClose_Policy_Help">When enabled (Fail-Close), logon is denied if the Ligament server is unreachable. When disabled, emergency local admin access is permitted.</string>
       <string id="BypassAccounts_Policy">Bypass Accounts (Emergency Whitelist)</string>
       <string id="BypassAccounts_Policy_Help">Comma-separated list of usernames exempt from 2FA (e.g. Administrator,admin) for emergency break-glass recovery.</string>
+      <string id="AllowSelfSigned_Policy">Allow Self-Signed SSL Certificates</string>
+      <string id="AllowSelfSigned_Policy_Help">When enabled, allows connecting to a Ligament 2FA server using a self-signed TLS/SSL certificate (useful for testing and isolated corporate environments).</string>
     </stringTable>
     <presentationTable>
       <presentation id="ServerURL_Presentation">

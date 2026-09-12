@@ -222,7 +222,7 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
     case FID_SWITCH_FACTOR_BTN:
         if (m_currentMode == MODE_FIDO2) val = L"Переключить на Telegram Push / Код";
         else if (m_currentMode == MODE_PUSH) val = L"Переключить на ввод TOTP / YubiKey OTP";
-        else val = L"Переключить на ключ YubiKey (FIDO2)";
+        else val = (m_config.fido2Enabled && m_webAuthn && m_webAuthn->IsAvailable()) ? L"Переключить на ключ YubiKey (FIDO2)" : L"Переключить на Telegram Push";
         break;
     default:
         break;
@@ -463,9 +463,6 @@ void LigamentCredential::RunPushPolling() {
                     m_pollState.done = true;
                 }
                 LeaveCriticalSection(&m_csPoll);
-                if (m_pEvents) {
-                    m_pEvents->OnCredentialsChanged(this);
-                }
                 return;
             }
             // "pending" and unknown statuses: keep polling
@@ -483,9 +480,6 @@ void LigamentCredential::RunPushPolling() {
         m_pollState.done = true;
     }
     LeaveCriticalSection(&m_csPoll);
-    if (m_pEvents) {
-        m_pEvents->OnCredentialsChanged(this);
-    }
 }
 
 void LigamentCredential::StopPollThread() {
@@ -544,7 +538,7 @@ HRESULT LigamentCredential::GetSerialization(
     }
 
     // 1. Check bypass accounts (Emergency / Break-Glass)
-    if (m_config.IsBypassAccount(m_username)) {
+    if (m_config.IsBypassAccount(m_username, m_domain)) {
         // Do not log the user name: this DLL runs in winlogon/LogonUI context
         LogDebug(L"Account is in bypass whitelist, skipping 2FA");
         return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
@@ -568,6 +562,10 @@ HRESULT LigamentCredential::GetSerialization(
             m_authenticated = true;
             return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
         } else {
+            if (!m_config.failClose && err == "network_error") {
+                LogDebug(L"Fail-Open allowed in OTP mode due to network error and policy");
+                return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
+            }
             CPLog(L"otp: отклонён err=%hs", err.c_str());
             std::wstring msg = L"Вход отклонен: " + DescribeServerError(err, m_apiClient->LastRetryAfterSec());
             SHStrDupW(msg.c_str(), ppszOptionalStatusText);

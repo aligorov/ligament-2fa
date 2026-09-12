@@ -242,5 +242,15 @@
         <text id="BypassAccounts_Value" valueName="BypassAccounts" required="false" maxLength="1024" />
       </elements>
     </policy>
+
+    <!-- RDP 2FA: Allow Self-Signed Certificate -->
+    <policy name="AllowSelfSigned_Policy" class="Machine" displayName="$(string.AllowSelfSigned_Policy)"
+      explainText="$(string.AllowSelfSigned_Policy_Help)" key="Software\Policies\Ligament\2FA"
+      valueName="AllowSelfSigned">
+      <parentCategory ref="RdpSettings" />
+      <supportedOn ref="windows:SUPPORTED_Windows7" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
   </policies>
 </policyDefinitions>

@@ -174,6 +174,21 @@ class GPOService {
         return value.trim();
       }
     } catch (_) {}
+
+    // Fallback: if queried under Policies, check local HKLM\SOFTWARE\Ligament\2FA
+    if (subkey.startsWith(r'SOFTWARE\Policies\Ligament\2FA')) {
+      try {
+        final fallbackSubkey = subkey.replaceFirst(
+            r'SOFTWARE\Policies\Ligament\2FA', r'SOFTWARE\Ligament\2FA');
+        final key =
+            Registry.openPath(RegistryHive.localMachine, path: fallbackSubkey);
+        final value = key.getValueAsString(valueName);
+        key.close();
+        if (value != null && value.trim().isNotEmpty) {
+          return value.trim();
+        }
+      } catch (_) {}
+    }
     return null;
   }
 
@@ -184,6 +199,19 @@ class GPOService {
       key.close();
       return value;
     } catch (_) {}
+
+    // Fallback: if queried under Policies, check local HKLM\SOFTWARE\Ligament\2FA
+    if (subkey.startsWith(r'SOFTWARE\Policies\Ligament\2FA')) {
+      try {
+        final fallbackSubkey = subkey.replaceFirst(
+            r'SOFTWARE\Policies\Ligament\2FA', r'SOFTWARE\Ligament\2FA');
+        final key =
+            Registry.openPath(RegistryHive.localMachine, path: fallbackSubkey);
+        final value = key.getValueAsInt(valueName);
+        key.close();
+        return value;
+      } catch (_) {}
+    }
     return null;
   }
 

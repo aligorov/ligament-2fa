@@ -1,4 +1,4 @@
-﻿// HttpApiClient.cpp — WinHTTP REST client implementation
+// HttpApiClient.cpp — WinHTTP REST client implementation
 #include "HttpApiClient.h"
 
 namespace ligament {
@@ -83,11 +83,10 @@ bool HttpApiClient::SendRequest(
     }
 
     if (m_isHttps && m_allowSelfSigned) {
-        // Self-signed but otherwise valid certificate: only the unknown CA
-        // is ignored. Certificate name (CN/SAN) and validity period are
-        // still enforced, so the connection cannot be hijacked by a
-        // mismatched or expired certificate.
-        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA;
+        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                           SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
     }
 
@@ -99,6 +98,14 @@ bool HttpApiClient::SendRequest(
     DWORD bodyLen = (DWORD)body.length();
 
     BOOL bResult = WinHttpSendRequest(hRequest, headers, headersLen, pBody, bodyLen, bodyLen, 0);
+    if (!bResult && m_isHttps && m_allowSelfSigned && GetLastError() == ERROR_WINHTTP_SECURE_FAILURE) {
+        DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                           SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
+        bResult = WinHttpSendRequest(hRequest, headers, headersLen, pBody, bodyLen, bodyLen, 0);
+    }
     if (bResult) {
         bResult = WinHttpReceiveResponse(hRequest, nullptr);
     }

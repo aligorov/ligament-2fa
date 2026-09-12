@@ -98,9 +98,12 @@
         <!-- Local Default Settings -->
         <RegistryKey Root="HKLM" Key="SOFTWARE\Ligament\2FA">
           <RegistryValue Name="RDP2FAEnabled" Type="integer" Value="1" />
+          <RegistryValue Name="Console2FAEnabled" Type="integer" Value="0" />
           <RegistryValue Name="FIDO2Enabled" Type="integer" Value="1" />
           <RegistryValue Name="PushTimeoutSeconds" Type="integer" Value="45" />
           <RegistryValue Name="FailClose" Type="integer" Value="1" />
+          <RegistryValue Name="AllowSelfSigned" Type="integer" Value="0" />
+          <RegistryValue Name="BypassAccounts" Type="string" Value="" />
           <RegistryValue Name="ServerURL" Type="string" Value="[SERVERURL]" />
         </RegistryKey>
       </Component>

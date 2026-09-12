@@ -63,6 +63,8 @@
       <string id="FailClose_Policy_Help">Если включено (Fail-Close), при отсутствии сетевой связи с сервером Ligament вход блокируется. Если отключено, разрешается вход для аварийного восстановления.</string>
       <string id="BypassAccounts_Policy">Список учетных записей-исключений (Bypass Whitelist)</string>
       <string id="BypassAccounts_Policy_Help">Задает список логинов через запятую (например: Administrator,admin), для которых 2FA не запрашивается (аварийный доступ break-glass).</string>
+      <string id="AllowSelfSigned_Policy">Разрешить самоподписанный SSL-сертификат</string>
+      <string id="AllowSelfSigned_Policy_Help">Если параметр включен, разрешается подключение к серверу Ligament 2FA с самоподписанным TLS/SSL сертификатом (полезно для тестовых и изолированных корпоративных контуров).</string>
     </stringTable>
     <presentationTable>
       <presentation id="ServerURL_Presentation">
