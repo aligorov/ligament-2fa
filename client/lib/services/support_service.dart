@@ -608,9 +608,20 @@ class SupportService extends ChangeNotifier {
     };
   }
 
-  void _sendScreenList() {
+  Future<void> _sendScreenList() async {
     if (_dataChannel == null || _dataChannel!.state != RTCDataChannelState.RTCDataChannelOpen) return;
     try {
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+        try {
+          final sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
+          if (sources.isNotEmpty) {
+            _screens = sources.map((s) => {'id': s.id, 'name': s.name}).toList();
+            debugPrint('support_service: обновлен список экранов (${_screens.length}): $_screens');
+          }
+        } catch (e) {
+          debugPrint('support_service: ошибка динамического обновления экранов: $e');
+        }
+      }
       _dataChannel!.send(RTCDataChannelMessage(jsonEncode({
         'type': 'screen_list',
         'screens': _screens,
@@ -648,7 +659,7 @@ class SupportService extends ChangeNotifier {
       _localStream = newStream;
       _currentScreenId = screenId;
 
-      _sendScreenList();
+      await _sendScreenList();
       notifyListeners();
     } catch (e) {
       debugPrint('support_service: ошибка переключения экрана: $e');
@@ -763,7 +774,7 @@ class SupportService extends ChangeNotifier {
     }
 
     if (type == 'screen_list') {
-      _sendScreenList();
+      await _sendScreenList();
       return;
     } else if (type == 'chat_message') {
       try {

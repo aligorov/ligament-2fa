@@ -188,6 +188,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             setState(() {
               _connectionStatus = 'Сеанс завершен сервером';
               _isConnected = false;
+              _currentNumberMatch = null;
             });
           }
         },
@@ -196,6 +197,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
             setState(() {
               _connectionStatus = 'Ошибка соединения: $err';
               _isConnected = false;
+              _currentNumberMatch = null;
             });
           }
         },
@@ -268,11 +270,13 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         setState(() {
           if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
             _isConnected = true;
+            _currentNumberMatch = null;
             _connectionStatus = 'Подключено (P2P)';
           } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
               state == RTCPeerConnectionState.RTCPeerConnectionStateClosed ||
               state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
             _isConnected = false;
+            _currentNumberMatch = null;
             _connectionStatus = 'Отключено ($state)';
           }
         });
@@ -285,6 +289,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
         setState(() {
           _remoteRenderer.srcObject = event.streams[0];
           _isConnected = true;
+          _currentNumberMatch = null;
           _connectionStatus = 'Трансляция активна';
         });
       }
@@ -304,6 +309,11 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
     _dataChannel = channel;
     channel.onDataChannelState = (state) {
       if (state == RTCDataChannelState.RTCDataChannelOpen) {
+        if (mounted) {
+          setState(() {
+            _currentNumberMatch = null;
+          });
+        }
         _sendDataMessage({'type': 'screen_list'});
       }
     };
@@ -1119,29 +1129,47 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
                     ],
                   ),
 
-                  // Выбор монитора (если больше одного)
+                  // Выбор монитора
                   if (_screens.isNotEmpty)
-                    DropdownButton<String>(
-                      value: _selectedScreenId,
-                      dropdownColor: const Color(0xFF1E293B),
-                      underline: const SizedBox(),
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                      items: _screens.map((s) {
-                        return DropdownMenuItem<String>(
-                          value: s['id']?.toString(),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.desktop_windows, size: 14, color: Color(0xFF38BDF8)),
-                              const SizedBox(width: 4),
-                              Text(s['name']?.toString() ?? 'Монитор', overflow: TextOverflow.ellipsis),
-                            ],
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: (val) {
-                        if (val != null) _switchScreen(val);
-                      },
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        DropdownButton<String>(
+                          value: _selectedScreenId,
+                          dropdownColor: const Color(0xFF1E293B),
+                          underline: const SizedBox(),
+                          style: const TextStyle(color: Colors.white, fontSize: 12),
+                          items: _screens.map((s) {
+                            return DropdownMenuItem<String>(
+                              value: s['id']?.toString(),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.desktop_windows, size: 14, color: Color(0xFF38BDF8)),
+                                  const SizedBox(width: 4),
+                                  Text(s['name']?.toString() ?? 'Монитор', overflow: TextOverflow.ellipsis),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (val) {
+                            if (val != null) _switchScreen(val);
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.refresh, size: 16, color: Color(0xFF94A3B8)),
+                          tooltip: 'Обновить список экранов (Win+P "Расширить" на клиенте)',
+                          onPressed: () {
+                            _sendDataMessage({'type': 'screen_list'});
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                duration: Duration(seconds: 2),
+                                content: Text('Запрос обновления списка экранов отправлен...'),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
                     ),
 
                   // Масштабирование
@@ -1369,7 +1397,7 @@ class _SupportOperatorScreenState extends State<SupportOperatorScreen> {
           ),
 
           // Карточка с контрольным числом (если сеанс еще авторизуется клиентом)
-          if (!_isConnected && !_isChatOnly && _currentNumberMatch != null)
+          if (!_isConnected && !_isChatOnly && _currentNumberMatch != null && _connectionStatus.startsWith('Ожидание согласия'))
             Container(
               margin: const EdgeInsets.all(16),
               padding: const EdgeInsets.all(16),
