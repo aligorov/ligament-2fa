@@ -300,9 +300,12 @@ inline std::vector<unsigned char> Base64UrlDecode(const std::string& in) {
     for (int i = 0; i < 64; i++) {
         T["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[i]] = i;
     }
+    T['+'] = 62;
+    T['/'] = 63;
     int val = 0, valb = -8;
     for (unsigned char c : in) {
-        if (T[c] == -1) break;
+        if (c == '=') break;
+        if (T[c] == -1) continue;
         val = (val << 6) + T[c];
         valb += 6;
         if (valb >= 0) {
@@ -365,6 +368,34 @@ inline int ExtractJsonInt(const std::string& json, const std::string& key, int f
     while (end < json.size() && json[end] >= '0' && json[end] <= '9') ++end;
     if (end == pos) return fallback;
     return atoi(json.substr(pos, end - pos).c_str());
+}
+
+inline std::vector<std::string> ExtractAllowCredentialIds(const std::string& json) {
+    std::vector<std::string> ids;
+    size_t acPos = json.find("\"allowCredentials\"");
+    if (acPos == std::string::npos) return ids;
+
+    size_t arrStart = json.find('[', acPos);
+    if (arrStart == std::string::npos) return ids;
+
+    size_t arrEnd = json.find(']', arrStart);
+    if (arrEnd == std::string::npos) return ids;
+
+    std::string sub = json.substr(arrStart, arrEnd - arrStart + 1);
+    size_t pos = 0;
+    while (pos < sub.length()) {
+        size_t idKey = sub.find("\"id\"", pos);
+        if (idKey == std::string::npos) break;
+        size_t colon = sub.find(':', idKey);
+        if (colon == std::string::npos) break;
+        size_t q1 = sub.find('\"', colon);
+        if (q1 == std::string::npos) break;
+        size_t q2 = sub.find('\"', q1 + 1);
+        if (q2 == std::string::npos) break;
+        ids.push_back(sub.substr(q1 + 1, q2 - q1 - 1));
+        pos = q2 + 1;
+    }
+    return ids;
 }
 
 } // namespace ligament

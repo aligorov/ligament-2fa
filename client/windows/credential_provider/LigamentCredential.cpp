@@ -386,6 +386,15 @@ void LigamentCredential::UpdateFieldStates() {
     }
 }
 
+static std::wstring DescribeWebAuthnError(const std::string& err) {
+    if (err == "cancelled_by_user") return L"Операция отменена пользователем";
+    if (err == "timeout") return L"Время ожидания Passkey истекло";
+    if (err == "key_not_found") return L"Подходящий ключ или Passkey не найден";
+    if (err == "bad_keyset") return L"Ключ недоступен или поврежден";
+    if (err == "webauthn_dll_not_available") return L"Служба WebAuthn недоступна";
+    return Utf8ToWide(err);
+}
+
 void LigamentCredential::TriggerFIDO2Auth() {
     if (m_username.empty()) {
         m_statusText = L"Сначала введите имя пользователя";
@@ -406,14 +415,28 @@ void LigamentCredential::TriggerFIDO2Auth() {
     // Extract challenge & rpId from raw options JSON or use server host
     std::string challenge = ExtractJsonString(beginRes.rawOptionsJson, "challenge");
     std::wstring rpId = Utf8ToWide(ExtractJsonString(beginRes.rawOptionsJson, "rpId"));
-    if (rpId.empty()) {
-        // Fallback to server host from URL
-        URL_COMPONENTS comp = { sizeof(comp) };
-        wchar_t host[256] = {0};
-        comp.lpszHostName = host;
-        comp.dwHostNameLength = _countof(host);
-        WinHttpCrackUrl(m_config.serverUrl.c_str(), 0, 0, &comp);
-        rpId = host;
+
+    // Extract allowCredentials list if present
+    std::vector<std::string> allowCredIds = ExtractAllowCredentialIds(beginRes.rawOptionsJson);
+
+    // Compute origin (scheme://host[:port]) from serverUrl
+    URL_COMPONENTS comp = { sizeof(comp) };
+    wchar_t hostBuf[256] = {0};
+    comp.lpszHostName = hostBuf;
+    comp.dwHostNameLength = _countof(hostBuf);
+    std::string origin;
+    if (WinHttpCrackUrl(m_config.serverUrl.c_str(), (DWORD)m_config.serverUrl.length(), 0, &comp)) {
+        if (rpId.empty()) {
+            rpId = hostBuf;
+        }
+        std::string scheme = (comp.nScheme == INTERNET_SCHEME_HTTP) ? "http://" : "https://";
+        origin = scheme + WideToUtf8(hostBuf);
+        if ((comp.nScheme == INTERNET_SCHEME_HTTP && comp.nPort != 80) ||
+            (comp.nScheme == INTERNET_SCHEME_HTTPS && comp.nPort != 443)) {
+            origin += ":" + std::to_string(comp.nPort);
+        }
+    } else if (rpId.empty()) {
+        rpId = L"localhost";
     }
 
     m_statusText = L"Подтвердите вход через Passkey (Windows Hello / телефон / ключ)...";
@@ -421,9 +444,9 @@ void LigamentCredential::TriggerFIDO2Auth() {
 
     std::string assertionJson, authErr;
     HWND hWnd = GetForegroundWindow();
-    bool asserted = m_webAuthn->Authenticate(hWnd, rpId, challenge, assertionJson, authErr);
+    bool asserted = m_webAuthn->Authenticate(hWnd, rpId, challenge, allowCredIds, origin, assertionJson, authErr);
     if (!asserted) {
-        m_statusText = L"Passkey отклонен: " + Utf8ToWide(authErr);
+        m_statusText = L"Passkey отклонен: " + DescribeWebAuthnError(authErr);
         NotifyFieldChanged(FID_STATUS_TEXT);
         return;
     }
@@ -434,7 +457,7 @@ void LigamentCredential::TriggerFIDO2Auth() {
     std::string finishErr;
     if (m_apiClient->WebAuthnFinish(beginRes.handle, assertionJson, finishErr)) {
         m_authenticated = true;
-        m_statusText = L"Passkey успешно подтвержден! Нажмите 'Войти'";
+        m_statusText = L"Passkey подтвержден! Нажмите стрелку для входа";
         NotifyFieldChanged(FID_STATUS_TEXT);
     } else {
         m_statusText = L"Ошибка валидации Passkey: " + DescribeServerError(finishErr, m_apiClient->LastRetryAfterSec());

@@ -1,4 +1,4 @@
-﻿// WebAuthnClient.h — Win32 WebAuthn API client for FIDO2/YubiKey over RDP
+// WebAuthnClient.h — Win32 WebAuthn API client for FIDO2/YubiKey over RDP
 #pragma once
 
 #include "common.h"
@@ -12,12 +12,14 @@ public:
 
     bool IsAvailable() const;
 
-    // Performs physical key assertion (YubiKey / FIDO2 / Windows Hello)
-    // When called over RDP, Windows redirects the prompt to the remote client machine.
+    // Performs physical key assertion (YubiKey / FIDO2 / Windows Hello / Passkey)
+    // Supports all Windows 10 & Windows 11 versions and platforms.
     bool Authenticate(
         HWND hWnd,
         const std::wstring& rpId,
         const std::string& challengeBase64,
+        const std::vector<std::string>& allowCredIdsBase64,
+        const std::string& origin,
         std::string& outAssertionJson,
         std::string& outError
     );
@@ -38,10 +40,14 @@ private:
     );
 
     typedef BOOL (WINAPI *FnWebAuthnIsUserVerifyingPlatformAuthenticatorAvailable)();
+    typedef DWORD (WINAPI *FnWebAuthnGetApiVersionNumber)();
+    typedef PCWSTR (WINAPI *FnWebAuthnGetErrorName)(HRESULT hr);
 
     FnWebAuthnAuthenticatorGetAssertion m_pfnGetAssertion = nullptr;
     FnWebAuthnFreeAssertion m_pfnFreeAssertion = nullptr;
     FnWebAuthnIsUserVerifyingPlatformAuthenticatorAvailable m_pfnIsUVPAA = nullptr;
+    FnWebAuthnGetApiVersionNumber m_pfnGetApiVersionNumber = nullptr;
+    FnWebAuthnGetErrorName m_pfnGetErrorName = nullptr;
 };
 
 } // namespace ligament
