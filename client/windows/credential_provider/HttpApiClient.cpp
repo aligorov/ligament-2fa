@@ -398,6 +398,7 @@ WebAuthnBeginResult HttpApiClient::WebAuthnBegin(
 
     if (statusCode == 200) {
         res.handle = ExtractJsonString(response, "handle");
+        res.challengeId = ExtractJsonString(response, "challenge_id");
         res.rawOptionsJson = response;
         res.success = !res.handle.empty();
         return res;

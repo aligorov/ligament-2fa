@@ -552,15 +552,15 @@ func (p *PublicAPI) handlePoll(w http.ResponseWriter, r *http.Request) {
 
 // pollStatus выводит статус челленджа: expired — просрочен, попытки
 // исчерпаны либо код уже погашен (одноразовый claim); approved/denied —
-// решение по push-кнопкам (использованный push остаётся «approved»:
-// claim забрал успешный вход); остальное — pending.
+// решение по push-кнопкам или QR/Passkey; остальное — pending.
 func pollStatus(ch *store.Challenge, now time.Time) string {
 	if !now.Before(ch.ExpiresAt) || ch.AttemptsLeft <= 0 {
 		return "expired"
 	}
-	// Для push-каналов (telegram_push, app_push) решение пользователя
-	// (approved/denied) имеет наивысший приоритет над флагом used_at.
-	if (ch.Channel == channel.TelegramPush || ch.Channel == channel.AppPush) && ch.PushState != nil {
+	// Решение пользователя (approved/denied) имеет наивысший приоритет
+	// над флагом used_at: claim забрал успешный вход, но poll-клиент
+	// должен получить терминальный approved.
+	if ch.PushState != nil {
 		switch *ch.PushState {
 		case "approved", "denied":
 			return *ch.PushState
@@ -629,7 +629,11 @@ func (p *PublicAPI) handleWABegin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"handle": handle, "options": opts})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"handle":       handle,
+		"challenge_id": webauthn.SessionChallengeID(handle).String(),
+		"options":      opts,
+	})
 }
 
 // ---- POST /api/v1/auth/webauthn/finish ----
@@ -686,8 +690,12 @@ func (p *PublicAPI) handleWAFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Подпись проверена — церемония доказала второй фактор. Создаём
-	// одноразовое «webauthn_web_pending»-окно: web-логин (login/2fa с
+	// Подпись проверена — церемония доказала второй фактор.
+	// 1. Помечаем push_state челленджа как "approved", чтобы опрашивающий клиент
+	// (Windows Credential Provider / RDP / QR-вход) мгновенно впустил пользователя.
+	_ = p.st.ChallengeSetPush(ctx, webauthn.SessionChallengeID(handle), "approved")
+
+	// 2. Создаём одноразовое «webauthn_web_pending»-окно: web-логин (login/2fa с
 	// пустым кодом) погасит его атомарно ровно один раз. Отказ создания —
 	// fail-closed 500: без окна пустой код не пройдёт, клиент повторит
 	// вход обычным кодом.

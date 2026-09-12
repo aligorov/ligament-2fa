@@ -29,3 +29,6 @@ coverage.*
 .superpowers/
 graphify-out/
 
+# Node
+node_modules/
+

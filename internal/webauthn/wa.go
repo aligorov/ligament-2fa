@@ -217,13 +217,13 @@ func (s *Svc) BeginLogin(ctx context.Context, user *store.User) (opts json.RawMe
 	if err != nil {
 		return nil, "", fmt.Errorf("webauthn: BeginLogin(%s): %w", au.WebAuthnName(), err)
 	}
-	handle, err = s.saveSession(ctx, user.ID, session)
-	if err != nil {
-		return nil, "", err
-	}
 	opts, err = json.Marshal(assertion.Response)
 	if err != nil {
 		return nil, "", fmt.Errorf("webauthn: кодирование assertion options: %w", err)
+	}
+	handle, err = s.saveSession(ctx, user.ID, session, opts)
+	if err != nil {
+		return nil, "", err
 	}
 	return opts, handle, nil
 }
@@ -279,11 +279,20 @@ func clientIP(r *http.Request) string {
 
 // ---- сессии церемоний в challenges ----
 
-// sessionChallengeID выводит ID challenges-строки из handle: uuid v5
+// SessionChallengeID выводит ID challenges-строки из handle: uuid v5
 // (SHA-256(namespace || handle), усечён до 128 бит). Handle — 128-битная
 // случайность, поэтому ID невозможно перебрать извне.
-func sessionChallengeID(handle string) uuid.UUID {
+func SessionChallengeID(handle string) uuid.UUID {
 	return uuid.NewHash(sha256.New(), waSessionNS, []byte(handle), 5)
+}
+
+func sessionChallengeID(handle string) uuid.UUID {
+	return SessionChallengeID(handle)
+}
+
+type sessionPayload struct {
+	gowebauthn.SessionData
+	RawOptions json.RawMessage `json:"raw_options,omitempty"`
 }
 
 // saveSession сериализует SessionData и сохраняет челлендж
@@ -291,11 +300,17 @@ func sessionChallengeID(handle string) uuid.UUID {
 // TEXT-колонку push_state (для telegram_push-строк она хранит состояние
 // пуша; строки webauthn_session различаются по purpose и никогда не
 // пересекаются с ними — схема заморожена миграцией 0001). Возвращает handle.
-func (s *Svc) saveSession(ctx context.Context, userID uuid.UUID, session *gowebauthn.SessionData) (string, error) {
+func (s *Svc) saveSession(ctx context.Context, userID uuid.UUID, session *gowebauthn.SessionData, rawOpts ...json.RawMessage) (string, error) {
 	if session == nil {
 		return "", errors.New("webauthn: сессия церемонии пуста")
 	}
-	raw, err := json.Marshal(session)
+	p := sessionPayload{
+		SessionData: *session,
+	}
+	if len(rawOpts) > 0 {
+		p.RawOptions = rawOpts[0]
+	}
+	raw, err := json.Marshal(p)
 	if err != nil {
 		return "", fmt.Errorf("webauthn: кодирование сессии церемонии: %w", err)
 	}
@@ -362,6 +377,44 @@ func (s *Svc) claimSession(ctx context.Context, userID uuid.UUID, handle string)
 		return nil, fmt.Errorf("webauthn: разбор сессии церемонии %s: %w", ch.ID, err)
 	}
 	return &session, nil
+}
+
+// GetLoginSession находит активную сессию входа по handle и возвращает
+// сохранённые PublicKeyCredentialRequestOptions (JSON) и имя пользователя.
+// Сессия не гасится (read-only): гашение выполняет FinishLogin.
+func (s *Svc) GetLoginSession(ctx context.Context, handle string) (opts json.RawMessage, username string, err error) {
+	if handle == "" {
+		return nil, "", errors.New("webauthn: handle сессии церемонии пуст")
+	}
+	ch, err := s.st.ChallengeGet(ctx, sessionChallengeID(handle))
+	if err != nil {
+		return nil, "", fmt.Errorf("webauthn: сессия церемонии не найдена: %w", err)
+	}
+	if ch.Purpose != purposeWASession || ch.Channel != channel.WebAuthn {
+		return nil, "", errors.New("webauthn: челлендж не является сессией церемонии")
+	}
+	if !time.Now().Before(ch.ExpiresAt) {
+		return nil, "", errors.New("webauthn: срок сессии истёк")
+	}
+	if ch.UsedAt != nil {
+		return nil, "", errors.New("webauthn: сессия уже использована")
+	}
+	if len(ch.CodeHash) == 0 || !bytes.Equal(ch.CodeHash, secrets.SHA256(handle)) {
+		return nil, "", errors.New("webauthn: неверный handle сессии")
+	}
+	payload := ""
+	if ch.PushState != nil {
+		payload = *ch.PushState
+	}
+	var p sessionPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return nil, "", fmt.Errorf("webauthn: разбор сессии: %w", err)
+	}
+	user, err := s.st.UserByID(ctx, ch.UserID)
+	if err != nil {
+		return nil, "", fmt.Errorf("webauthn: пользователь не найден: %w", err)
+	}
+	return p.RawOptions, user.Username, nil
 }
 
 // ---- адаптер пользователя и мапперы учётных данных ----

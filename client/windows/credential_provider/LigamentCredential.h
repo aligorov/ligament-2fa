@@ -89,6 +89,10 @@ private:
     std::unique_ptr<HttpApiClient> m_apiClient;
     std::unique_ptr<WebAuthnClient> m_webAuthn;
 
+    HBITMAP m_hQrBmp = nullptr;
+    void ClearQrBitmap();
+    static HBITMAP CreateQrBitmap(const std::string& text, int targetSize = 256);
+
     // Background push polling. GetSerialization starts the worker thread and
     // returns CPGSR_NO_CREDENTIAL_NOT_FINISHED; the worker never touches COM
     // interfaces (m_pEvents) or other LogonUI state — it only updates

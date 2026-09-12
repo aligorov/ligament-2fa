@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net"
 	"net/http"
@@ -91,6 +92,8 @@ func (p *PagesAPI) Register(r chi.Router) {
 	r.Get("/", p.handleRoot)
 	r.Get("/login", p.handleLoginPage)
 	r.Post("/login", p.handleLoginPost)
+	r.Get("/auth/passkey", p.handlePasskeyQRPage)
+	r.Get("/p/{handle}", p.handlePasskeyQRPage)
 	// Логотип белого лейбла как same-origin ресурс (анонимно: нужен странице
 	// входа) — data:URI из настроек не проходит urlFilter html/template,
 	// а внешний https-логотип режется строгой img-src.
@@ -502,6 +505,110 @@ func (p *PagesAPI) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		BaseData: p.baseData(r, "Вход", ""),
 		Next:     safeNext(r.URL.Query().Get("next")),
 	})
+}
+
+// handlePasskeyQRPage — мобильная страница подтверждения входа по Passkey через QR-код.
+func (p *PagesAPI) handlePasskeyQRPage(w http.ResponseWriter, r *http.Request) {
+	if p.wa == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(passkeyQRErrorHTML("WebAuthn / Passkeys отключены на этом сервере.")))
+		return
+	}
+	handle := r.URL.Query().Get("handle")
+	if handle == "" {
+		handle = chi.URLParam(r, "handle")
+	}
+	if handle == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(passkeyQRErrorHTML("Отсутствует параметр сессии handle.")))
+		return
+	}
+
+	opts, username, err := p.wa.GetLoginSession(r.Context(), handle)
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte(passkeyQRErrorHTML("Сессия истекла или недействительна. Пожалуйста, обновите страницу входа на компьютере.")))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(passkeyQRPageHTML(handle, username, string(opts))))
+}
+
+func passkeyQRErrorHTML(msg string) string {
+	return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Ligament 2FA — Вход по Passkey</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+body { display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1rem; background: var(--bg, #0f172a); font-family: system-ui, -apple-system, sans-serif; box-sizing: border-box; }
+.qr-card { max-width: 420px; width: 100%; text-align: center; padding: 2rem; border-radius: 1rem; background: var(--surface, #1e293b); border: 1px solid var(--line, #334155); color: var(--text, #f8fafc); box-sizing: border-box; }
+.qr-icon { font-size: 3rem; margin-bottom: 1rem; }
+.qr-title { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.5rem; }
+.qr-desc { color: var(--muted, #94a3b8); font-size: 0.95rem; line-height: 1.5; margin-bottom: 1.5rem; }
+</style>
+</head>
+<body>
+<div class="qr-card">
+  <div class="qr-icon">⚠️</div>
+  <div class="qr-title">Вход по Passkey</div>
+  <div class="qr-desc">` + template.HTMLEscapeString(msg) + `</div>
+</div>
+</body>
+</html>`
+}
+
+func passkeyQRPageHTML(handle, username, optionsJSON string) string {
+	return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Ligament 2FA — Подтверждение Passkey</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+body { display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1rem; background: var(--bg, #0f172a); font-family: system-ui, -apple-system, sans-serif; box-sizing: border-box; }
+.qr-card { max-width: 420px; width: 100%; text-align: center; padding: 2rem; border-radius: 1rem; background: var(--surface, #1e293b); border: 1px solid var(--line, #334155); color: var(--text, #f8fafc); box-sizing: border-box; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.3); }
+.qr-icon { font-size: 3rem; margin-bottom: 1rem; }
+.qr-title { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.5rem; }
+.qr-user { display: inline-block; padding: 0.35rem 0.85rem; border-radius: 2rem; background: var(--surface-2, #334155); color: var(--accent, #38bdf8); font-size: 0.95rem; font-weight: 600; margin-bottom: 1.25rem; word-break: break-all; }
+.qr-desc { color: var(--muted, #94a3b8); font-size: 0.95rem; line-height: 1.5; margin-bottom: 1.5rem; }
+.btn-large { width: 100%; padding: 0.85rem 1.5rem; font-size: 1.05rem; font-weight: 600; border-radius: 0.75rem; border: none; background: var(--accent, #0284c7); color: #fff; cursor: pointer; transition: background 0.2s; }
+.btn-large:hover { filter: brightness(1.1); }
+.btn-large:disabled { opacity: 0.6; cursor: default; }
+.success-card { display: none; text-align: center; }
+.success-icon { font-size: 3.5rem; color: #22c55e; margin-bottom: 1rem; }
+.success-title { font-size: 1.4rem; font-weight: 700; color: #22c55e; margin-bottom: 0.5rem; }
+.flash { padding: 0.75rem 1rem; border-radius: 0.5rem; font-size: 0.9rem; margin-bottom: 1.25rem; display: none; text-align: left; }
+.flash.err { background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #fca5a5; }
+.flash.ok { background: rgba(34, 197, 94, 0.15); border: 1px solid #22c55e; color: #86efac; }
+</style>
+<script src="/static/passkey_qr.js" defer></script>
+</head>
+<body>
+<div id="passkey-qr-container" class="qr-card" data-handle="` + template.HTMLEscapeString(handle) + `" data-options="` + template.HTMLEscapeString(optionsJSON) + `">
+  <div id="prompt-view">
+    <div class="qr-icon">🔑</div>
+    <div class="qr-title">Вход по Passkey</div>
+    <div class="qr-user">` + template.HTMLEscapeString(username) + `</div>
+    <div class="qr-desc">Для входа на компьютере подтвердите личность с помощью Face ID, Touch ID или ключа безопасности.</div>
+    <div id="auth-status" class="flash"></div>
+    <button id="auth-btn" type="button" class="btn-large">Войти с помощью Passkey</button>
+  </div>
+  <div id="success-view" class="success-card">
+    <div class="success-icon">✓</div>
+    <div class="success-title">Вход подтвержден!</div>
+    <div class="qr-desc">Вы успешно вошли в систему на компьютере.<br>Эту вкладку можно закрыть.</div>
+  </div>
+</div>
+</body>
+</html>`
 }
 
 func maskEmail(email string) string {

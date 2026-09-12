@@ -1,4 +1,4 @@
-﻿// HttpApiClient.h — WinHTTP REST client for Ligament 2FA backend
+// HttpApiClient.h — WinHTTP REST client for Ligament 2FA backend
 #pragma once
 
 #include "common.h"
@@ -8,6 +8,7 @@ namespace ligament {
 struct WebAuthnBeginResult {
     bool success = false;
     std::string handle;
+    std::string challengeId;
     std::string challengeBase64;
     std::string rpId;
     std::vector<std::string> allowCredentialIds;

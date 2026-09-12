@@ -2,6 +2,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,3 +56,23 @@ func TestRetryAfterSeconds(t *testing.T) {
 		}
 	}
 }
+
+// TestPasskeyQRHTML проверяет генерацию HTML-страниц для Passkey QR-кода.
+func TestPasskeyQRHTML(t *testing.T) {
+	errHtml := passkeyQRErrorHTML("Тестовая ошибка")
+	if len(errHtml) == 0 || !strings.Contains(errHtml, "Тестовая ошибка") {
+		t.Errorf("passkeyQRErrorHTML не содержит текст ошибки")
+	}
+
+	pageHtml := passkeyQRPageHTML("test-handle", "admin", `{"challenge":"xyz"}`)
+	if !strings.Contains(pageHtml, "test-handle") {
+		t.Errorf("passkeyQRPageHTML не содержит handle")
+	}
+	if !strings.Contains(pageHtml, "admin") {
+		t.Errorf("passkeyQRPageHTML не содержит username")
+	}
+	if !strings.Contains(pageHtml, "passkey_qr.js") {
+		t.Errorf("passkeyQRPageHTML не подключает passkey_qr.js")
+	}
+}
+

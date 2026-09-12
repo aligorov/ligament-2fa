@@ -1,4 +1,4 @@
-﻿// dllmain.cpp — DLL exports and COM in-process registration
+// dllmain.cpp — DLL exports and COM in-process registration
 #include "common.h"
 #include "ClassFactory.h"
 
@@ -16,7 +16,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         DisableThreadLibraryCalls(hinstDLL);
         // Первая строка жизни провайдера: если её нет в cp.log после попытки
         // входа — DLL вообще не загружается в LogonUI (регистрация/битность).
-        ligament::LogDebug(L"dll: загружен Ligament CP v0.4.69 (pid=%lu)",
+        ligament::LogDebug(L"dll: загружен Ligament CP v0.4.79 (pid=%lu)",
             (unsigned long)GetCurrentProcessId());
     }
     return TRUE;

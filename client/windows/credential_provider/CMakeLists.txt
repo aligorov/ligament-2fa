@@ -22,6 +22,7 @@ set(SOURCES
     LigamentCredential.cpp
     HttpApiClient.cpp
     WebAuthnClient.cpp
+    qrcodegen.cpp
     exports.def
 )
 
@@ -33,6 +34,7 @@ set(HEADERS
     LigamentCredential.h
     HttpApiClient.h
     WebAuthnClient.h
+    qrcodegen.hpp
 )
 
 add_library(LigamentCredentialProvider SHARED ${SOURCES} ${HEADERS})
@@ -45,6 +47,7 @@ target_link_libraries(LigamentCredentialProvider PRIVATE
     wtsapi32
     ole32
     user32
+    gdi32
     advapi32
     ws2_32
     iphlpapi

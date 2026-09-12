@@ -1,5 +1,6 @@
 // LigamentCredential.cpp — Implementation of Credential tile logic
 #include "LigamentCredential.h"
+#include "qrcodegen.hpp"
 #include <wincred.h> // CredProtectW/CredIsProtectedW (wincred.h)
 
 namespace ligament {
@@ -79,6 +80,7 @@ static std::wstring DescribeServerError(const std::string& err, int retryAfterSe
 
 LigamentCredential::~LigamentCredential() {
     StopPollThread();
+    ClearQrBitmap();
     DeleteCriticalSection(&m_csPoll);
     if (!m_password.empty()) {
         SecureZeroMemory(&m_password[0], m_password.size() * sizeof(wchar_t));
@@ -98,17 +100,16 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
     m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned, 15000);
     m_webAuthn = std::make_unique<WebAuthnClient>();
 
-    bool webAuthnOk = (m_webAuthn && m_webAuthn->IsAvailable());
-    if (cfg.fido2Enabled && webAuthnOk) {
+    if (cfg.fido2Enabled) {
         m_currentMode = MODE_FIDO2;
-        m_statusText = L"Нажмите кнопку ниже для подтверждения через Passkey";
+        m_statusText = L"Passkey: введите пароль и нажмите стрелку входа для QR-кода";
     } else {
         m_currentMode = MODE_PUSH;
         m_statusText = L"Вход через Telegram Push / приложение Ligament";
     }
-    CPLog(L"init: тайл создан remote=%d cpus=%u fido2Cfg=%d webAuthnOk=%d mode=%s failClose=%d rdp2fa=%d",
+    CPLog(L"init: тайл создан remote=%d cpus=%u fido2Cfg=%d mode=%s failClose=%d rdp2fa=%d",
         isRemote ? 1 : 0, (unsigned)cpus, cfg.fido2Enabled ? 1 : 0,
-        webAuthnOk ? 1 : 0, (m_currentMode == MODE_FIDO2) ? L"FIDO2" : L"PUSH",
+        (m_currentMode == MODE_FIDO2) ? L"FIDO2" : L"PUSH",
         cfg.failClose ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0);
 }
 
@@ -226,7 +227,7 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
         }
         break;
     case FID_FIDO2_BTN:
-        val = L"Войти с помощью Passkey (Windows Hello / Телефон / Ключ)";
+        val = L"Войти с помощью Passkey (QR-код на телефоне / Ключ)";
         break;
     case FID_OTP_CODE:
         val = m_otpCode;
@@ -235,12 +236,12 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
         if (m_currentMode == MODE_FIDO2) {
             val = L"Переключить на Push-подтверждение";
         } else if (m_currentMode == MODE_PUSH) {
-            val = (m_config.fido2Enabled && m_webAuthn && m_webAuthn->IsAvailable())
-                ? L"Переключить на Passkey (Windows Hello / Телефон / Ключ)"
+            val = m_config.fido2Enabled
+                ? L"Переключить на Passkey (QR-код на телефоне / Ключ)"
                 : L"Переключить на ввод TOTP / YubiKey OTP";
         } else {
-            val = (m_config.fido2Enabled && m_webAuthn && m_webAuthn->IsAvailable())
-                ? L"Переключить на Passkey (Windows Hello / Телефон / Ключ)"
+            val = m_config.fido2Enabled
+                ? L"Переключить на Passkey (QR-код на телефоне / Ключ)"
                 : L"Переключить на Telegram Push";
         }
         break;
@@ -251,6 +252,10 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
 }
 
 HRESULT LigamentCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
+    if (dwFieldID == FID_LOGO && m_hQrBmp) {
+        *phbmp = m_hQrBmp;
+        return S_OK;
+    }
     *phbmp = nullptr;
     return E_NOTIMPL;
 }
@@ -337,7 +342,9 @@ HRESULT LigamentCredential::CommandLinkClicked(DWORD dwFieldID) {
 }
 
 void LigamentCredential::SwitchToNextMode() {
-    bool canPasskey = (m_config.fido2Enabled && m_webAuthn && m_webAuthn->IsAvailable());
+    ClearQrBitmap();
+    StopPollThread();
+    bool canPasskey = m_config.fido2Enabled;
     if (m_currentMode == MODE_PUSH) {
         m_currentMode = canPasskey ? MODE_FIDO2 : MODE_OTP;
     } else if (m_currentMode == MODE_FIDO2) {
@@ -369,7 +376,7 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
 
 void LigamentCredential::UpdateFieldStates() {
     if (m_currentMode == MODE_FIDO2) {
-        m_statusText = L"Нажмите кнопку ниже для подтверждения через Passkey";
+        m_statusText = L"Passkey: нажмите кнопку ниже или стрелку для входа";
     } else if (m_currentMode == MODE_PUSH) {
         m_statusText = L"Вход через Telegram / Ligament Authenticator";
     } else if (m_currentMode == MODE_OTP) {
@@ -386,14 +393,82 @@ void LigamentCredential::UpdateFieldStates() {
     }
 }
 
+void LigamentCredential::ClearQrBitmap() {
+    if (m_hQrBmp) {
+        DeleteObject(m_hQrBmp);
+        m_hQrBmp = nullptr;
+        if (m_pEvents) {
+            m_pEvents->SetFieldBitmap(this, FID_LOGO, nullptr);
+        }
+    }
+}
+
+HBITMAP LigamentCredential::CreateQrBitmap(const std::string& text, int targetSize) {
+    try {
+        using qrcodegen::QrCode;
+        QrCode qr = QrCode::encodeText(text.c_str(), QrCode::Ecc::MEDIUM);
+        int qrSize = qr.getSize();
+        int border = 4;
+        int totalModules = qrSize + border * 2;
+        int moduleScale = targetSize / totalModules;
+        if (moduleScale < 1) moduleScale = 1;
+        int actualSize = totalModules * moduleScale;
+        int offset = (targetSize - actualSize) / 2;
+        if (offset < 0) offset = 0;
+
+        BITMAPINFO bmi = {0};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = targetSize;
+        bmi.bmiHeader.biHeight = -targetSize; // Top-down DIB
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        void* pBits = nullptr;
+        HDC hdc = GetDC(nullptr);
+        HBITMAP hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+        ReleaseDC(nullptr, hdc);
+
+        if (!hBmp || !pBits) return nullptr;
+
+        uint32_t* pixels = reinterpret_cast<uint32_t*>(pBits);
+        for (int i = 0; i < targetSize * targetSize; ++i) {
+            pixels[i] = 0x00FFFFFF; // White background
+        }
+
+        for (int y = 0; y < qrSize; ++y) {
+            for (int x = 0; x < qrSize; ++x) {
+                if (qr.getModule(x, y)) {
+                    int startX = offset + (x + border) * moduleScale;
+                    int startY = offset + (y + border) * moduleScale;
+                    for (int sy = 0; sy < moduleScale && (startY + sy) < targetSize; ++sy) {
+                        for (int sx = 0; sx < moduleScale && (startX + sx) < targetSize; ++sx) {
+                            pixels[(startY + sy) * targetSize + (startX + sx)] = 0x00000000; // Black
+                        }
+                    }
+                }
+            }
+        }
+        return hBmp;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 void LigamentCredential::TriggerFIDO2Auth() {
-    if (m_username.empty()) {
-        m_statusText = L"Сначала введите имя пользователя";
+    if (m_username.empty() || m_password.empty()) {
+        m_statusText = L"Сначала введите имя пользователя и пароль";
         NotifyFieldChanged(FID_STATUS_TEXT);
         return;
     }
 
-    m_statusText = L"Запрос сессии Passkey / WebAuthn...";
+    if (m_authenticated) {
+        m_statusText = L"Passkey уже подтвержден! Нажмите стрелку для входа";
+        NotifyFieldChanged(FID_STATUS_TEXT);
+        return;
+    }
+
+    m_statusText = L"Запрос сессии Passkey...";
     NotifyFieldChanged(FID_STATUS_TEXT);
 
     WebAuthnBeginResult beginRes = m_apiClient->WebAuthnBegin(m_username, m_password);
@@ -403,43 +478,27 @@ void LigamentCredential::TriggerFIDO2Auth() {
         return;
     }
 
-    // Extract challenge & rpId from raw options JSON or use server host
-    std::string challenge = ExtractJsonString(beginRes.rawOptionsJson, "challenge");
-    std::wstring rpId = Utf8ToWide(ExtractJsonString(beginRes.rawOptionsJson, "rpId"));
-    if (rpId.empty()) {
-        // Fallback to server host from URL
-        URL_COMPONENTS comp = { sizeof(comp) };
-        wchar_t host[256] = {0};
-        comp.lpszHostName = host;
-        comp.dwHostNameLength = _countof(host);
-        WinHttpCrackUrl(m_config.serverUrl.c_str(), 0, 0, &comp);
-        rpId = host;
+    // Ссылка для сканирования камерой смартфона
+    std::string qrUrl = WideToUtf8(m_config.serverUrl) + "/auth/passkey?handle=" + beginRes.handle;
+
+    ClearQrBitmap();
+    m_hQrBmp = CreateQrBitmap(qrUrl, 256);
+    if (m_pEvents && m_hQrBmp) {
+        m_pEvents->SetFieldBitmap(this, FID_LOGO, m_hQrBmp);
     }
 
-    m_statusText = L"Подтвердите вход через Passkey (Windows Hello / телефон / ключ)...";
+    m_statusText = L"Отсканируйте QR-код камерой телефона (Face ID / Touch ID)";
     NotifyFieldChanged(FID_STATUS_TEXT);
 
-    std::string assertionJson, authErr;
-    HWND hWnd = GetForegroundWindow();
-    bool asserted = m_webAuthn->Authenticate(hWnd, rpId, challenge, assertionJson, authErr);
-    if (!asserted) {
-        m_statusText = L"Passkey отклонен: " + Utf8ToWide(authErr);
-        NotifyFieldChanged(FID_STATUS_TEXT);
-        return;
-    }
+    // Запуск фонового опроса сервера (ожидание подтверждения на телефоне)
+    StopPollThread();
+    EnterCriticalSection(&m_csPoll);
+    m_pollState = PollState();
+    m_pollChallengeId = Utf8ToWide(beginRes.challengeId);
+    LeaveCriticalSection(&m_csPoll);
 
-    m_statusText = L"Проверка криптографической подписи...";
-    NotifyFieldChanged(FID_STATUS_TEXT);
-
-    std::string finishErr;
-    if (m_apiClient->WebAuthnFinish(beginRes.handle, assertionJson, finishErr)) {
-        m_authenticated = true;
-        m_statusText = L"Passkey успешно подтвержден! Нажмите 'Войти'";
-        NotifyFieldChanged(FID_STATUS_TEXT);
-    } else {
-        m_statusText = L"Ошибка валидации Passkey: " + DescribeServerError(finishErr, m_apiClient->LastRetryAfterSec());
-        NotifyFieldChanged(FID_STATUS_TEXT);
-    }
+    CPLog(L"passkey: QR-код отображен, запущен опрос challengeId=%hs", beginRes.challengeId.c_str());
+    m_hPollThread = CreateThread(nullptr, 0, PushPollThreadProc, this, 0, nullptr);
 }
 
 // Background thread for push polling: thin wrapper over RunPushPolling.
@@ -540,6 +599,7 @@ void LigamentCredential::ResetAuthState() {
     // tile deselection or a switch to another user name.
     m_authenticated = false;
     m_numberMatch.clear();
+    ClearQrBitmap();
     if (!m_otpCode.empty()) {
         SecureZeroMemory(&m_otpCode[0], m_otpCode.size() * sizeof(wchar_t));
         m_otpCode.clear();
@@ -710,12 +770,57 @@ HRESULT LigamentCredential::GetSerialization(
         return S_OK;
     }
 
-    // 5. Mode: FIDO2 trigger on submit if button was not clicked
+    // 5. Mode: FIDO2 / Passkey (QR-код на телефоне)
     if (m_currentMode == MODE_FIDO2) {
-        TriggerFIDO2Auth();
-        if (m_authenticated) {
+        bool done = false;
+        std::wstring status;
+        if (!m_hPollThread) {
+            TriggerFIDO2Auth();
+            if (m_authenticated) {
+                return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
+            }
+            *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
+            return S_OK;
+        }
+
+        EnterCriticalSection(&m_csPoll);
+        done = m_pollState.done;
+        status = m_pollState.status;
+        LeaveCriticalSection(&m_csPoll);
+
+        if (!done) {
+            *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
+            return S_OK;
+        }
+
+        if (status == L"approved") {
+            CPLog(L"passkey: approved — вход подтвержден через телефон");
+            JoinPollThread();
+            ClearQrBitmap();
+            m_authenticated = true;
             return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
         }
+
+        std::wstring msg;
+        if (status == L"denied") {
+            msg = L"Вход по Passkey отклонен";
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+        } else if (status == L"expired") {
+            msg = L"Срок действия QR-кода истек, нажмите для повтора";
+            *pcpsiOptionalStatusIcon = CPSI_WARNING;
+        } else {
+            msg = L"Время ожидания Passkey истекло";
+            *pcpsiOptionalStatusIcon = CPSI_WARNING;
+        }
+        JoinPollThread();
+        ClearQrBitmap();
+        m_statusText = msg;
+        if (m_pEvents) {
+            m_pEvents->SetFieldString(this, FID_STATUS_TEXT, msg.c_str());
+        }
+        SHStrDupW(msg.c_str(), ppszOptionalStatusText);
+        *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
+        return S_OK;
     }
 
     return S_OK;
