@@ -1,4 +1,4 @@
-﻿// LigamentCredential.h — ICredentialProviderCredential implementation
+// LigamentCredential.h — ICredentialProviderCredential implementation
 #pragma once
 
 #include "common.h"
@@ -14,6 +14,7 @@ enum FIELD_ID {
     FID_PASSWORD,
     FID_SUBMIT,
     FID_STATUS_TEXT,
+    FID_NUMBER_MATCH,
     FID_FIDO2_BTN,
     FID_OTP_CODE,
     FID_SWITCH_FACTOR_BTN,
@@ -82,6 +83,7 @@ private:
     std::wstring m_password;
     std::wstring m_otpCode;
     std::wstring m_statusText;
+    std::wstring m_numberMatch;
 
     bool m_authenticated = false;
     std::unique_ptr<HttpApiClient> m_apiClient;

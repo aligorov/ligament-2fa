@@ -17,9 +17,10 @@ extern const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[] = {
     { FID_PASSWORD, CPFT_PASSWORD_TEXT, L"Пароль", GUID_NULL },
     { FID_SUBMIT, CPFT_SUBMIT_BUTTON, L"Войти", GUID_NULL },
     { FID_STATUS_TEXT, CPFT_SMALL_TEXT, L"Статус", GUID_NULL },
-    { FID_FIDO2_BTN, CPFT_COMMAND_LINK, L"Войти с помощью ключа (FIDO2 / YubiKey)", GUID_NULL },
+    { FID_NUMBER_MATCH, CPFT_LARGE_TEXT, L"Контрольное число", GUID_NULL },
+    { FID_FIDO2_BTN, CPFT_COMMAND_LINK, L"Войти с помощью Passkey (Windows Hello / Телефон / Ключ)", GUID_NULL },
     { FID_OTP_CODE, CPFT_EDIT_TEXT, L"Код подтверждения (TOTP / YubiKey OTP)", GUID_NULL },
-    { FID_SWITCH_FACTOR_BTN, CPFT_COMMAND_LINK, L"Выбрать другой способ входа (Push / Код / Ключ)", GUID_NULL },
+    { FID_SWITCH_FACTOR_BTN, CPFT_COMMAND_LINK, L"Выбрать другой способ входа (Push / Passkey / Код)", GUID_NULL },
 };
 
 LigamentCredential::LigamentCredential() {
@@ -104,9 +105,9 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
     m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned, 15000);
     m_webAuthn = std::make_unique<WebAuthnClient>();
 
-    if (cfg.fido2Enabled && m_webAuthn->IsAvailable()) {
+    if (cfg.fido2Enabled && m_webAuthn && m_webAuthn->IsAvailable()) {
         m_currentMode = MODE_FIDO2;
-        m_statusText = L"Вставьте YubiKey и нажмите кнопку ниже";
+        m_statusText = L"Нажмите кнопку ниже для подтверждения через Passkey";
     } else {
         m_currentMode = MODE_PUSH;
         m_statusText = L"Вход через Telegram Push / приложение Ligament";
@@ -183,6 +184,10 @@ HRESULT LigamentCredential::GetFieldState(
         }
         break;
 
+    case FID_NUMBER_MATCH:
+        *pcpfs = (!m_numberMatch.empty()) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+        break;
+
     case FID_FIDO2_BTN:
         *pcpfs = (m_currentMode == MODE_FIDO2) ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         break;
@@ -202,7 +207,11 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
     std::wstring val;
     switch (dwFieldID) {
     case FID_LARGE_TEXT:
-        val = L"Ligament Enterprise 2FA";
+        if (!m_numberMatch.empty()) {
+            val = L"Ligament 2FA — Код: " + m_numberMatch;
+        } else {
+            val = L"Ligament Enterprise 2FA";
+        }
         break;
     case FID_USERNAME:
         val = m_username;
@@ -213,16 +222,29 @@ HRESULT LigamentCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppsz) {
     case FID_STATUS_TEXT:
         val = m_statusText;
         break;
+    case FID_NUMBER_MATCH:
+        if (!m_numberMatch.empty()) {
+            val = L"   [  " + m_numberMatch + L"  ]   ";
+        }
+        break;
     case FID_FIDO2_BTN:
-        val = L"Войти с помощью YubiKey (FIDO2)";
+        val = L"Войти с помощью Passkey (Windows Hello / Телефон / Ключ)";
         break;
     case FID_OTP_CODE:
         val = m_otpCode;
         break;
     case FID_SWITCH_FACTOR_BTN:
-        if (m_currentMode == MODE_FIDO2) val = L"Переключить на Telegram Push / Код";
-        else if (m_currentMode == MODE_PUSH) val = L"Переключить на ввод TOTP / YubiKey OTP";
-        else val = (m_config.fido2Enabled && m_webAuthn && m_webAuthn->IsAvailable()) ? L"Переключить на ключ YubiKey (FIDO2)" : L"Переключить на Telegram Push";
+        if (m_currentMode == MODE_FIDO2) {
+            val = L"Переключить на Push-подтверждение";
+        } else if (m_currentMode == MODE_PUSH) {
+            val = (m_config.fido2Enabled && m_webAuthn && m_webAuthn->IsAvailable())
+                ? L"Переключить на Passkey (Windows Hello / Телефон / Ключ)"
+                : L"Переключить на ввод TOTP / YubiKey OTP";
+        } else {
+            val = (m_config.fido2Enabled && m_webAuthn && m_webAuthn->IsAvailable())
+                ? L"Переключить на Passkey (Windows Hello / Телефон / Ключ)"
+                : L"Переключить на Telegram Push";
+        }
         break;
     default:
         break;
@@ -317,10 +339,15 @@ HRESULT LigamentCredential::CommandLinkClicked(DWORD dwFieldID) {
 }
 
 void LigamentCredential::SwitchToNextMode() {
-    if (m_currentMode == MODE_FIDO2) m_currentMode = MODE_PUSH;
-    else if (m_currentMode == MODE_PUSH) m_currentMode = MODE_OTP;
-    else m_currentMode = (m_config.fido2Enabled && m_webAuthn->IsAvailable()) ? MODE_FIDO2 : MODE_PUSH;
-
+    bool canPasskey = (m_config.fido2Enabled && m_webAuthn && m_webAuthn->IsAvailable());
+    if (m_currentMode == MODE_PUSH) {
+        m_currentMode = canPasskey ? MODE_FIDO2 : MODE_OTP;
+    } else if (m_currentMode == MODE_FIDO2) {
+        m_currentMode = MODE_OTP;
+    } else {
+        m_currentMode = MODE_PUSH;
+    }
+    m_numberMatch.clear();
     UpdateFieldStates();
 }
 
@@ -333,10 +360,10 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
     m_pEvents->SetFieldInteractiveState(this, dwFieldID, cpfis);
     if (dwFieldID == FID_STATUS_TEXT) {
         m_pEvents->SetFieldString(this, FID_STATUS_TEXT, m_statusText.c_str());
-    } else if (dwFieldID == FID_SWITCH_FACTOR_BTN) {
+    } else if (dwFieldID == FID_NUMBER_MATCH || dwFieldID == FID_LARGE_TEXT || dwFieldID == FID_SWITCH_FACTOR_BTN || dwFieldID == FID_FIDO2_BTN) {
         PWSTR psz = nullptr;
-        if (SUCCEEDED(GetStringValue(FID_SWITCH_FACTOR_BTN, &psz)) && psz) {
-            m_pEvents->SetFieldString(this, FID_SWITCH_FACTOR_BTN, psz);
+        if (SUCCEEDED(GetStringValue(dwFieldID, &psz)) && psz) {
+            m_pEvents->SetFieldString(this, dwFieldID, psz);
             CoTaskMemFree(psz);
         }
     }
@@ -344,7 +371,7 @@ void LigamentCredential::NotifyFieldChanged(DWORD dwFieldID) {
 
 void LigamentCredential::UpdateFieldStates() {
     if (m_currentMode == MODE_FIDO2) {
-        m_statusText = L"Нажмите кнопку для запроса касания YubiKey";
+        m_statusText = L"Нажмите кнопку ниже для подтверждения через Passkey";
     } else if (m_currentMode == MODE_PUSH) {
         m_statusText = L"Вход через Telegram / Ligament Authenticator";
     } else if (m_currentMode == MODE_OTP) {
@@ -352,6 +379,8 @@ void LigamentCredential::UpdateFieldStates() {
     }
 
     if (m_pEvents) {
+        NotifyFieldChanged(FID_LARGE_TEXT);
+        NotifyFieldChanged(FID_NUMBER_MATCH);
         NotifyFieldChanged(FID_FIDO2_BTN);
         NotifyFieldChanged(FID_OTP_CODE);
         NotifyFieldChanged(FID_STATUS_TEXT);
@@ -366,12 +395,12 @@ void LigamentCredential::TriggerFIDO2Auth() {
         return;
     }
 
-    m_statusText = L"Запрос сессии WebAuthn...";
+    m_statusText = L"Запрос сессии Passkey / WebAuthn...";
     NotifyFieldChanged(FID_STATUS_TEXT);
 
     WebAuthnBeginResult beginRes = m_apiClient->WebAuthnBegin(m_username, m_password);
     if (!beginRes.success) {
-        m_statusText = L"Ошибка WebAuthn: " + DescribeServerError(beginRes.error, m_apiClient->LastRetryAfterSec());
+        m_statusText = L"Ошибка Passkey: " + DescribeServerError(beginRes.error, m_apiClient->LastRetryAfterSec());
         NotifyFieldChanged(FID_STATUS_TEXT);
         return;
     }
@@ -389,14 +418,14 @@ void LigamentCredential::TriggerFIDO2Auth() {
         rpId = host;
     }
 
-    m_statusText = L"Коснитесь мигающего ключа YubiKey...";
+    m_statusText = L"Подтвердите вход через Passkey (Windows Hello / телефон / ключ)...";
     NotifyFieldChanged(FID_STATUS_TEXT);
 
     std::string assertionJson, authErr;
     HWND hWnd = GetForegroundWindow();
     bool asserted = m_webAuthn->Authenticate(hWnd, rpId, challenge, assertionJson, authErr);
     if (!asserted) {
-        m_statusText = L"Ключ отклонен: " + Utf8ToWide(authErr);
+        m_statusText = L"Passkey отклонен: " + Utf8ToWide(authErr);
         NotifyFieldChanged(FID_STATUS_TEXT);
         return;
     }
@@ -407,10 +436,10 @@ void LigamentCredential::TriggerFIDO2Auth() {
     std::string finishErr;
     if (m_apiClient->WebAuthnFinish(beginRes.handle, assertionJson, finishErr)) {
         m_authenticated = true;
-        m_statusText = L"Ключ успешно подтвержден! Нажмите 'Войти'";
+        m_statusText = L"Passkey успешно подтвержден! Нажмите 'Войти'";
         NotifyFieldChanged(FID_STATUS_TEXT);
     } else {
-        m_statusText = L"Ошибка валидации ключа: " + DescribeServerError(finishErr, m_apiClient->LastRetryAfterSec());
+        m_statusText = L"Ошибка валидации Passkey: " + DescribeServerError(finishErr, m_apiClient->LastRetryAfterSec());
         NotifyFieldChanged(FID_STATUS_TEXT);
     }
 }
@@ -512,11 +541,16 @@ void LigamentCredential::ResetAuthState() {
     // A previously confirmed second factor must not survive a failed logon,
     // tile deselection or a switch to another user name.
     m_authenticated = false;
+    m_numberMatch.clear();
     if (!m_otpCode.empty()) {
         SecureZeroMemory(&m_otpCode[0], m_otpCode.size() * sizeof(wchar_t));
         m_otpCode.clear();
     }
     StopPollThread();
+    if (m_pEvents) {
+        NotifyFieldChanged(FID_NUMBER_MATCH);
+        NotifyFieldChanged(FID_LARGE_TEXT);
+    }
 }
 
 HRESULT LigamentCredential::GetSerialization(
@@ -591,11 +625,15 @@ HRESULT LigamentCredential::GetSerialization(
                 // number-matching: приложение требует ввести контрольное
                 // число — показываем его ЗДЕСЬ, на экране входа (RDP).
                 if (!numberMatch.empty()) {
-                    m_statusText = L"Подтвердите вход в приложении Ligament. Введите в приложении цифры: " + numberMatch;
+                    m_numberMatch = numberMatch;
+                    m_statusText = L"Подтвердите вход в приложении Ligament:\nВведите контрольное число:";
                 } else {
+                    m_numberMatch.clear();
                     m_statusText = L"Push отправлен! Подтвердите вход в приложении/Telegram...";
                 }
                 NotifyFieldChanged(FID_STATUS_TEXT);
+                NotifyFieldChanged(FID_NUMBER_MATCH);
+                NotifyFieldChanged(FID_LARGE_TEXT);
 
                 EnterCriticalSection(&m_csPoll);
                 m_pollState = PollState();
@@ -642,6 +680,7 @@ HRESULT LigamentCredential::GetSerialization(
         if (status == L"approved") {
             CPLog(L"push: approved — сериализация кредов тайла");
             JoinPollThread();
+            m_numberMatch.clear();
             m_authenticated = true;
             return PackAndFinish(pcpgsr, pcpcs, ppszOptionalStatusText, pcpsiOptionalStatusIcon);
         }
@@ -661,8 +700,11 @@ HRESULT LigamentCredential::GetSerialization(
             *pcpsiOptionalStatusIcon = CPSI_WARNING;
         }
         JoinPollThread();
+        m_numberMatch.clear();
         m_statusText = msg;
         if (m_pEvents) {
+            NotifyFieldChanged(FID_NUMBER_MATCH);
+            NotifyFieldChanged(FID_LARGE_TEXT);
             m_pEvents->SetFieldString(this, FID_STATUS_TEXT, msg.c_str());
         }
         SHStrDupW(msg.c_str(), ppszOptionalStatusText);
