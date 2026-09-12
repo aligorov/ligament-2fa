@@ -282,7 +282,7 @@ class AuthState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> login(String username, String password) async {
+  Future<void> login(String username, String password, [String? code]) async {
     if (serverUrl == null || serverUrl!.isEmpty) {
       throw Exception('Не указан адрес сервера');
     }
@@ -328,6 +328,7 @@ class AuthState extends ChangeNotifier {
     final resp = await api!.login(
       username: username,
       password: password,
+      code: code,
       deviceName: deviceName,
       platform: platform,
       osVersion: osVersion,

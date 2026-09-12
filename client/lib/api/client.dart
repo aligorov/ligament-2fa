@@ -67,6 +67,7 @@ class ApiClient {
   Future<Map<String, dynamic>> login({
     required String username,
     required String password,
+    String? code,
     required String deviceName,
     required String platform,
     String osVersion = '',
@@ -77,6 +78,7 @@ class ApiClient {
     final payload = {
       'username': username,
       'password': password,
+      if (code != null && code.trim().isNotEmpty) 'code': code.trim(),
       'device_name': deviceName,
       'platform': platform,
       'os_version': osVersion,

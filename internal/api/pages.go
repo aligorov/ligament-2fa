@@ -2710,7 +2710,7 @@ func (p *PagesAPI) handleAdminSettingsPost(w http.ResponseWriter, r *http.Reques
 				return
 			}
 			p.admin.audit(ctx, "ldap_sync_users_ok", map[string]any{
-				"total": res.TotalFound, "created": res.Created, "updated": res.Updated, "skipped": res.Skipped, "via": "html",
+				"total": res.TotalFound, "created": res.Created, "updated": res.Updated, "locked": res.Locked, "skipped": res.Skipped, "via": "html",
 			})
 			redirectFlash(w, r, "/admin/settings", "Настройки сохранены. "+res.Message, true)
 			return

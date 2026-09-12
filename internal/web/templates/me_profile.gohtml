@@ -106,6 +106,7 @@
   <form action="/me/prefer" method="post" class="form">
     {{csrf .CSRF}}
     <div class="check-group">
+      <label class="check"><input type="checkbox" name="channels" value="app_push" {{if hasChan .User.PreferChannels "app_push"}}checked{{end}}> <span>📱 Приложение Ligament (Push)</span></label>
       <label class="check"><input type="checkbox" name="channels" value="totp" {{if hasChan .User.PreferChannels "totp"}}checked{{end}}> <span>TOTP-приложение</span></label>
       <label class="check"><input type="checkbox" name="channels" value="telegram" {{if hasChan .User.PreferChannels "telegram"}}checked{{end}}> <span>Telegram</span></label>
       <label class="check"><input type="checkbox" name="channels" value="email" {{if hasChan .User.PreferChannels "email"}}checked{{end}}> <span>Email</span></label>

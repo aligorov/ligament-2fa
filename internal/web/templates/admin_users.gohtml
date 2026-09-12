@@ -20,248 +20,24 @@
 </section>
 {{end}}
 
-<section class="card">
+{{if .Edit}}
+<section class="card card-edit-user" id="edit-user">
   <div class="card-head users-card-head">
     <div>
-      <h2>Список</h2>
-      <p>Действия применяются сразу; удаление необратимо.</p>
+      <h2>Редактирование: {{.Edit.Username}}</h2>
+      <p>Пустой пароль — оставить текущий.</p>
     </div>
     <div>
-      <a href="#new-user" class="btn primary sm">➕ Новый пользователь</a>
+      <a href="/admin/users" class="btn secondary sm">✕ Отмена / Закрыть</a>
     </div>
   </div>
-
-  <div class="users-toolbar">
-    <div class="users-search-box">
-      <span class="search-icon">🔍</span>
-      <input type="text" id="users-search" class="input" placeholder="Поиск по имени, логину, почте, телефону или группе..." autocomplete="off">
-      <button type="button" id="users-search-clear" class="search-clear is-hidden" title="Очистить">&times;</button>
-    </div>
-    <div class="users-filter-pills" id="users-filter-pills">
-      <button type="button" class="users-pill active" data-filter="all">Все <span class="count" id="count-all">{{.CountAll}}</span></button>
-      <button type="button" class="users-pill" data-filter="ldap">🏢 LDAP <span class="count" id="count-ldap">{{.CountLDAP}}</span></button>
-      <button type="button" class="users-pill" data-filter="local">🔑 Локальные <span class="count" id="count-local">{{.CountLocal}}</span></button>
-      <button type="button" class="users-pill" data-filter="admin">🛡️ Админы <span class="count" id="count-admin">{{.CountAdmin}}</span></button>
-      <button type="button" class="users-pill" data-filter="disabled">⚠️ Отключённые <span class="count" id="count-disabled">{{.CountDisabled}}</span></button>
-    </div>
+  {{if .Edit.LDAPLocked}}
+  <div class="flash err" style="margin-bottom: 1rem;">
+    <span class="flash-icon">⛔</span>
+    <b>Учётная запись отключена или заблокирована в Active Directory / LDAP.</b><br>
+    Пользователь заблокирован в домене (флаг ACCOUNTDISABLE или LOCKOUT в userAccountControl). Доступ ограничен до разблокировки администратором домена.
   </div>
-
-  <div class="table-wrap">
-    <table class="table users-table" id="users-table">
-      <thead>
-        <tr>
-          <th>Пользователь</th>
-          <th>Источник / Статус</th>
-          <th>Группы</th>
-          <th>2FA & Сеть</th>
-          <th class="th-right">Действия</th>
-        </tr>
-      </thead>
-      <tbody>
-      {{range .Users}}
-      {{$ug := index $.UserGroups .ID}}
-      <tr class="user-row{{if not .Enabled}} row-off{{end}}"
-          data-username="{{.Username}}"
-          data-name="{{.DisplayName}}"
-          data-email="{{.Email}}"
-          data-phone="{{.Phone}}"
-          data-source="{{.Source}}"
-          data-role="{{.Role}}"
-          data-enabled="{{if .Enabled}}1{{else}}0{{end}}"
-          data-groups="{{range $ug}}{{.}} {{end}}{{range .LDAPGroups}}{{groupCN .}} {{.}}{{end}}">
-        <td>
-          <div class="user-profile-cell">
-            <div class="user-avatar" data-avatar-bg="{{userAvatarBg .Username}}">
-              {{userInitials .DisplayName .Username}}
-            </div>
-            <div class="user-names">
-              <div class="user-primary-name">
-                <a class="user-name-link" href="/admin/users/{{.ID}}">
-                  {{if .DisplayName}}{{.DisplayName}}{{else}}{{.Username}}{{end}}
-                </a>
-                {{if and .DisplayName (ne .DisplayName .Username)}}
-                  <span class="muted user-login-hint">@{{.Username}}</span>
-                {{end}}
-              </div>
-              <div class="user-secondary-name">
-                {{if .Email}}<span>✉️ {{.Email}}</span>{{end}}
-                {{if and .Email .Phone}}<span class="dot-sep">•</span>{{end}}
-                {{if .Phone}}<span>📱 {{.Phone}}</span>{{end}}
-                {{if and (not .Email) (not .Phone)}}
-                  <span class="muted">ID: {{printf "%.8s" .ID}}</span>
-                {{end}}
-              </div>
-            </div>
-          </div>
-        </td>
-        <td>
-          <div class="badges-col-start">
-            <div class="badges-row">
-              {{if eq .Source "ldap"}}
-                <span class="badge warn" title="Синхронизирован из Active Directory / LDAP">ldap</span>
-              {{else}}
-                <span class="badge neutral" title="Локальная учётная запись сервера">local</span>
-              {{end}}
-              <span class="badge {{if eq .Role "admin"}}ok{{else}}neutral{{end}}">{{.Role}}</span>
-            </div>
-            <div>
-              {{if .Enabled}}
-                <span class="badge ok badge-xs">активен</span>
-              {{else}}
-                <span class="badge err badge-xs">отключён</span>
-              {{end}}
-            </div>
-            {{if or .IsSupportIT .IsSupport1C}}
-            <div class="badges-row-wrap-mt">
-              {{if .IsSupportIT}}<span class="badge info badge-xxs" title="Специалист IT-поддержки">IT-help</span>{{end}}
-              {{if .IsSupport1C}}<span class="badge warn badge-xxs" title="Специалист по 1С">1C-help</span>{{end}}
-            </div>
-            {{end}}
-          </div>
-        </td>
-        <td>
-          <div class="user-groups-cell">
-            {{if $ug}}
-              {{range $ug}}<span class="badge info" title="Локальная группа">{{.}}</span>{{end}}
-            {{end}}
-            {{if .LDAPGroups}}
-              {{$ldapLen := len .LDAPGroups}}
-              {{if le $ldapLen 3}}
-                {{range .LDAPGroups}}
-                  <span class="badge neutral" title="LDAP DN: {{.}}">{{groupCN .}}</span>
-                {{end}}
-              {{else}}
-                {{range $i, $g := .LDAPGroups}}
-                  {{if lt $i 2}}
-                    <span class="badge neutral" title="LDAP DN: {{$g}}">{{groupCN $g}}</span>
-                  {{end}}
-                {{end}}
-                <span class="badge neutral cursor-help" title="{{range .LDAPGroups}}{{.}}&#10;{{end}}">+{{sub $ldapLen 2}} ещё</span>
-              {{end}}
-            {{end}}
-            {{if and (not $ug) (not .LDAPGroups)}}
-              <span class="muted muted-sm">—</span>
-            {{end}}
-          </div>
-        </td>
-        <td>
-          <div class="user-2fa-cell">
-            <div class="badges-row-wrap">
-              {{if .PreferChannels}}
-                {{range .PreferChannels}}<span class="badge neutral badge-xs">{{.}}</span>{{end}}
-              {{else}}
-                <span class="muted muted-xs" title="Каналы не настроены">2FA: —</span>
-              {{end}}
-              {{if .RadiusPush}}
-                {{if .TelegramLinked}}
-                  <span class="badge ok badge-xs" title="RADIUS Push включен в профиле">Push: да</span>
-                {{else}}
-                  <span class="badge warn badge-xs" title="Push включен, но Telegram не привязан">⚠️ Push (нет ТГ)</span>
-                {{end}}
-              {{else}}
-                {{$pushG := index $.InheritedPushGroup .ID}}
-                {{if $pushG}}
-                  {{if .TelegramLinked}}
-                    <span class="badge ok badge-xs" title="Push унаследован от группы {{$pushG}}">Push: {{$pushG}}</span>
-                  {{else}}
-                    <span class="badge warn badge-xs" title="Push унаследован от группы {{$pushG}}, но Telegram не привязан">⚠️ Push: {{$pushG}} (нет ТГ)</span>
-                  {{end}}
-                {{end}}
-              {{end}}
-            </div>
-            <div>
-              {{if .VLAN}}
-                <span class="badge info badge-xs" title="VLAN {{.VLAN}} задан индивидуально">VLAN: {{vlanDesc $.VLANProfiles .VLAN}}</span>
-              {{else}}
-                {{$gVlan := index $.InheritedVLAN .ID}}
-                {{if $gVlan}}
-                  <span class="badge info badge-xs" title="VLAN унаследован от группы {{index $.InheritedVLANGroup .ID}}">VLAN: {{vlanDesc $.VLANProfiles $gVlan}} <span class="dim">({{index $.InheritedVLANGroup .ID}})</span></span>
-                {{end}}
-              {{end}}
-            </div>
-          </div>
-        </td>
-        <td>
-          <div class="users-actions-wrap">
-            <a class="btn secondary sm" href="/admin/users/{{.ID}}">Редактировать</a>
-            <div class="user-dropdown">
-              <button type="button" class="btn secondary sm user-dropdown-toggle" title="Дополнительные действия">•••</button>
-              <div class="user-dropdown-menu">
-                <form action="/admin/users/{{.ID}}" method="post">
-                  {{csrf $.CSRF}}
-                  <input type="hidden" name="do" value="reset-totp">
-                  <button type="submit" class="user-dropdown-item">
-                    <span>🔑</span> <span>Сброс TOTP</span>
-                  </button>
-                </form>
-                <form action="/admin/users/{{.ID}}" method="post">
-                  {{csrf $.CSRF}}
-                  <input type="hidden" name="do" value="reset-webauthn">
-                  <button type="submit" class="user-dropdown-item">
-                    <span>🛡️</span> <span>Сброс passkeys</span>
-                  </button>
-                </form>
-                <form action="/admin/users/{{.ID}}" method="post">
-                  {{csrf $.CSRF}}
-                  <input type="hidden" name="do" value="unlink-telegram">
-                  <button type="submit" class="user-dropdown-item">
-                    <span>✈️</span> <span>Отвязать Telegram</span>
-                  </button>
-                </form>
-                <form action="/admin/users/{{.ID}}" method="post">
-                  {{csrf $.CSRF}}
-                  <input type="hidden" name="do" value="revoke-devices">
-                  <button type="submit" class="user-dropdown-item">
-                    <span>📱</span> <span>Отозвать устройства</span>
-                  </button>
-                </form>
-                <div class="user-dropdown-divider"></div>
-                <form action="/admin/users/{{.ID}}" method="post">
-                  {{csrf $.CSRF}}
-                  <input type="hidden" name="do" value="delete">
-                  <button type="submit" class="user-dropdown-item danger" data-confirm="Удалить пользователя {{.Username}}?">
-                    <span>🗑️</span> <span>Удалить</span>
-                  </button>
-                </form>
-              </div>
-            </div>
-          </div>
-        </td>
-      </tr>
-      {{end}}
-      </tbody>
-    </table>
-    <div id="users-empty" class="users-empty-search is-hidden">
-      Пользователи по заданным критериям не найдены
-    </div>
-  </div>
-
-  <div class="users-pagination-bar" id="users-pagination">
-    <div class="users-pagination-info" id="users-pagination-info">
-      Показано 0 из 0
-    </div>
-    <div class="users-pagination-controls">
-      <div class="per-page-control">
-        <span>На странице:</span>
-        <select id="users-per-page" class="select select-per-page">
-          <option value="25" selected>25</option>
-          <option value="50">50</option>
-          <option value="100">100</option>
-          <option value="all">Все</option>
-        </select>
-      </div>
-      <div class="users-page-btns" id="users-page-btns">
-      </div>
-    </div>
-  </div>
-</section>
-
-{{if .Edit}}
-<section class="card">
-  <div class="card-head">
-    <h2>Редактирование: {{.Edit.Username}}</h2>
-    <p>Пустой пароль — оставить текущий.</p>
-  </div>
+  {{end}}
   <form action="/admin/users/{{.Edit.ID}}" method="post" class="form wide">
     {{csrf .CSRF}}
     <input type="hidden" name="do" value="save">
@@ -387,6 +163,253 @@
   </form>
 </section>
 {{end}}
+
+<section class="card">
+  <div class="card-head users-card-head">
+    <div>
+      <h2>Список пользователей</h2>
+      <p>Действия применяются сразу; удаление необратимо.</p>
+    </div>
+    <div>
+      <a href="#new-user" class="btn primary sm">➕ Новый пользователь</a>
+    </div>
+  </div>
+
+  <div class="users-toolbar">
+    <div class="users-search-box">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="users-search" class="input" placeholder="Поиск по имени, логину, почте, телефону или группе..." autocomplete="off">
+      <button type="button" id="users-search-clear" class="search-clear is-hidden" title="Очистить">&times;</button>
+    </div>
+    <div class="users-filter-pills" id="users-filter-pills">
+      <button type="button" class="users-pill active" data-filter="all">Все <span class="count" id="count-all">{{.CountAll}}</span></button>
+      <button type="button" class="users-pill" data-filter="ldap">🏢 LDAP <span class="count" id="count-ldap">{{.CountLDAP}}</span></button>
+      <button type="button" class="users-pill" data-filter="local">🔑 Локальные <span class="count" id="count-local">{{.CountLocal}}</span></button>
+      <button type="button" class="users-pill" data-filter="admin">🛡️ Админы <span class="count" id="count-admin">{{.CountAdmin}}</span></button>
+      <button type="button" class="users-pill" data-filter="disabled">⚠️ Отключённые <span class="count" id="count-disabled">{{.CountDisabled}}</span></button>
+      <button type="button" class="users-pill pill-danger" data-filter="ad-locked" title="Пользователи, отключённые или заблокированные в Active Directory">⛔ Заблокированы в АД <span class="count" id="count-ad-locked">{{.CountADLocked}}</span></button>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="table users-table" id="users-table">
+      <thead>
+        <tr>
+          <th>Пользователь</th>
+          <th>Источник / Статус</th>
+          <th>Группы</th>
+          <th>2FA & Сеть</th>
+          <th class="th-right">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .Users}}
+      {{$ug := index $.UserGroups .ID}}
+      <tr class="user-row{{if not .Enabled}} row-off{{end}}{{if .LDAPLocked}} row-ad-locked{{end}}"
+          data-username="{{.Username}}"
+          data-name="{{.DisplayName}}"
+          data-email="{{.Email}}"
+          data-phone="{{.Phone}}"
+          data-source="{{.Source}}"
+          data-role="{{.Role}}"
+          data-enabled="{{if .Enabled}}1{{else}}0{{end}}"
+          data-ad-locked="{{if .LDAPLocked}}1{{else}}0{{end}}"
+          data-groups="{{range $ug}}{{.}} {{end}}{{range .LDAPGroups}}{{groupCN .}} {{.}}{{end}}">
+        <td>
+          <div class="user-profile-cell">
+            <div class="user-avatar" data-avatar-bg="{{userAvatarBg .Username}}">
+              {{userInitials .DisplayName .Username}}
+            </div>
+            <div class="user-names">
+              <div class="user-primary-name">
+                <a class="user-name-link" href="/admin/users/{{.ID}}">
+                  {{if .DisplayName}}{{.DisplayName}}{{else}}{{.Username}}{{end}}
+                </a>
+                {{if and .DisplayName (ne .DisplayName .Username)}}
+                  <span class="muted user-login-hint">@{{.Username}}</span>
+                {{end}}
+              </div>
+              <div class="user-secondary-name">
+                {{if .Email}}<span>✉️ {{.Email}}</span>{{end}}
+                {{if and .Email .Phone}}<span class="dot-sep">•</span>{{end}}
+                {{if .Phone}}<span>📱 {{.Phone}}</span>{{end}}
+                {{if and (not .Email) (not .Phone)}}
+                  <span class="muted">ID: {{printf "%.8s" .ID}}</span>
+                {{end}}
+              </div>
+            </div>
+          </div>
+        </td>
+        <td>
+          <div class="badges-col-start">
+            <div class="badges-row">
+              {{if eq .Source "ldap"}}
+                <span class="badge warn" title="Синхронизирован из Active Directory / LDAP">ldap</span>
+              {{else}}
+                <span class="badge neutral" title="Локальная учётная запись сервера">local</span>
+              {{end}}
+              <span class="badge {{if eq .Role "admin"}}ok{{else}}neutral{{end}}">{{.Role}}</span>
+            </div>
+            <div>
+              {{if .LDAPLocked}}
+                <span class="badge danger badge-xs font-weight-bold" title="Учётная запись отключена или заблокирована в Active Directory / LDAP">⛔ Заблокирован в АД</span>
+              {{else if .Enabled}}
+                <span class="badge ok badge-xs">активен</span>
+              {{else}}
+                <span class="badge err badge-xs">отключён</span>
+              {{end}}
+            </div>
+            {{if or .IsSupportIT .IsSupport1C}}
+            <div class="badges-row-wrap-mt">
+              {{if .IsSupportIT}}<span class="badge info badge-xxs" title="Специалист IT-поддержки">IT-help</span>{{end}}
+              {{if .IsSupport1C}}<span class="badge warn badge-xxs" title="Специалист по 1С">1C-help</span>{{end}}
+            </div>
+            {{end}}
+          </div>
+        </td>
+        <td>
+          <div class="user-groups-cell">
+            {{if $ug}}
+              {{range $ug}}<span class="badge info" title="Локальная группа">{{.}}</span>{{end}}
+            {{end}}
+            {{if .LDAPGroups}}
+              {{$ldapLen := len .LDAPGroups}}
+              {{if le $ldapLen 3}}
+                {{range .LDAPGroups}}
+                  <span class="badge neutral" title="LDAP DN: {{.}}">{{groupCN .}}</span>
+                {{end}}
+              {{else}}
+                {{range $i, $g := .LDAPGroups}}
+                  {{if lt $i 2}}
+                    <span class="badge neutral" title="LDAP DN: {{$g}}">{{groupCN $g}}</span>
+                  {{end}}
+                {{end}}
+                <span class="badge neutral cursor-help" title="{{range .LDAPGroups}}{{.}}&#10;{{end}}">+{{sub $ldapLen 2}} ещё</span>
+              {{end}}
+            {{end}}
+            {{if and (not $ug) (not .LDAPGroups)}}
+              <span class="muted muted-sm">—</span>
+            {{end}}
+          </div>
+        </td>
+        <td>
+          <div class="user-2fa-cell">
+            <div class="badges-row-wrap">
+              {{if .PreferChannels}}
+                {{range .PreferChannels}}
+                  {{if eq . "app_push"}}
+                    <span class="badge ok badge-xs" title="Push в мобильное/десктопное приложение Ligament">📱 app_push</span>
+                  {{else}}
+                    <span class="badge neutral badge-xs">{{.}}</span>
+                  {{end}}
+                {{end}}
+              {{else}}
+                <span class="muted muted-xs" title="Каналы не настроены">2FA: —</span>
+              {{end}}
+              {{if .RadiusPush}}
+                {{if .TelegramLinked}}
+                  <span class="badge ok badge-xs" title="RADIUS Push включен в профиле">Push: да</span>
+                {{else}}
+                  <span class="badge warn badge-xs" title="Push включен, но Telegram не привязан">⚠️ Push (нет ТГ)</span>
+                {{end}}
+              {{else}}
+                {{$pushG := index $.InheritedPushGroup .ID}}
+                {{if $pushG}}
+                  {{if .TelegramLinked}}
+                    <span class="badge ok badge-xs" title="Push унаследован от группы {{$pushG}}">Push: {{$pushG}}</span>
+                  {{else}}
+                    <span class="badge warn badge-xs" title="Push унаследован от группы {{$pushG}}, но Telegram не привязан">⚠️ Push: {{$pushG}} (нет ТГ)</span>
+                  {{end}}
+                {{end}}
+              {{end}}
+            </div>
+            <div>
+              {{if .VLAN}}
+                <span class="badge info badge-xs" title="VLAN {{.VLAN}} задан индивидуально">VLAN: {{vlanDesc $.VLANProfiles .VLAN}}</span>
+              {{else}}
+                {{$gVlan := index $.InheritedVLAN .ID}}
+                {{if $gVlan}}
+                  <span class="badge info badge-xs" title="VLAN унаследован от группы {{index $.InheritedVLANGroup .ID}}">VLAN: {{vlanDesc $.VLANProfiles $gVlan}} <span class="dim">({{index $.InheritedVLANGroup .ID}})</span></span>
+                {{end}}
+              {{end}}
+            </div>
+          </div>
+        </td>
+        <td>
+          <div class="users-actions-wrap">
+            <a class="btn secondary sm" href="/admin/users/{{.ID}}">Редактировать</a>
+            <div class="user-dropdown">
+              <button type="button" class="btn secondary sm user-dropdown-toggle" title="Дополнительные действия">•••</button>
+              <div class="user-dropdown-menu">
+                <form action="/admin/users/{{.ID}}" method="post">
+                  {{csrf $.CSRF}}
+                  <input type="hidden" name="do" value="reset-totp">
+                  <button type="submit" class="user-dropdown-item">
+                    <span>🔑</span> <span>Сброс TOTP</span>
+                  </button>
+                </form>
+                <form action="/admin/users/{{.ID}}" method="post">
+                  {{csrf $.CSRF}}
+                  <input type="hidden" name="do" value="reset-webauthn">
+                  <button type="submit" class="user-dropdown-item">
+                    <span>🛡️</span> <span>Сброс passkeys</span>
+                  </button>
+                </form>
+                <form action="/admin/users/{{.ID}}" method="post">
+                  {{csrf $.CSRF}}
+                  <input type="hidden" name="do" value="unlink-telegram">
+                  <button type="submit" class="user-dropdown-item">
+                    <span>✈️</span> <span>Отвязать Telegram</span>
+                  </button>
+                </form>
+                <form action="/admin/users/{{.ID}}" method="post">
+                  {{csrf $.CSRF}}
+                  <input type="hidden" name="do" value="revoke-devices">
+                  <button type="submit" class="user-dropdown-item">
+                    <span>📱</span> <span>Отозвать устройства</span>
+                  </button>
+                </form>
+                <div class="user-dropdown-divider"></div>
+                <form action="/admin/users/{{.ID}}" method="post">
+                  {{csrf $.CSRF}}
+                  <input type="hidden" name="do" value="delete">
+                  <button type="submit" class="user-dropdown-item danger" data-confirm="Удалить пользователя {{.Username}}?">
+                    <span>🗑️</span> <span>Удалить</span>
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    <div id="users-empty" class="users-empty-search is-hidden">
+      Пользователи по заданным критериям не найдены
+    </div>
+  </div>
+
+  <div class="users-pagination-bar" id="users-pagination">
+    <div class="users-pagination-info" id="users-pagination-info">
+      Показано 0 из 0
+    </div>
+    <div class="users-pagination-controls">
+      <div class="per-page-control">
+        <span>На странице:</span>
+        <select id="users-per-page" class="select select-per-page">
+          <option value="25" selected>25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="all">Все</option>
+        </select>
+      </div>
+      <div class="users-page-btns" id="users-page-btns">
+      </div>
+    </div>
+  </div>
+</section>
+
 {{end}}
 
 {{define "userFields"}}
@@ -494,6 +517,7 @@
 {{end}}
 <fieldset class="check-group">
   <legend>Каналы второго фактора</legend>
+  <label class="check"><input type="checkbox" name="prefer_channels" value="app_push"{{if and .Edit (hasChan .Edit.PreferChannels "app_push")}} checked{{end}}> <span>📱 Приложение Ligament (Push)</span></label>
   <label class="check"><input type="checkbox" name="prefer_channels" value="totp"{{if and .Edit (hasChan .Edit.PreferChannels "totp")}} checked{{end}}> <span>TOTP</span></label>
   <label class="check"><input type="checkbox" name="prefer_channels" value="telegram"{{if and .Edit (hasChan .Edit.PreferChannels "telegram")}} checked{{end}}> <span>Telegram</span></label>
   <label class="check"><input type="checkbox" name="prefer_channels" value="email"{{if and .Edit (hasChan .Edit.PreferChannels "email")}} checked{{end}}> <span>Email</span></label>

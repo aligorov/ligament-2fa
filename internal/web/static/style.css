@@ -1250,6 +1250,31 @@ button.select-chip.partial .ad-group-count {
   background: var(--accent-soft);
   color: var(--accent);
 }
+.users-pill.pill-danger {
+  color: var(--err);
+}
+.users-pill.pill-danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--err);
+}
+.users-pill.pill-danger.active {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--err);
+}
+.users-pill.pill-danger .count {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--err);
+}
+.users-pill.pill-danger.active .count {
+  background: var(--err);
+  color: #fff;
+}
+.row-ad-locked {
+  background-color: rgba(239, 68, 68, 0.05);
+}
+.card-edit-user, .card-edit-group {
+  border-left: 4px solid var(--accent);
+}
 
 /* Таблица пользователей */
 .users-table {

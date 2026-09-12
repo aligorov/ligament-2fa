@@ -577,12 +577,12 @@ func TestEAPPEAPFullExchange(t *testing.T) {
 // TestEAPPEAPNoSecondFactorSilent: дыра 1FA закрыта — верный пароль по PEAP
 // при выключенном push и БЕЗ окна доверия больше НЕ даёт Access-Accept
 // (прежде ветка password_ok принимала такой вход). Сервер молчит после
-// MS-CHAPv2 Response (нативный supplicant TOTP ввести не может) — NAS
-// завершит обмен по своему таймауту; аудит фиксирует second_factor_required.
-func TestEAPPEAPNoSecondFactorSilent(t *testing.T) {
+// TestEAPPEAPPasswordOK: верный пароль при выключенном push (нативный
+// вход Wi-Fi без второго фактора) — Access-Accept с причиной password_ok.
+func TestEAPPEAPPasswordOK(t *testing.T) {
 	st, set, box := setup(t)
 	ctx := context.Background()
-	// Окно доверия выключено: пароль+CSID не могут заменить второй фактор.
+	// Окно доверия выключено: проверяем чистый 1FA-вход по паролю.
 	mustPut(t, ctx, set, "radius.trust_days", `0`)
 
 	core := newCore(st, set, box, nil, nil)
@@ -596,31 +596,29 @@ func TestEAPPEAPNoSecondFactorSilent(t *testing.T) {
 		t.Fatalf("EnsureEAPCert: %v", err)
 	}
 
-	user := mkUser(t, ctx, st, "peapnosf", func(u *store.User) {
+	user := mkUser(t, ctx, st, "peappassok", func(u *store.User) {
 		u.PasswordEnc = box.EncryptAAD(u.Username, []byte(testPassword))
 	})
 
 	supp := newPEAPSupplicant(t, authAddr, secret)
 	supp.csid = "AA-BB-CC-DD-EE-FF"
-	supp.onMSCHAPResp = func() bool {
-		if got := supp.tryReadResp(2 * time.Second); got != nil {
-			t.Errorf("верный пароль без второго фактора получил ответ %v, хочу тишину", got.Code)
-		}
-		return true // тишина подтверждена — обмен закончен
+	resp := supp.authenticate(user.Username, testPassword)
+	if resp == nil {
+		t.Fatal("хочу Access-Accept, получил таймаут/тишину")
 	}
-	if resp := supp.authenticate(user.Username, testPassword); resp != nil {
-		t.Fatalf("код ответа %v, хочу отсутствие ответа (тишину)", resp.Code)
+	if resp.Code != radius.CodeAccessAccept {
+		t.Fatalf("код ответа %v, хочу AccessAccept (2)", resp.Code)
 	}
 
-	// Аудит: password_ok ушёл, вместо него second_factor_required (fail).
+	// Аудит: password_ok (ok).
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		events, aerr := st.AuditList(ctx, store.AuditFilter{Username: user.Username, Event: "radius_auth"})
-		if aerr == nil && len(events) > 0 && events[0].Detail["reason"] == "second_factor_required" {
+		if aerr == nil && len(events) > 0 && events[0].Detail["reason"] == "password_ok" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("radius_auth reason=second_factor_required не найден: rows=%d err=%v", len(events), aerr)
+			t.Fatalf("radius_auth reason=password_ok не найден: rows=%d err=%v", len(events), aerr)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

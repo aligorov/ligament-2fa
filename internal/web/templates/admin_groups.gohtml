@@ -5,58 +5,16 @@
   <p class="page-sub">Локальные группы для распределения политик (VLAN, 2FA, RADIUS Push), прав доступа к приложениям OpenID Connect и структурирования пользователей.</p>
 </header>
 
-<section class="card">
-  <div class="card-head">
-    <h2>Список групп</h2>
-    <p>Всего создано локальных групп: {{len .Groups}}.</p>
-  </div>
-  {{if .Groups}}
-  <div class="table-wrap">
-    <table class="table">
-      <tr>
-        <th>Приоритет</th>
-        <th>Название</th>
-        <th>Описание</th>
-        <th>Каналы 2FA</th>
-        <th>VLAN (Wi-Fi)</th>
-        <th>RADIUS Push</th>
-        <th>Участников</th>
-        <th>Создана</th>
-        <th>Действия</th>
-      </tr>
-      {{range .Groups}}
-      <tr>
-        <td><span class="badge neutral" title="Вес группы при участии пользователя в нескольких группах (1–100, чем выше, тем приоритетнее)">{{.Priority}}</span></td>
-        <td class="cell-strong"><span class="badge info">{{.Name}}</span></td>
-        <td>{{if .Description}}{{.Description}}{{else}}<span class="muted">—</span>{{end}}</td>
-        <td>{{if .PreferChannels}}{{range .PreferChannels}}<span class="badge neutral">{{.}}</span> {{end}}{{else}}<span class="muted">—</span>{{end}}</td>
-        <td>{{if .VLAN}}<span class="badge info" title="Сетевой сегмент: Tunnel-Private-Group-Id {{.VLAN}}">{{vlanDesc $.VLANProfiles .VLAN}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
-        <td>{{if .RadiusPush}}<span class="badge ok">да</span>{{else}}<span class="badge neutral">нет</span>{{end}}</td>
-        <td><span class="badge neutral">{{.MemberCount}} польз.</span></td>
-        <td>{{dt .CreatedAt}}</td>
-        <td class="row-actions">
-          <a class="btn secondary sm" href="/admin/groups/{{.ID}}">Участники / Изменить</a>
-          <form action="/admin/groups/{{.ID}}/delete" method="post" class="form-inline">
-            {{csrf $.CSRF}}
-            <button type="submit" class="btn danger sm" data-confirm="Удалить группу {{.Name}}?">Удалить</button>
-          </form>
-        </td>
-      </tr>
-      {{end}}
-    </table>
-  </div>
-  {{else}}
-  <div class="empty">
-    <p>Локальных групп пока нет — создайте первую группу в форме ниже.</p>
-  </div>
-  {{end}}
-</section>
-
 {{if .Edit}}
-<section class="card">
+<section class="card card-edit-group" id="edit-group">
   <div class="card-head">
-    <h2>Редактирование группы: {{.Edit.Name}}</h2>
-    <p>Изменение названия, описания, приоритета, политик 2FA, VLAN и состава участников.</p>
+    <div class="card-head-title">
+      <h2>Редактирование группы: {{.Edit.Name}}</h2>
+      <p>Изменение названия, описания, приоритета, политик 2FA, VLAN и состава участников.</p>
+    </div>
+    <div>
+      <a href="/admin/groups" class="btn secondary sm">✕ Отмена / Закрыть</a>
+    </div>
   </div>
   <form action="/admin/groups/{{.Edit.ID}}" method="post" class="form wide">
     {{csrf .CSRF}}
@@ -131,6 +89,7 @@
 
     <fieldset class="check-group">
       <legend>Каналы второго фактора для группы</legend>
+      <label class="check"><input type="checkbox" name="prefer_channels" value="app_push"{{if hasChan .Edit.PreferChannels "app_push"}} checked{{end}}> <span>📱 Приложение (Push)</span></label>
       <label class="check"><input type="checkbox" name="prefer_channels" value="totp"{{if hasChan .Edit.PreferChannels "totp"}} checked{{end}}> <span>TOTP</span></label>
       <label class="check"><input type="checkbox" name="prefer_channels" value="telegram"{{if hasChan .Edit.PreferChannels "telegram"}} checked{{end}}> <span>Telegram</span></label>
       <label class="check"><input type="checkbox" name="prefer_channels" value="email"{{if hasChan .Edit.PreferChannels "email"}} checked{{end}}> <span>Email</span></label>
@@ -188,7 +147,7 @@
   </form>
 </section>
 {{else}}
-<section class="card">
+<section class="card" id="new-group">
   <div class="card-head">
     <h2>Новая группа</h2>
     <p>Создание группы, назначение политик (VLAN, 2FA, Push) и начальных участников.</p>
@@ -266,6 +225,7 @@
 
     <fieldset class="check-group">
       <legend>Каналы второго фактора для группы</legend>
+      <label class="check"><input type="checkbox" name="prefer_channels" value="app_push"> <span>📱 Приложение (Push)</span></label>
       <label class="check"><input type="checkbox" name="prefer_channels" value="totp"> <span>TOTP</span></label>
       <label class="check"><input type="checkbox" name="prefer_channels" value="telegram"> <span>Telegram</span></label>
       <label class="check"><input type="checkbox" name="prefer_channels" value="email"> <span>Email</span></label>
@@ -314,4 +274,64 @@
   </form>
 </section>
 {{end}}
+
+<section class="card">
+  <div class="card-head">
+    <h2>Список групп</h2>
+    <p>Всего создано локальных групп: {{len .Groups}}.</p>
+  </div>
+  {{if .Groups}}
+  <div class="table-wrap">
+    <table class="table">
+      <tr>
+        <th>Приоритет</th>
+        <th>Название</th>
+        <th>Описание</th>
+        <th>Каналы 2FA</th>
+        <th>VLAN (Wi-Fi)</th>
+        <th>RADIUS Push</th>
+        <th>Участников</th>
+        <th>Создана</th>
+        <th>Действия</th>
+      </tr>
+      {{range .Groups}}
+      <tr>
+        <td><span class="badge neutral" title="Вес группы при участии пользователя в нескольких группах (1–100, чем выше, тем приоритетнее)">{{.Priority}}</span></td>
+        <td class="cell-strong"><span class="badge info">{{.Name}}</span></td>
+        <td>{{if .Description}}{{.Description}}{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>
+          {{if .PreferChannels}}
+            {{range .PreferChannels}}
+              {{if eq . "app_push"}}
+                <span class="badge ok">📱 app_push</span>
+              {{else}}
+                <span class="badge neutral">{{.}}</span>
+              {{end}}
+            {{end}}
+          {{else}}
+            <span class="muted">—</span>
+          {{end}}
+        </td>
+        <td>{{if .VLAN}}<span class="badge info" title="Сетевой сегмент: Tunnel-Private-Group-Id {{.VLAN}}">{{vlanDesc $.VLANProfiles .VLAN}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{if .RadiusPush}}<span class="badge ok">да</span>{{else}}<span class="badge neutral">нет</span>{{end}}</td>
+        <td><span class="badge neutral">{{.MemberCount}} польз.</span></td>
+        <td>{{dt .CreatedAt}}</td>
+        <td class="row-actions">
+          <a class="btn secondary sm" href="/admin/groups/{{.ID}}">Участники / Изменить</a>
+          <form action="/admin/groups/{{.ID}}/delete" method="post" class="form-inline">
+            {{csrf $.CSRF}}
+            <button type="submit" class="btn danger sm" data-confirm="Удалить группу {{.Name}}?">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+  {{else}}
+  <div class="empty">
+    <p>Локальных групп пока нет — создайте первую группу в форме выше.</p>
+  </div>
+  {{end}}
+</section>
+
 {{end}}

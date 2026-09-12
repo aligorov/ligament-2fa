@@ -328,10 +328,23 @@ func (s *Server) finishInnerPAP(w radius.ResponseWriter, r *radius.Request,
 	ctx = context.WithValue(ctx, auth.CtxKeyService, svc)
 	ctx = context.WithValue(ctx, auth.CtxKeyDevice, deviceDesc)
 
+	// Нормализация username (вырезаем домен/realm: domain\user или user@realm)
+	username := inner.UserName
+	if idx := strings.LastIndex(username, "\\"); idx >= 0 {
+		username = username[idx+1:]
+	}
+	if idx := strings.Index(username, "@"); idx >= 0 {
+		username = username[:idx]
+	}
+
 	// Окно доверия: доверенное (user, Calling-Station-Id) устройство при
 	// верном пароле проходит без второго фактора; успешный 2FA
 	// (push_ok/код) продлевает окно (radius.trust_days).
-	accept, reason := s.radiusAuthWithTrust(ctx, inner.UserName, inner.UserPassword, clientMAC, srcIP)
+	// ВАЖНО: освобождаем sess.mu на время потенциального push_wait, чтобы
+	// ретрансмиты точек доступа не блокировались.
+	sess.mu.Unlock()
+	accept, reason := s.radiusAuthWithTrust(ctx, username, inner.UserPassword, clientMAC, srcIP)
+	sess.mu.Lock()
 
 	// Аудит EAP-обмена (в дополнение к radius_auth из ядра): контекст без
 	// отмены — событие переживает отработанный push_wait.
@@ -341,14 +354,14 @@ func (s *Server) finishInnerPAP(w radius.ResponseWriter, r *radius.Request,
 	if accept {
 		result = "ok"
 	}
-	if err := s.st.Audit(auditCtx, inner.UserName, "radius_eap",
+	if err := s.st.Audit(auditCtx, username, "radius_eap",
 		map[string]any{"reason": reason}, srcIP, result); err != nil {
 		slog.Warn("radius: radius_eap не записан в аудит",
-			"user", inner.UserName, "error", err)
+			"user", username, "error", err)
 	}
 
 	if !accept {
-		slog.Info("radius: EAP-TTLS Reject", "user", inner.UserName,
+		slog.Info("radius: EAP-TTLS Reject", "user", username,
 			"reason", reason, "remote", srcIP)
 		s.failEAP(w, r, sess, "внутренний PAP: "+reason)
 		return
@@ -778,18 +791,18 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 			_ = s.st.Audit(ctx, username, "radius_trust_skip",
 				map[string]any{"reason": "trusted_device"}, srcIP, "ok")
 		} else if !s.st.UserEffectiveRadiusPush(ctx, user) {
-			// Пароль верен, но второго фактора нет: push выключен, TOTP-код
-			// ввести некуда. Молчим — NAS завершит обмен по своему таймауту
-			// (ретрансмиты получают последний Challenge). Аудит фиксирует
-			// закрытую дыру 1FA.
-			_ = s.st.Audit(ctx, username, "radius_auth",
-				map[string]any{"reason": "second_factor_required"}, srcIP, "fail")
-			slog.Info("radius: PEAP пароль верен, но второй фактор недоступен (push выключен) — ответа нет, таймаут NAS",
-				"user", username, "remote", srcIP)
-			return
+			// Нативный вход Wi-Fi (1FA): если push не включён для пользователя
+			// или его групп, аутентификация по подтверждённому паролю MS-CHAPv2
+			// успешна. Суппликанты WPA2-Enterprise не имеют поля ввода TOTP.
+			_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "password_ok"}, srcIP, "ok")
 		} else {
-			// Пропускаем через конвейер s.core.RADIUSAuth (Telegram/app push-удержание)
+			// Пропускаем через конвейер s.core.RADIUSAuth (Telegram/app push-удержание).
+			// ВАЖНО: освобождаем sess.mu на время долгого сетевого ожидания
+			// (до 20-30 сек), чтобы ретрансмиты от точки доступа (UDP 3-5 сек)
+			// не блокировались в handleEAPAuth и могли штатно повторять ответ!
+			sess.mu.Unlock()
 			accept, reason := s.core.RADIUSAuth(ctx, username, matched.pwdString, srcIP)
+			sess.mu.Lock()
 			if !accept {
 				slog.Info("radius: RADIUSAuth отклонил запрос", "user", username, "reason", reason, "remote", srcIP)
 				s.failMSCHAPv2(w, r, sess, resp.ID, reason)

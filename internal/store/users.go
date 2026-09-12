@@ -48,6 +48,7 @@ type User struct {
 	PasswordEnc    []byte   // AES-256-GCM шифрованный пароль под master_key с AAD username (миграция 0005)
 	LDAPGroups     []string // группы из каталога LDAP/Active Directory (миграция 0006)
 	SupportRoles   []string // роли поддержки: "it", "1c" (миграция 0009)
+	LDAPLocked     bool     // отключён или заблокирован в каталоге Active Directory/LDAP (миграция 0015)
 }
 
 // IsSupportIT проверяет, является ли пользователь инженером IT-поддержки.
@@ -107,7 +108,7 @@ type scanner interface{ Scan(dest ...any) error }
 // updated_at — они не входят в структуру User).
 const userCols = `id, username, password_hash, role, enabled, email, phone,
 	telegram_chat_id, prefer_channels, radius_push, radius_reply, webauthn_id,
-	source, display_name, password_enc, ldap_groups, support_roles`
+	source, display_name, password_enc, ldap_groups, support_roles, ldap_locked`
 
 // defaultChannels возвращает свежую копию каналов по умолчанию.
 func defaultChannels() []channel.Channel {
@@ -180,7 +181,7 @@ func scanUser(row scanner) (*User, error) {
 		&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled,
 		&u.Email, &u.Phone, &u.TelegramChatID, &preferRaw, &u.RadiusPush,
 		&replyRaw, &u.WebAuthnID, &u.Source, &u.DisplayName, &u.PasswordEnc,
-		&u.LDAPGroups, &u.SupportRoles,
+		&u.LDAPGroups, &u.SupportRoles, &u.LDAPLocked,
 	); err != nil {
 		return nil, err
 	}
@@ -259,11 +260,11 @@ func (s *Store) UserCreate(ctx context.Context, u *User) error {
 	_, err = s.Pool().Exec(ctx, `INSERT INTO users
 		(id, username, password_hash, role, enabled, email, phone,
 		 telegram_chat_id, prefer_channels, radius_push, radius_reply, webauthn_id,
-		 source, display_name, password_enc, ldap_groups, support_roles)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		 source, display_name, password_enc, ldap_groups, support_roles, ldap_locked)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
 		u.ID, u.Username, u.PasswordHash, u.Role, u.Enabled, u.Email, u.Phone,
 		u.TelegramChatID, prefer, u.RadiusPush, reply, u.WebAuthnID,
-		u.Source, u.DisplayName, u.PasswordEnc, u.LDAPGroups, u.SupportRoles)
+		u.Source, u.DisplayName, u.PasswordEnc, u.LDAPGroups, u.SupportRoles, u.LDAPLocked)
 	if err != nil {
 		return fmt.Errorf("store: создать пользователя %q: %w", u.Username, err)
 	}
@@ -295,11 +296,11 @@ func (s *Store) UserUpdate(ctx context.Context, u *User) error {
 		email = $6, phone = $7, telegram_chat_id = $8, prefer_channels = $9,
 		radius_push = $10, radius_reply = $11, webauthn_id = $12,
 		source = $13, display_name = $14, password_enc = $15, ldap_groups = $16,
-		support_roles = $17, updated_at = now()
+		support_roles = $17, ldap_locked = $18, updated_at = now()
 		WHERE id = $1`,
 		u.ID, u.Username, u.PasswordHash, u.Role, u.Enabled, u.Email, u.Phone,
 		u.TelegramChatID, prefer, u.RadiusPush, reply, u.WebAuthnID,
-		u.Source, u.DisplayName, u.PasswordEnc, u.LDAPGroups, u.SupportRoles)
+		u.Source, u.DisplayName, u.PasswordEnc, u.LDAPGroups, u.SupportRoles, u.LDAPLocked)
 	if err != nil {
 		return fmt.Errorf("store: обновить пользователя %s: %w", u.ID, err)
 	}

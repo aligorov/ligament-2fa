@@ -1841,7 +1841,7 @@ func (a *AdminAPI) handleLdapSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r.Context(), "ldap_sync_users_ok", map[string]any{
-		"total": res.TotalFound, "created": res.Created, "updated": res.Updated, "skipped": res.Skipped, "via": "api",
+		"total": res.TotalFound, "created": res.Created, "updated": res.Updated, "locked": res.Locked, "skipped": res.Skipped, "via": "api",
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,

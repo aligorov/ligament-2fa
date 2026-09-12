@@ -130,7 +130,7 @@ func parseChannels(names []string) ([]channel.Channel, bool) {
 	for _, n := range names {
 		ch := channel.Channel(n)
 		switch ch {
-		case channel.TOTP, channel.Email, channel.SMS, channel.Telegram, channel.TelegramPush:
+		case channel.TOTP, channel.Email, channel.SMS, channel.Telegram, channel.TelegramPush, channel.AppPush:
 			out = append(out, ch)
 		default:
 			return nil, false

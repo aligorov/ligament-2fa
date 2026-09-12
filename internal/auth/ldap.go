@@ -112,6 +112,8 @@ type ldapAuthResult struct {
 	dn, email, phone, displayName, role string
 	groups                              []string
 	radiusReply                         map[string]string
+	isLocked                            bool
+	lockReason                          string
 }
 
 // ldapOpTimeout — безусловный потолок LDAP-операций (dial + сервисный
@@ -148,7 +150,14 @@ func (v *LdapVerifier) Verify(ctx context.Context, username, password string) (*
 		}
 		return nil, err
 	}
-	return v.syncUser(ctx, username, res, t.LDAP)
+	u, err := v.syncUser(ctx, username, res, t.LDAP)
+	if err != nil {
+		return nil, err
+	}
+	if !u.Enabled {
+		return nil, ErrBadCredentials
+	}
+	return u, nil
 }
 
 // authenticate — протокольная часть: соединение, сервисный bind (при
@@ -203,11 +212,27 @@ func (v *LdapVerifier) authenticate(ctx context.Context, cfg settings.LDAPSettin
 	if entry.DN == "" {
 		return nil, fmt.Errorf("auth/ldap: запись пользователя без DN")
 	}
+	locked, lockReason := isADAccountDisabledOrLocked(entry)
 	res := &ldapAuthResult{
 		dn:          entry.DN,
 		email:       entry.GetAttributeValue(cfg.Attrs.Email),
 		phone:       entry.GetAttributeValue(cfg.Attrs.Phone),
 		displayName: entry.GetAttributeValue(cfg.Attrs.DisplayName),
+		isLocked:    locked,
+		lockReason:  lockReason,
+	}
+
+	if locked {
+		slog.WarnContext(ctx, "auth/ldap: учётная запись пользователя отключена или заблокирована в каталоге",
+			"username", username, "reason", lockReason)
+		if u, err := v.st.UserByUsername(ctx, username); err == nil && u.Source == store.SourceLDAP {
+			if u.Enabled || !u.LDAPLocked {
+				u.Enabled = false
+				u.LDAPLocked = true
+				_ = v.st.UserUpdate(ctx, u)
+			}
+		}
+		return nil, ErrBadCredentials
 	}
 
 	// Группы нужны для allow-list, role_map, group_radius_map и OIDC/групп.
@@ -258,6 +283,17 @@ func (v *LdapVerifier) authenticate(ctx context.Context, cfg settings.LDAPSettin
 	// Проверка пароля: bind от имени пользователя. Неверные учётные данные —
 	// ожидаемый 49-й код; прочие ошибки каталога — внутренние.
 	if err := conn.Bind(entry.DN, password); err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "data 533") || strings.Contains(errStr, "data 775") || strings.Contains(errStr, "data 701") {
+			slog.WarnContext(ctx, "auth/ldap: отказ bind — учётная запись отключена или заблокирована в каталоге AD",
+				"username", username, "error", errStr)
+			if u, uerr := v.st.UserByUsername(ctx, username); uerr == nil && u.Source == store.SourceLDAP {
+				u.Enabled = false
+				u.LDAPLocked = true
+				_ = v.st.UserUpdate(ctx, u)
+			}
+			return nil, ErrBadCredentials
+		}
 		if ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
 			return nil, ErrBadCredentials
 		}
@@ -286,9 +322,10 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 	case errors.Is(err, store.ErrNotFound):
 		create = true
 		u = &store.User{
-			Username: username,
-			Role:     "user",
-			Enabled:  true,
+			Username:     username,
+			Role:         "user",
+			Enabled:      !res.isLocked,
+			LDAPLocked:   res.isLocked,
 			// Локальный вход невозможен: хеш случайного секрета, пароль
 			// никто не знает (в т.ч. администратор twofa).
 			PasswordHash: secrets.HashPassword(secrets.RandomToken(32)),
@@ -298,14 +335,25 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 	default:
 		return nil, err
 	}
-	if !u.Enabled {
-		// Отключён админом: синхронизация не ре-включает учётную запись.
-		return nil, ErrBadCredentials
+
+	changed := false
+	if res.isLocked {
+		if u.Enabled || !u.LDAPLocked {
+			u.Enabled = false
+			u.LDAPLocked = true
+			changed = true
+		}
+	} else if u.LDAPLocked {
+		u.LDAPLocked = false
+		u.Enabled = true
+		changed = true
 	}
 
-	changed := u.Email != res.email || u.Phone != res.phone ||
+	if u.Email != res.email || u.Phone != res.phone ||
 		u.DisplayName != res.displayName || u.Role != res.role ||
-		!reflect.DeepEqual(u.LDAPGroups, res.groups)
+		!reflect.DeepEqual(u.LDAPGroups, res.groups) {
+		changed = true
+	}
 	u.Email = res.email
 	u.Phone = res.phone
 	u.DisplayName = res.displayName
@@ -348,8 +396,9 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 					"username", username)
 				return nil, store.ErrNotFound
 			}
-			if !raced.Enabled {
-				return nil, ErrBadCredentials
+			if res.isLocked {
+				raced.Enabled = false
+				raced.LDAPLocked = true
 			}
 			u = raced
 			if u.Email != res.email || u.Phone != res.phone ||
@@ -493,6 +542,8 @@ type LdapUserLookupResult struct {
 	Allowed     bool              `json:"allowed"`
 	Role        string            `json:"role"`
 	RadiusReply map[string]string `json:"radius_reply,omitempty"`
+	Locked      bool              `json:"locked"`
+	LockReason  string            `json:"lock_reason,omitempty"`
 	Message     string            `json:"message"`
 }
 
@@ -547,12 +598,15 @@ func (v *LdapVerifier) TestUserLookup(ctx context.Context, username string) (*Ld
 	}
 
 	entry := userRes.Entries[0]
+	locked, lockReason := isADAccountDisabledOrLocked(entry)
 	res := &LdapUserLookupResult{
 		Username:    username,
 		DN:          entry.DN,
 		Email:       entry.GetAttributeValue(cfg.Attrs.Email),
 		Phone:       entry.GetAttributeValue(cfg.Attrs.Phone),
 		DisplayName: entry.GetAttributeValue(cfg.Attrs.DisplayName),
+		Locked:      locked,
+		LockReason:  lockReason,
 	}
 
 	groups := []string{}
@@ -585,7 +639,10 @@ func (v *LdapVerifier) TestUserLookup(ctx context.Context, username string) (*Ld
 	res.Role = resolveRole(groups, cfg.RoleMap)
 	res.RadiusReply = ResolveGroupRadiusAttrs(groups, cfg.GroupRadiusMap)
 
-	if !res.Allowed {
+	if locked {
+		res.Allowed = false
+		res.Message = fmt.Sprintf("Пользователь найден (%s), но учётная запись ЗАБЛОКИРОВАНА в каталоге: %s.", entry.DN, lockReason)
+	} else if !res.Allowed {
 		res.Message = fmt.Sprintf("Пользователь найден (%s), но доступ ЗАПРЕЩЕН: не входит ни в одну из разрешённых групп allow_groups.", entry.DN)
 	} else {
 		res.Message = fmt.Sprintf("Пользователь найден (%s), групп: %d, роль: %s.", entry.DN, len(groups), res.Role)
@@ -598,6 +655,7 @@ type LdapSyncResult struct {
 	TotalFound int      `json:"total_found"`
 	Created    int      `json:"created"`
 	Updated    int      `json:"updated"`
+	Locked     int      `json:"locked"`
 	Skipped    int      `json:"skipped"`
 	Errors     []string `json:"errors,omitempty"`
 	Message    string   `json:"message"`
@@ -700,6 +758,11 @@ func (v *LdapVerifier) SyncUsers(ctx context.Context, maxCount int) (*LdapSyncRe
 			continue
 		}
 
+		locked, lockReason := isADAccountDisabledOrLocked(entry)
+		if locked {
+			res.Locked++
+		}
+
 		authRes := &ldapAuthResult{
 			dn:          entry.DN,
 			email:       entry.GetAttributeValue(cfg.Attrs.Email),
@@ -708,6 +771,8 @@ func (v *LdapVerifier) SyncUsers(ctx context.Context, maxCount int) (*LdapSyncRe
 			groups:      groups,
 			role:        resolveRole(groups, cfg.RoleMap),
 			radiusReply: ResolveGroupRadiusAttrs(groups, cfg.GroupRadiusMap),
+			isLocked:    locked,
+			lockReason:  lockReason,
 		}
 
 		existing, err := v.st.UserByUsername(ctx, uname)
@@ -732,8 +797,8 @@ func (v *LdapVerifier) SyncUsers(ctx context.Context, maxCount int) (*LdapSyncRe
 		}
 	}
 
-	res.Message = fmt.Sprintf("Синхронизация завершена: найдено %d, создано новых %d, обновлено %d, пропущено %d.",
-		res.TotalFound, res.Created, res.Updated, res.Skipped)
+	res.Message = fmt.Sprintf("Синхронизация завершена: найдено %d, создано новых %d, обновлено %d, заблокировано в АД %d, пропущено %d.",
+		res.TotalFound, res.Created, res.Updated, res.Locked, res.Skipped)
 	if len(res.Errors) > 0 {
 		res.Message += fmt.Sprintf(" (ошибок: %d)", len(res.Errors))
 	}
@@ -875,9 +940,46 @@ func substFilter(filter, placeholder, value string) string {
 	return strings.ReplaceAll(filter, placeholder, ldap.EscapeFilter(value))
 }
 
-// ldapAttrs — список запрашиваемых атрибутов контактов (непустые имена).
+// isADAccountDisabledOrLocked проверяет статус блокировки или отключения в каталоге Active Directory / LDAP.
+// Возвращает true и причину, если учётная запись отключена или заблокирована.
+func isADAccountDisabledOrLocked(entry *ldap.Entry) (bool, string) {
+	if entry == nil {
+		return false, ""
+	}
+	// Active Directory: битовая маска userAccountControl
+	// 0x0002 = ACCOUNTDISABLE (отключена администратором)
+	// 0x0010 = LOCKOUT (заблокирована из-за превышения числа неверных паролей)
+	if uacStr := entry.GetAttributeValue("userAccountControl"); uacStr != "" {
+		var uac int64
+		if _, err := fmt.Sscanf(uacStr, "%d", &uac); err == nil {
+			if uac&0x0002 != 0 {
+				return true, "Отключена в Active Directory (ACCOUNTDISABLE)"
+			}
+			if uac&0x0010 != 0 {
+				return true, "Заблокирована в Active Directory (LOCKOUT)"
+			}
+		}
+	}
+	// Active Directory: lockoutTime > 0
+	if lotStr := entry.GetAttributeValue("lockoutTime"); lotStr != "" && lotStr != "0" {
+		return true, "Блокировка по неверным паролям в AD (lockoutTime)"
+	}
+	// OpenLDAP / 389 Directory Server / FreeIPA
+	if strings.EqualFold(entry.GetAttributeValue("nsAccountLock"), "true") {
+		return true, "Заблокирована в каталоге (nsAccountLock)"
+	}
+	if pwdLock := entry.GetAttributeValue("pwdAccountLockedTime"); pwdLock != "" && pwdLock != "0" {
+		return true, "Заблокирована парольной политикой (pwdAccountLockedTime)"
+	}
+	return false, ""
+}
+
+// ldapAttrs — список запрашиваемых атрибутов контактов и статуса учётной записи (непустые имена).
 func ldapAttrs(cfg settings.LDAPSettings) []string {
-	attrs := []string{"sAMAccountName", "uid", "userPrincipalName", "cn", "memberOf", "primaryGroupID"}
+	attrs := []string{
+		"sAMAccountName", "uid", "userPrincipalName", "cn", "memberOf", "primaryGroupID",
+		"userAccountControl", "lockoutTime", "nsAccountLock", "pwdAccountLockedTime",
+	}
 	for _, a := range []string{cfg.Attrs.Email, cfg.Attrs.Phone, cfg.Attrs.DisplayName} {
 		if a != "" {
 			attrs = append(attrs, a)

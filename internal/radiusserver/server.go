@@ -395,12 +395,12 @@ func (s *Server) checkRequestMessageAuthenticator(r *radius.Request) bool {
 	_, errEAP := rfc2869.EAPMessage_Lookup(r.Packet)
 	reason := ""
 	switch {
-	case errEAP == nil: // EAP-Message присутствует
+	case errEAP == nil && s.m.Get().Radius.RequireMessageAuthenticator:
 		reason = "missing_eap"
 	case s.m.Get().Radius.RequireMessageAuthenticator:
 		reason = "missing"
 	default:
-		return true // MA нет, но политика разрешает (легаси-NAS)
+		return true // MA нет, но политика разрешает (совместимость с точками доступа без MA)
 	}
 	slog.Warn("radius: Access-Request без Message-Authenticator — пакет отброшен (RFC 3579 §3.2)",
 		"remote", srcIP, "reason", reason)

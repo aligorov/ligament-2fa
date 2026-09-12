@@ -544,6 +544,7 @@ function initUsersTable() {
   let countLocal = 0;
   let countAdmin = 0;
   let countDisabled = 0;
+  let countADLocked = 0;
 
   rows.forEach((r) => {
     if (r.dataset.source === "ldap") countLdap++;
@@ -551,6 +552,7 @@ function initUsersTable() {
 
     if (r.dataset.role === "admin") countAdmin++;
     if (r.dataset.enabled === "0") countDisabled++;
+    if (r.dataset.adLocked === "1") countADLocked++;
   });
 
   const elAll = document.getElementById("count-all");
@@ -558,12 +560,14 @@ function initUsersTable() {
   const elLocal = document.getElementById("count-local");
   const elAdmin = document.getElementById("count-admin");
   const elDisabled = document.getElementById("count-disabled");
+  const elADLocked = document.getElementById("count-ad-locked");
 
   if (elAll) elAll.textContent = countAll;
   if (elLdap) elLdap.textContent = countLdap;
   if (elLocal) elLocal.textContent = countLocal;
   if (elAdmin) elAdmin.textContent = countAdmin;
   if (elDisabled) elDisabled.textContent = countDisabled;
+  if (elADLocked) elADLocked.textContent = countADLocked;
 
   let currentFilter = "all";
   let currentQuery = "";
@@ -578,6 +582,7 @@ function initUsersTable() {
       if (currentFilter === "local" && r.dataset.source === "ldap") return false;
       if (currentFilter === "admin" && r.dataset.role !== "admin") return false;
       if (currentFilter === "disabled" && r.dataset.enabled !== "0") return false;
+      if (currentFilter === "ad-locked" && r.dataset.adLocked !== "1") return false;
 
       if (q) {
         const u = (r.dataset.username || "").toLowerCase();
@@ -585,7 +590,9 @@ function initUsersTable() {
         const e = (r.dataset.email || "").toLowerCase();
         const p = (r.dataset.phone || "").toLowerCase();
         const g = (r.dataset.groups || "").toLowerCase();
-        if (!u.includes(q) && !n.includes(q) && !e.includes(q) && !p.includes(q) && !g.includes(q)) {
+        const isLocked = r.dataset.adLocked === "1";
+        const lockMatch = isLocked && ("заблокирован".includes(q) || "ad".includes(q) || "ад".includes(q) || "locked".includes(q));
+        if (!u.includes(q) && !n.includes(q) && !e.includes(q) && !p.includes(q) && !g.includes(q) && !lockMatch) {
           return false;
         }
       }

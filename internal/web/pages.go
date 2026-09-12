@@ -212,6 +212,17 @@ func (d AdminUsersData) CountDisabled() int {
 	return c
 }
 
+// CountADLocked возвращает количество заблокированных в Active Directory пользователей.
+func (d AdminUsersData) CountADLocked() int {
+	c := 0
+	for _, u := range d.Users {
+		if u.LDAPLocked {
+			c++
+		}
+	}
+	return c
+}
+
 // AdminGroupsData — /admin/groups: список локальных групп и форма создания/редактирования.
 type AdminGroupsData struct {
 	BaseData

@@ -81,7 +81,7 @@ class AppsScreen extends StatelessWidget {
                             Container(
                               padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF0284C7).withOpacity(0.15),
+                                color: const Color(0xFF0284C7).withValues(alpha: 0.15),
                                 shape: BoxShape.circle,
                               ),
                               child: const Icon(Icons.shield_outlined, size: 36, color: Color(0xFF38BDF8)),

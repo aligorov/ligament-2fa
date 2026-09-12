@@ -1,4 +1,4 @@
-﻿// LigamentCredential.cpp — Implementation of Credential tile logic
+// LigamentCredential.cpp — Implementation of Credential tile logic
 #include "LigamentCredential.h"
 #include <wincred.h> // CredProtectW/CredIsProtectedW (wincred.h)
 
@@ -287,6 +287,9 @@ HRESULT LigamentCredential::SetStringValue(DWORD dwFieldID, PCWSTR psz) {
         break;
     }
     case FID_PASSWORD:
+        if (m_password != psz) {
+            ResetAuthState();
+        }
         m_password = psz;
         break;
     case FID_OTP_CODE:
@@ -460,6 +463,9 @@ void LigamentCredential::RunPushPolling() {
                     m_pollState.done = true;
                 }
                 LeaveCriticalSection(&m_csPoll);
+                if (m_pEvents) {
+                    m_pEvents->OnCredentialsChanged(this);
+                }
                 return;
             }
             // "pending" and unknown statuses: keep polling
@@ -477,6 +483,9 @@ void LigamentCredential::RunPushPolling() {
         m_pollState.done = true;
     }
     LeaveCriticalSection(&m_csPoll);
+    if (m_pEvents) {
+        m_pEvents->OnCredentialsChanged(this);
+    }
 }
 
 void LigamentCredential::StopPollThread() {
@@ -752,13 +761,9 @@ HRESULT LigamentCredential::ReportResult(
         SecureZeroMemory(&m_otpCode[0], m_otpCode.size() * sizeof(wchar_t));
         m_otpCode.clear();
     }
-    if (ntsStatus != 0) {
-        // LSASS rejected the logon (expired password, domain issues, clock
-        // skew, ...): the confirmed second factor is void and must not open
-        // the door for the next attempt — possibly under another user name.
-        m_authenticated = false;
-        StopPollThread();
-    }
+    // A confirmed second factor must not survive any logon attempt (success or failure),
+    // tile deselection, or password change, completely preventing 2FA bypass.
+    ResetAuthState();
     return S_OK;
 }
 
