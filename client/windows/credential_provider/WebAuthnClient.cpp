@@ -14,9 +14,18 @@ WebAuthnClient::WebAuthnClient() {
     }
 
     if (m_hWebAuthn) {
-        m_pfnGetAssertion = (FnWebAuthnAuthenticatorGetAssertion)GetProcAddress(m_hWebAuthn, "WebAuthnAuthenticatorGetAssertion");
-        m_pfnFreeAssertion = (FnWebAuthnFreeAssertion)GetProcAddress(m_hWebAuthn, "WebAuthnFreeAssertion");
-        m_pfnIsUVPAA = (FnWebAuthnIsUserVerifyingPlatformAuthenticatorAvailable)GetProcAddress(m_hWebAuthn, "WebAuthnIsUserVerifyingPlatformAuthenticatorAvailable");
+        auto getProc = [](HMODULE h, const char* name1, const char* name2) -> FARPROC {
+            FARPROC p = GetProcAddress(h, name1);
+            if (!p && name2) p = GetProcAddress(h, name2);
+            return p;
+        };
+
+        m_pfnGetAssertion = (FnWebAuthnAuthenticatorGetAssertion)getProc(
+            m_hWebAuthn, "WebAuthNAuthenticatorGetAssertion", "WebAuthnAuthenticatorGetAssertion");
+        m_pfnFreeAssertion = (FnWebAuthnFreeAssertion)getProc(
+            m_hWebAuthn, "WebAuthNFreeAssertion", "WebAuthnFreeAssertion");
+        m_pfnIsUVPAA = (FnWebAuthnIsUserVerifyingPlatformAuthenticatorAvailable)getProc(
+            m_hWebAuthn, "WebAuthNIsUserVerifyingPlatformAuthenticatorAvailable", "WebAuthnIsUserVerifyingPlatformAuthenticatorAvailable");
         LogDebug(L"webauthn: DLL загружена, GetAssertion=%p FreeAssertion=%p UVPAA=%p",
             m_pfnGetAssertion, m_pfnFreeAssertion, m_pfnIsUVPAA);
     } else {

@@ -65,6 +65,18 @@ if (Test-Path "$CpDir\build\Release\LigamentCredentialProvider.dll") {
     
     $installBat = @"
 @echo off
+:: Check for Administrator privileges
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ========================================================
+    echo [ERROR] Требуются права Администратора!
+    echo Запустите install.bat правой кнопкой мыши:
+    echo "Запуск от имени администратора" (Run as administrator).
+    echo ========================================================
+    pause
+    exit /b 1
+)
+
 echo ========================================================
 echo Updating Ligament 2FA Credential Provider for RDP...
 echo ========================================================
@@ -80,9 +92,10 @@ if exist "%SystemRoot%\System32\LigamentCredentialProvider.dll" (
 
 :: 3. Copy new DLL into place
 copy /Y "%~dp0LigamentCredentialProvider.dll" "%SystemRoot%\System32\LigamentCredentialProvider.dll"
-if not exist "%SystemRoot%\System32\LigamentCredentialProvider.dll" (
-    echo [ERROR] Failed to copy LigamentCredentialProvider.dll to System32!
-    echo Please make sure you are running this script as Administrator.
+if %errorlevel% neq 0 (
+    echo ========================================================
+    echo [ERROR] Ошибка копирования DLL в %SystemRoot%\System32 (код %errorlevel%)!
+    echo ========================================================
     pause
     exit /b 1
 )
