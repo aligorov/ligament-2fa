@@ -673,6 +673,7 @@ func TestDefaultsCoverKnownKeys(t *testing.T) {
 		"radius.secret", "radius.code_lengths", "radius.max_fail_per_user",
 		"radius.fail_window", "radius.push_wait", "radius.require_message_authenticator",
 		"radius.rate_limit_pps", "radius.reply_attributes",
+		"radius.trust_days",
 		"radius.vlan_profiles", "radius.nas_inventory",
 		"radius.cert_file", "radius.key_file", "radius.eap_cert", "acme",
 		"smtp", "sms.gateway", "sms.presets", "totp", "telegram", "webauthn",

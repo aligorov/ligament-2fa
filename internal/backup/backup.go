@@ -7,7 +7,12 @@
 // master_key в дамп НЕ входит: TOTP-секреты лежат шифротекстом AES-GCM с
 // мастер-ключом, поэтому восстановление на другую инсталляцию требует того
 // же master_key (первая строка дампа — предупреждение; см. README
-// «Бэкап и перенос»).
+// «Бэкап и перенос»). Restore на живую инсталляцию master_key не затирает:
+// DELETE FROM settings в дампе фильтруется (WHERE key <> 'master_key'),
+// иначе ключ был бы удалён, generatedKeys молча создал бы новый и весь
+// шифротекст (totp_secrets.secret_enc, users.password_enc) стал бы мусором.
+// При этом сам дамп — секретен: кроме настроек он содержит admin_token и
+// приватные ключи (oidc.keys, radius.eap_cert).
 package backup
 
 import (
@@ -33,11 +38,15 @@ type Options struct {
 }
 
 // tableSpec — одна таблица дампа: детерминированный порядок строк и
-// опциональное исключение отдельных строк (settings/master_key).
+// опциональное исключение строк по значению колонки (settings/master_key).
+// Исключение действует в обе стороны: такие строки не выгружаются (SELECT)
+// и не затираются при восстановлении (DELETE фильтруется тем же условием) —
+// иначе restore на живую инсталляцию удалил бы master_key.
 type tableSpec struct {
-	name    string                        // имя таблицы
-	order   string                        // ORDER BY (стабильный дамп и сравнение)
-	exclude func(firstColVal string) bool // фильтр по значению ПЕРВОЙ колонки
+	name       string // имя таблицы
+	order      string // ORDER BY (стабильный дамп и сравнение)
+	excludeCol string // колонка исключения; пусто — исключения нет
+	excludeVal string // исключаемое значение (сейчас только master_key)
 }
 
 // tables — порядок таблиц по FK: родители (users) раньше ссылающихся на
@@ -54,9 +63,10 @@ var tables = []tableSpec{
 	{name: "backup_codes", order: "id"},
 	{name: "challenges", order: "id"},
 	{name: "sessions", order: "token_hash"},
-	{name: "settings", order: "key", exclude: func(key string) bool { return key == "master_key" }},
+	{name: "settings", order: "key", excludeCol: "key", excludeVal: "master_key"},
 	{name: "audit_log", order: "id"},
 	{name: "trusted_devices", order: "id"},
+	{name: "radius_trusted_devices", order: "id"},
 	{name: "webauthn_credentials", order: "id"},
 	{name: "oidc_clients", order: "client_id"},
 	{name: "ip_lists", order: "id"},
@@ -70,10 +80,11 @@ var tables = []tableSpec{
 // значений последовательность выставляется за максимумом, иначе первые
 // вставки после восстановления упрутся в дубликат ключа.
 var serialTables = map[string]string{
-	"backup_codes":         "id",
-	"audit_log":            "id",
-	"trusted_devices":      "id",
-	"webauthn_credentials": "id",
+	"radius_trusted_devices": "id",
+	"backup_codes":           "id",
+	"audit_log":              "id",
+	"trusted_devices":        "id",
+	"webauthn_credentials":   "id",
 }
 
 // Dump генерирует полный логический дамп в SQL-скрипт (в памяти). Скрипт
@@ -83,9 +94,14 @@ var serialTables = map[string]string{
 func Dump(ctx context.Context, pool *pgxpool.Pool, opts Options) ([]byte, error) {
 	var b bytes.Buffer
 	b.WriteString("-- twofa: логический бэкап базы (twofa -backup / GET /api/v1/admin/backup).\n")
-	b.WriteString("-- ВНИМАНИЕ: master_key НЕ входит в дамп. TOTP-секреты зашифрованы master_key:\n")
+	b.WriteString("-- ВНИМАНИЕ: дамп секретен — кроме настроек он содержит admin_token и\n")
+	b.WriteString("-- приватные ключи (oidc.keys, radius.eap_cert). Обращаться с ним так же\n")
+	b.WriteString("-- строго, как с самими секретами.\n")
+	b.WriteString("-- master_key НЕ входит в дамп. TOTP-секреты зашифрованы master_key:\n")
 	b.WriteString("-- восстановление на другую инсталляцию требует ТОГО ЖЕ master_key\n")
 	b.WriteString("-- (выгрузите его отдельно: select value from settings where key='master_key').\n")
+	b.WriteString("-- settings при восстановлении чистится условно (WHERE key <> 'master_key'):\n")
+	b.WriteString("-- restore на живую инсталляцию не затирает её master_key.\n")
 	b.WriteString("-- Сгенерирован: " + time.Now().UTC().Format(time.RFC3339) + "\n")
 	b.WriteString("BEGIN;\n\n")
 
@@ -111,15 +127,12 @@ func dumpTable(ctx context.Context, pool *pgxpool.Pool, b *bytes.Buffer, tb tabl
 	}
 
 	query := `SELECT ` + strings.Join(sel, ", ") + ` FROM ` + tb.name
-	if tb.exclude != nil {
-		query += ` WHERE ` + firstColumn(tb.name) + ` <> $1`
+	var args []any
+	if tb.excludeCol != "" {
+		query += ` WHERE ` + tb.excludeCol + ` <> $1`
+		args = []any{tb.excludeVal}
 	}
 	query += ` ORDER BY ` + tb.order
-
-	var args []any
-	if tb.exclude != nil {
-		args = []any{"master_key"}
-	}
 	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("backup: чтение %s: %w", tb.name, err)
@@ -138,7 +151,7 @@ func dumpTable(ctx context.Context, pool *pgxpool.Pool, b *bytes.Buffer, tb tabl
 		return fmt.Errorf("backup: итерация %s: %w", tb.name, err)
 	}
 
-	fmt.Fprintf(b, "DELETE FROM %s;\n", tb.name)
+	b.WriteString(deleteStatement(tb))
 	stmts, err := insertStatements(tb.name, cols, data, rowsPerInsert)
 	if err != nil {
 		return err
@@ -150,6 +163,20 @@ func dumpTable(ctx context.Context, pool *pgxpool.Pool, b *bytes.Buffer, tb tabl
 	}
 	b.WriteString("\n")
 	return nil
+}
+
+// deleteStatement — очистка таблицы перед вставкой строк. Для таблиц с
+// исключением (settings) DELETE фильтруется тем же условием, что и выгрузка
+// строк: restore на живую инсталляцию не затирает master_key. Голый DELETE
+// удалил бы ключ, generatedKeys молча создал бы новый, и весь шифротекст
+// (totp_secrets.secret_enc, users.password_enc) стал бы мусором. Значение
+// excludeVal — константа этого файла без одинарных кавычек, поэтому простого
+// литерала '…' достаточно.
+func deleteStatement(tb tableSpec) string {
+	if tb.excludeCol != "" {
+		return fmt.Sprintf("DELETE FROM %s WHERE %s <> '%s';\n", tb.name, tb.excludeCol, tb.excludeVal)
+	}
+	return fmt.Sprintf("DELETE FROM %s;\n", tb.name)
 }
 
 // OID json/jsonb (pgconn не экспортирует константы всех типов).
@@ -178,16 +205,6 @@ func tableColumns(ctx context.Context, pool *pgxpool.Pool, table string) (cols, 
 		}
 	}
 	return cols, sel, nil
-}
-
-// firstColumn — имя первой колонки таблицы для фильтра исключения.
-// Используется только для settings (первая колонка в схеме — key); список
-// короткий, отдельного запроса в catalog не требуется.
-func firstColumn(table string) string {
-	if table == "settings" {
-		return "key"
-	}
-	return "1"
 }
 
 // insertStatements собирает multi-row INSERT-операторы по maxRows строк

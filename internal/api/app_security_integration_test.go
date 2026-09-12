@@ -16,9 +16,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pquerna/otp"
+	"github.com/pquerna/otp/hotp"
 	"github.com/pquerna/otp/totp"
 
 	"github.com/aligorov/twofa/internal/auth"
+	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/store"
 )
@@ -469,4 +472,181 @@ func uuidMustParse(t *testing.T, s string) uuid.UUID {
 		t.Fatalf("uuid %q: %v", s, err)
 	}
 	return id
+}
+
+// ---- Второй фактор в /app/login и перебор number_match (аудит 2026-09-11) ----
+
+// appLoginCode — app/login с кодом второго фактора.
+func appLoginCode(t *testing.T, h http.Handler, username, password, code string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{
+		"username": username, "password": password, "code": code, "platform": "test",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/app/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// enrollAppTOTP регистрирует подтверждённый TOTP-секрет пользователю
+// (второй фактор) и возвращает секрет для генерации кодов.
+func enrollAppTOTP(t *testing.T, ctx context.Context, st *store.Store, box *secrets.Box, u *store.User) string {
+	t.Helper()
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer: "twofa", AccountName: u.Username,
+		Period: 30, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("totp.Generate: %v", err)
+	}
+	enc := box.EncryptAAD(auth.AADTOTP(u.Username), []byte(key.Secret()))
+	if err := st.TOTPSave(ctx, u.ID, enc, 6, 30); err != nil {
+		t.Fatalf("TOTPSave: %v", err)
+	}
+	if err := st.TOTPConfirm(ctx, u.ID); err != nil {
+		t.Fatalf("TOTPConfirm: %v", err)
+	}
+	return key.Secret()
+}
+
+// TestAppLoginSecondFactorRequired — у пользователя с настроенным вторым
+// фактором device-токен (с правом approve) по одному паролю не выдаётся:
+// без кода и с неверным кодом — 401 second_factor_required, с валидным
+// TOTP — 200. Аккаунт без факторов (bootstrap) пускается без кода.
+func TestAppLoginSecondFactorRequired(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	t.Cleanup(rt.Stop)
+
+	// Bootstrap: ни одного фактора — пароля достаточно.
+	free := mkUser(t, ctx, st, "app2fafree", nil)
+	wantStatus(t, appLogin(t, rt.Handler, free.Username, testPassword), http.StatusOK)
+
+	// Пользователь с подтверждённым TOTP.
+	user := mkUser(t, ctx, st, "app2fa", nil)
+	secret := enrollAppTOTP(t, ctx, st, box, user)
+
+	// Пароль верен, кода нет — 401 second_factor_required.
+	rec := appLogin(t, rt.Handler, user.Username, testPassword)
+	if rec.Code != http.StatusUnauthorized || jsonBody(t, rec)["error"] != "second_factor_required" {
+		t.Fatalf("логин без кода: %d %s, want 401 second_factor_required", rec.Code, rec.Body.String())
+	}
+	// Неверный код — тот же ответ.
+	rec = appLoginCode(t, rt.Handler, user.Username, testPassword, "000000")
+	if rec.Code != http.StatusUnauthorized || jsonBody(t, rec)["error"] != "second_factor_required" {
+		t.Fatalf("логин с неверным кодом: %d %s, want 401 second_factor_required", rec.Code, rec.Body.String())
+	}
+
+	// Валидный TOTP текущего окна — 200 и рабочий токен.
+	code, err := hotp.GenerateCode(secret, uint64(time.Now().Unix()/30))
+	if err != nil {
+		t.Fatalf("hotp.GenerateCode: %v", err)
+	}
+	rec = appLoginCode(t, rt.Handler, user.Username, testPassword, code)
+	wantStatus(t, rec, http.StatusOK)
+	tok, _ := jsonBody(t, rec)["token"].(string)
+	if tok == "" {
+		t.Fatalf("логин с верным кодом без токена: %s", rec.Body.String())
+	}
+	wantStatus(t, appBearer(t, rt.Handler, http.MethodGet, "/api/v1/app/me/profile", tok), http.StatusOK)
+}
+
+// TestAppChallengeNumberMatchBruteforce — промахи number_match расходуют
+// попытки челленджа: исчерпание погашает его (used_at), верный код к
+// погашенному больше не принимается — 2-значный код не подобрать
+// (P1 аудита 2026-09-11).
+func TestAppChallengeNumberMatchBruteforce(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	user := mkUser(t, ctx, st, "appnm", nil)
+	rt := newPagesRouter(t, st, set, box)
+	t.Cleanup(rt.Stop)
+
+	rec := appLogin(t, rt.Handler, user.Username, testPassword)
+	wantStatus(t, rec, http.StatusOK)
+	tok, _ := jsonBody(t, rec)["token"].(string)
+
+	ch := &store.Challenge{
+		UserID:       user.ID,
+		Channel:      channel.AppPush,
+		PushState:    ptr("pending"),
+		ExpiresAt:    time.Now().Add(5 * time.Minute),
+		AttemptsLeft: 2,
+		Purpose:      "api",
+		Metadata:     map[string]any{"number_match": "42"},
+	}
+	if err := st.ChallengeCreate(ctx, ch); err != nil {
+		t.Fatalf("ChallengeCreate: %v", err)
+	}
+
+	decide := func(nm string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"decision": "approve", "number_match": nm})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/app/challenges/"+ch.ID.String()+"/decision", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", "application/json")
+		r := httptest.NewRecorder()
+		rt.Handler.ServeHTTP(r, req)
+		return r
+	}
+
+	// Первый промах: попытка списана, челлендж ещё жив.
+	wantStatus(t, decide("11"), http.StatusBadRequest)
+	cur, err := st.ChallengeGet(ctx, ch.ID)
+	if err != nil {
+		t.Fatalf("ChallengeGet: %v", err)
+	}
+	if cur.UsedAt != nil {
+		t.Fatalf("после 1 промаха челлендж погашен (used_at=%v), want жив", cur.UsedAt)
+	}
+	// Второй промах: попытки исчерпаны — челлендж погашен.
+	wantStatus(t, decide("77"), http.StatusBadRequest)
+	cur, err = st.ChallengeGet(ctx, ch.ID)
+	if err != nil {
+		t.Fatalf("ChallengeGet: %v", err)
+	}
+	if cur.UsedAt == nil {
+		t.Fatal("после 2 промахов челлендж жив (used_at nil), want погашен")
+	}
+	// Верный код к погашенному челленджу не принимается.
+	wantStatus(t, decide("42"), http.StatusGone)
+}
+
+// TestAppChallengeDecisionRateLimited — decision ограничен корзинами
+// username+IP, как /app/login: после исчерпания burst — 429.
+func TestAppChallengeDecisionRateLimited(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	user := mkUser(t, ctx, st, "apprld", nil)
+	rt := newPagesRouter(t, st, set, box)
+	t.Cleanup(rt.Stop)
+
+	rec := appLogin(t, rt.Handler, user.Username, testPassword)
+	wantStatus(t, rec, http.StatusOK)
+	tok, _ := jsonBody(t, rec)["token"].(string)
+
+	decide := func() *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"decision": "approve"})
+		req := httptest.NewRequest(http.MethodPost,
+			"/api/v1/app/challenges/"+uuid.NewString()+"/decision", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", "application/json")
+		r := httptest.NewRecorder()
+		rt.Handler.ServeHTTP(r, req)
+		return r
+	}
+
+	// login(1 токен) + burst-1 решений — лимит ещё не исчерпан
+	// (404: челленджа с таким ID нет).
+	for i := 0; i < rlBurst-1; i++ {
+		if rec := decide(); rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("решение %d: неожиданный 429", i+1)
+		}
+	}
+	// Следующий — 429 rate_limited.
+	rec = decide()
+	if rec.Code != http.StatusTooManyRequests || jsonBody(t, rec)["error"] != "rate_limited" {
+		t.Fatalf("решение после burst: %d %s, want 429 rate_limited", rec.Code, rec.Body.String())
+	}
 }

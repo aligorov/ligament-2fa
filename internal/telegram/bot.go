@@ -318,7 +318,7 @@ func (b *Bot) SendPush(ctx context.Context, chatID int64, who, ip, ua string, ch
 	loc := snap.Location()
 	vars := map[string]string{
 		"username": who, "ip": ip, "ua": ua,
-		"time":     time.Now().In(loc).Format("15:04:05"),
+		"time": time.Now().In(loc).Format("15:04:05"),
 	}
 	text := delivery.RenderTemplate(pushTpl, "", vars)
 	kb := &InlineKeyboard{InlineKeyboard: [][]InlineButton{

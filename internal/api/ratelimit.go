@@ -147,14 +147,42 @@ func (m *limiterMap) cleanup(now time.Time) {
 	}
 }
 
+// isStreamPath — известные WS/SSE-маршруты API (композиция роутера:
+// app.Register — /api/v1/app/{ws,sse}; admin.Register — операторский WS
+// поддержки /api/v1/support/ws/{id} и /api/v1/admin/support/sessions/{id}/ws).
+// SSE-маршрутов вне /api/v1/app/sse в сервере нет.
+func isStreamPath(path string) bool {
+	switch {
+	case path == "/api/v1/app/ws", path == "/api/v1/app/sse":
+		return true
+	case strings.HasPrefix(path, "/api/v1/support/ws/"):
+		return true
+	case strings.HasPrefix(path, "/api/v1/admin/support/sessions/") && strings.HasSuffix(path, "/ws"):
+		return true
+	default:
+		return false
+	}
+}
+
 // isStreamRequest сообщает, что запрос открывает потоковый канал
 // (WebSocket-апгрейд или SSE): только для таких запросов легитимен токен
 // в query-строке (?token= / ?admin_token=) — браузерный EventSource и
 // браузерный WebSocket не умеют ставить заголовок Authorization. Для
 // обычных JSON-запросов токен принимается исключительно из заголовка:
 // query-строка оседает в логах прокси и истории браузера.
+//
+// Главный критерий — ПУТЬ запроса (аудит 2026-09-11: прежняя проверка
+// «Upgrade != ""» пропускала JSON-запрос с подделанным заголовком
+// «Upgrade: foo» к query-аутентификации). Заголовки — вторичный признак,
+// причём только РЕАЛЬНОГО апгрейда: WebSocket требует ровно токен
+// «websocket» (Connection/Sec-WebSocket-* валидирует апгрейдер), SSE —
+// Accept: text/event-stream; это покрывает клиенты за прокси с
+// переписанными путями, не выдавая произвольный «Upgrade: foo» за стрим.
 func isStreamRequest(r *http.Request) bool {
-	if r.Header.Get("Upgrade") != "" {
+	if isStreamPath(r.URL.Path) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") {
 		return true
 	}
 	return strings.Contains(r.Header.Get("Accept"), "text/event-stream")

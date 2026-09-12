@@ -104,12 +104,27 @@ func (s *Store) Migrate(ctx context.Context) error {
 }
 
 // applyMigration выполняет одну миграцию атомарно: SQL + запись версии.
+// pg_advisory_xact_lock сериализует параллельных миграторов (несколько
+// инстансов сервера/тестовых пакетов на одной БД): после захвата блокировки
+// версия перечитывается — если её успел применить другой процесс, миграция
+// считается применённой.
 func (s *Store) applyMigration(ctx context.Context, m migration) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("store: миграция %d (%s): начать транзакцию: %w", m.version, m.name, err)
 	}
 	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('twofa_schema_migrations'))`); err != nil {
+		return fmt.Errorf("store: миграция %d (%s): advisory lock: %w", m.version, m.name, err)
+	}
+	var already int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = $1`, m.version).Scan(&already); err != nil {
+		return fmt.Errorf("store: миграция %d (%s): перечитывание версии: %w", m.version, m.name, err)
+	}
+	if already > 0 {
+		return nil // применил параллельный мигратор
+	}
 
 	// Exec без аргументов использует простой протокол и допускает
 	// несколько операторов в одном вызове.

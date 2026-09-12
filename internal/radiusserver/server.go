@@ -29,6 +29,8 @@ import (
 	"layeh.com/radius/rfc2866"
 	"layeh.com/radius/rfc2869"
 
+	"github.com/google/uuid"
+
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/secrets"
@@ -320,7 +322,10 @@ func (s *Server) handleAuth(w radius.ResponseWriter, r *radius.Request) {
 	ctx = context.WithValue(ctx, auth.CtxKeyService, svc)
 	ctx = context.WithValue(ctx, auth.CtxKeyDevice, deviceDesc)
 
-	accept, reason := s.core.RADIUSAuth(ctx, username, password, hostOnly(r.RemoteAddr))
+	// Окно доверия: доверенное (user, Calling-Station-Id) устройство при
+	// верном пароле проходит без второго фактора; успешный 2FA продлевает
+	// окно (radius.trust_days).
+	accept, reason := s.radiusAuthWithTrust(ctx, username, password, clientMAC, hostOnly(r.RemoteAddr))
 	var resp *radius.Packet
 	if accept {
 		resp = r.Response(radius.CodeAccessAccept)
@@ -412,6 +417,116 @@ func (s *Server) auditMAMissing(r *radius.Request, reason string) {
 	if err := s.st.Audit(ctx, username, "radius_ma_missing",
 		map[string]any{"reason": reason}, hostOnly(r.RemoteAddr), "fail"); err != nil {
 		slog.Warn("radius: radius_ma_missing не записан в аудит", "error", err)
+	}
+}
+
+// ---- окно доверия RADIUS (radius.trust_days) ----
+
+// passwordVerifier — первый фактор для гейта доверия. Зеркало сборки ядра
+// в cmd/twofa/main.go (pv = CompositeVerifier(st, LocalVerifier,
+// LdapVerifier)): LDAP-пользователи проверяются bind-ом в каталог,
+// локальные — argon2. ДЕРЖАТЬ СИНХРОННО с main.go: расхождение верификатора
+// означало бы разные первые факторы в гейте доверия и в Core.RADIUSAuth.
+func (s *Server) passwordVerifier() auth.PasswordVerifier {
+	return auth.NewCompositeVerifier(s.st, auth.NewLocalVerifier(s.st), auth.NewLdapVerifier(s.st, s.m))
+}
+
+// radiusTrustTrusted — (user, csid) в действующем окне доверия: настройка
+// включена (TrustDays > 0), CSID нормализуется в непустой ключ и запись не
+// просрочена (store проверяет expires_at > now, ошибки БД — fail-closed).
+func (s *Server) radiusTrustTrusted(ctx context.Context, userID uuid.UUID, csid string) bool {
+	if s.m.Get().Radius.TrustDays <= 0 {
+		return false
+	}
+	key := store.NormalizeRADIUSCSID(csid)
+	if key == "" {
+		return false // пустой CSID — доверие неприменимо
+	}
+	return s.st.RadiusTrustIsTrusted(ctx, userID, key)
+}
+
+// radiusTrustRemember продлевает окно доверия устройства после успешного
+// второго фактора (push_ok или верный TOTP-код). Ошибки не ломают
+// аутентификацию; контекст без отмены — запись переживает отработавший
+// push_wait исходного запроса.
+func (s *Server) radiusTrustRemember(ctx context.Context, userID uuid.UUID, csid string) {
+	days := s.m.Get().Radius.TrustDays
+	if days <= 0 {
+		return
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	if err := s.st.RadiusTrustUpsert(cctx, userID, csid, days); err != nil {
+		slog.Warn("radius: окно доверия не сохранено", "user_id", userID, "error", err)
+	}
+}
+
+// radiusTrustGate — гейт доверия для PAP/TTLS-путей: устройство доверенное
+// И пароль верен → второй фактор не нужен. Пароль обязателен ВСЕГДА:
+// Calling-Station-Id подделывается спуфингом MAC, поэтому доверие никогда
+// не подменяет первый фактор. Неверный пароль / нет пользователя → false —
+// вызывающий уходит в обычный Core.RADIUSAuth (bad_credentials, no_user,
+// fail-счётчики и аудит — как раньше; цена — повторный argon2).
+func (s *Server) radiusTrustGate(ctx context.Context, username, papString, csid string) bool {
+	if s.m.Get().Radius.TrustDays <= 0 {
+		return false
+	}
+	if store.NormalizeRADIUSCSID(csid) == "" {
+		return false
+	}
+	user, err := s.st.UserByUsername(ctx, username)
+	if err != nil || !user.Enabled {
+		return false
+	}
+	if !s.st.RadiusTrustIsTrusted(ctx, user.ID, store.NormalizeRADIUSCSID(csid)) {
+		return false
+	}
+	if _, err := s.passwordVerifier().Verify(ctx, username, papString); err != nil {
+		return false
+	}
+	return true
+}
+
+// radiusAuthWithTrust — RADIUS-аутентификация с окном доверия, общий
+// вход для PAP-пути (server.handleAuth) и TTLS inner (finishInnerPAP).
+// Доверенное устройство при верном пароле — Accept без второго фактора
+// (аудит radius_trust_skip); остальным — полный конвейер Core.RADIUSAuth
+// (push-удержание, сплиты «пароль+код»). Успешный 2FA (push_ok/code_ok)
+// продлевает окно доверия устройства.
+func (s *Server) radiusAuthWithTrust(ctx context.Context, username, papString, csid, srcIP string) (bool, string) {
+	if s.radiusTrustGate(ctx, username, papString, csid) {
+		auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer cancel()
+		if err := s.st.Audit(auditCtx, username, "radius_trust_skip",
+			map[string]any{"reason": "trusted_device"}, srcIP, "ok"); err != nil {
+			slog.Warn("radius: radius_trust_skip не записан в аудит", "user", username, "error", err)
+		}
+		return true, "trust_skip"
+	}
+	accept, reason := s.core.RADIUSAuth(ctx, username, papString, srcIP)
+	if accept && (reason == "push_ok" || reason == "code_ok") {
+		if user, err := s.st.UserByUsername(ctx, username); err == nil {
+			s.radiusTrustRemember(ctx, user.ID, csid)
+		}
+	}
+	return accept, reason
+}
+
+// auditRADIUSFail — пара событий radius_auth/radius_fail по образцу
+// core.audit (auth.Core); ошибки записи логируются и проглатываются.
+// radius_fail СОЗНАТЕЛЬНО не кормит IP-счётчик fail2ban: источник
+// RADIUS-пакета — NAS/NAT, неуспехи всех пользователей за NAT вылились бы
+// в самобан NAS (аудит 2026-09-11, Firewall-1/2). Брут по RADIUS
+// ограничивает per-user fail-счётчик (FailLocked читает radius_fail из
+// audit_log) — работает и для EAP-путей, пишущих аудит напрямую.
+func (s *Server) auditRADIUSFail(ctx context.Context, username, reason, srcIP string) {
+	if err := s.st.Audit(ctx, username, "radius_auth",
+		map[string]any{"reason": reason}, srcIP, "fail"); err != nil {
+		slog.Warn("radius: radius_auth не записан в аудит", "user", username, "error", err)
+	}
+	if err := s.st.Audit(ctx, username, "radius_fail",
+		map[string]any{"reason": reason}, srcIP, "fail"); err != nil {
+		slog.Warn("radius: radius_fail не записан в аудит", "user", username, "error", err)
 	}
 }
 

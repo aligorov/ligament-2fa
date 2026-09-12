@@ -1260,7 +1260,7 @@ type fakeAlertEmailSender struct {
 	body    string
 }
 
-func (s *fakeAlertEmailSender) Name() channel.Channel                    { return channel.Email }
+func (s *fakeAlertEmailSender) Name() channel.Channel                     { return channel.Email }
 func (s *fakeAlertEmailSender) Send(_ context.Context, _, _ string) error { return nil }
 func (s *fakeAlertEmailSender) SendAlert(_ context.Context, to, subject, body string) error {
 	s.mu.Lock()
@@ -1330,5 +1330,46 @@ func TestNotifyLoginSuccess(t *testing.T) {
 	push.mu.Unlock()
 	if pCalls2 != 1 {
 		t.Fatalf("Expected cooldown to prevent second notif, but got calls=%d", pCalls2)
+	}
+}
+
+// TestLivePendingPushPurposeScoping — RADIUS-resume не подхватывает чужие
+// web-челленджи: purpose api (web-логин), ui_confirm (кабинет) и tg_link
+// исключены из livePendingPush; RADIUS-push (purpose = строка сервиса)
+// резюмируется (аудит 2026-09-11).
+func TestLivePendingPushPurposeScoping(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	core := newCore(st, set, box, nil, nil)
+	user := mkUser(t, ctx, st, "lvpp", nil)
+
+	mkPending := func(purpose string) *store.Challenge {
+		ch := &store.Challenge{
+			UserID:       user.ID,
+			Channel:      channel.AppPush,
+			PushState:    ptrString("pending"),
+			ExpiresAt:    time.Now().Add(5 * time.Minute),
+			AttemptsLeft: 1,
+			Purpose:      purpose,
+		}
+		if err := st.ChallengeCreate(ctx, ch); err != nil {
+			t.Fatalf("ChallengeCreate(%s): %v", purpose, err)
+		}
+		return ch
+	}
+
+	// Чужие web-purpose не резюмируются и не поглощаются RADIUS'ом.
+	for _, p := range []string{"api", "ui_confirm", "tg_link"} {
+		mkPending(p)
+		if got := core.livePendingPush(ctx, user.ID); got != nil {
+			t.Fatalf("purpose %q: livePendingPush вернул челлендж, want nil", p)
+		}
+	}
+
+	// RADIUS-push (purpose — строка сервиса) резюмируется.
+	ch := mkPending("Корпоративный Wi-Fi / Сеть")
+	got := core.livePendingPush(ctx, user.ID)
+	if got == nil || got.ID != ch.ID {
+		t.Fatalf("RADIUS-purpose: got=%v, want челлендж %s", got, ch.ID)
 	}
 }

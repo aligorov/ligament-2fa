@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"html"
@@ -27,6 +28,7 @@ import (
 	"github.com/aligorov/twofa/internal/auth"
 	"github.com/aligorov/twofa/internal/channel"
 	"github.com/aligorov/twofa/internal/delivery"
+	"github.com/aligorov/twofa/internal/license"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -1166,3 +1168,192 @@ func TestPagesSendCode(t *testing.T) {
 	}
 }
 
+// TestPagesSafeNextBackslash: backslash в ?next не открывает редирект на
+// внешний сайт (report 2026-09-11, P1 OIDC-1): «\» браузеры трактуют как «/»,
+// поэтому /\evil.com должен отсекаться и на GET (hidden-поле), и на POST
+// (Location после входа).
+func TestPagesSafeNextBackslash(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouter(t, st, set, box)
+	c := newHTMLClient(t, rt.Handler)
+
+	// GET /login?next=/\evil.com: backslash-адрес не проксируется в форму.
+	rec := c.get("/login?next=" + url.QueryEscape(`/\evil.com`))
+	wantStatus(t, rec, http.StatusOK)
+	if strings.Contains(rec.Body.String(), `/\evil.com`) {
+		t.Error("backslash-next попал в hidden-поле формы")
+	}
+
+	// POST /login с backslash-next: редирект остаётся локальным.
+	user := mkUser(t, ctx, st, "nextuser", nil)
+	rec = c.postForm("/login", url.Values{
+		"username": {user.Username},
+		"password": {testPassword},
+		"next":     {`/\evil.com`},
+	}, false)
+	wantStatus(t, rec, http.StatusFound)
+	loc := rec.Header().Get("Location")
+	if strings.Contains(loc, "evil.com") {
+		t.Fatalf("открытый редирект через backslash: %q", loc)
+	}
+	if !strings.HasPrefix(loc, "/me") {
+		t.Fatalf("Location = %q, хочу локальный /me", loc)
+	}
+
+	// Санитарный контроль: валидный локальный next сохраняется.
+	user2 := mkUser(t, ctx, st, "nextuser2", nil)
+	rec = c.postForm("/login", url.Values{
+		"username": {user2.Username},
+		"password": {testPassword},
+		"next":     {"/oidc/authorize?client_id=mfa_x"},
+	}, false)
+	wantStatus(t, rec, http.StatusFound)
+	if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/oidc/authorize?client_id=mfa_x") {
+		t.Fatalf("Location = %q, хочу возврат на /oidc/authorize", loc)
+	}
+}
+
+// TestPagesBrandingLogo — GET /branding/logo: same-origin раздача логотипа
+// белого лейбла (report 2026-09-11, Web UI-2). data:URI декодируется с
+// правильным Content-Type, https — 302, free-лицензия/пусто/битое — 404.
+func TestPagesBrandingLogo(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	lic := license.NewManager(st)
+	rt := newPagesRouterLic(t, st, set, box)
+
+	const png1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	pngBytes, err := base64.StdEncoding.DecodeString(png1x1)
+	if err != nil {
+		t.Fatalf("декодирование PNG: %v", err)
+	}
+	dataURI := "data:image/png;base64," + png1x1
+	if err := set.Put(ctx, "branding", json.RawMessage(`{"logo":"`+dataURI+`"}`)); err != nil {
+		t.Fatalf("Put branding: %v", err)
+	}
+
+	get := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		rt.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec
+	}
+
+	// Free-лицензия: бренд скрыт (тот же решатель, что у шаблонов) — 404.
+	if rec := get("/branding/logo"); rec.Code != http.StatusNotFound {
+		t.Fatalf("free: GET /branding/logo = %d, want 404", rec.Code)
+	}
+
+	// Платная лицензия: data:URI отдаётся как image/png.
+	blob := signTestLicense(t, "k-logo", nil)
+	if _, err := lic.Upload(ctx, blob); err != nil {
+		t.Fatalf("Upload лицензии: %v", err)
+	}
+	rec := get("/branding/logo")
+	wantStatus(t, rec, http.StatusOK)
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", ct)
+	}
+	if rec.Body.Len() != len(pngBytes) || string(rec.Body.Bytes()) != string(pngBytes) {
+		t.Errorf("тело ответа не совпадает с декодированным логотипом (%d байт)", rec.Body.Len())
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc == "" {
+		t.Error("нет Cache-Control у логотипа")
+	}
+
+	// Страница входа ссылается на same-origin маршрут, а не на data:/https.
+	rec = newHTMLClient(t, rt.Handler).get("/login")
+	wantStatus(t, rec, http.StatusOK)
+	wantBody(t, rec, `src="/branding/logo"`)
+	if strings.Contains(rec.Body.String(), "ZgotmplZ") || strings.Contains(rec.Body.String(), dataURI) {
+		t.Error("логотип попал в разметку как data:URI")
+	}
+
+	// https-URL → 302 на внешний ресурс.
+	if err := set.Put(ctx, "branding", json.RawMessage(`{"logo":"https://brand.example/logo.png"}`)); err != nil {
+		t.Fatalf("Put branding: %v", err)
+	}
+	rec = get("/branding/logo")
+	wantStatus(t, rec, http.StatusFound)
+	if loc := rec.Header().Get("Location"); loc != "https://brand.example/logo.png" {
+		t.Fatalf("Location = %q, want https://brand.example/logo.png", loc)
+	}
+
+	// SVG под запретом (исполняет скрипты при прямом открытии URL) и мусор → 404.
+	for _, bad := range []string{
+		"data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte("<svg onload=alert(1)>")),
+		"data:image/png,not-base64!!",
+		"javascript:alert(1)",
+	} {
+		if err := set.Put(ctx, "branding", json.RawMessage(`{"logo":"`+bad+`"}`)); err != nil {
+			t.Fatalf("Put branding: %v", err)
+		}
+		if rec := get("/branding/logo"); rec.Code != http.StatusNotFound {
+			t.Errorf("логотип %q: код %d, want 404", bad, rec.Code)
+		}
+	}
+
+	// Пустое значение → 404.
+	if err := set.Put(ctx, "branding", json.RawMessage(`{"logo":""}`)); err != nil {
+		t.Fatalf("Put branding: %v", err)
+	}
+	if rec := get("/branding/logo"); rec.Code != http.StatusNotFound {
+		t.Errorf("пустой логотип: код %d, want 404", rec.Code)
+	}
+}
+
+// TestPagesAdsCSPPerPages — CSP расширяется доменами Яндекса только у
+// страницы с фактически отрендеренными рекламными слотами (report
+// 2026-09-11, Web UI-1), а не у всех ответов: админка без слотов остаётся
+// под строгой политикой.
+func TestPagesAdsCSPPerPages(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	rt := newPagesRouterLic(t, st, set, box)
+
+	// РСЯ-слоты включены, лицензия free → реклама на страницах входа.
+	ads := `{"enabled":true,"provider":"rsya","blocks":{"login_left":"R-A-1","login_right":"R-A-2"}}`
+	if err := set.Put(ctx, "ads", json.RawMessage(ads)); err != nil {
+		t.Fatalf("Put ads: %v", err)
+	}
+
+	c := newHTMLClient(t, rt.Handler)
+	rec := c.get("/login")
+	wantStatus(t, rec, http.StatusOK)
+	wantBody(t, rec, `id="adv-login-left"`, `id="adv-login-right"`)
+	if got := rec.Header().Get("Content-Security-Policy"); got != web.ContentSecurityPolicyAds {
+		t.Errorf("/login: CSP = %q, want relaxed-вариант", got)
+	}
+
+	// Кабинет и админка без бокового слота — строгая CSP.
+	admin := mkUser(t, ctx, st, "csp-admin", func(u *store.User) { u.Role = "admin" })
+	rec = c.login(t, admin.Username, testPassword, "")
+	wantStatus(t, rec, http.StatusFound)
+	for _, path := range []string{"/me", "/admin/users", "/admin/settings"} {
+		rec = c.get(path)
+		wantStatus(t, rec, http.StatusOK)
+		if got := rec.Header().Get("Content-Security-Policy"); got != web.ContentSecurityPolicy {
+			t.Errorf("%s: CSP = %q, want строгая базовая", path, got)
+		}
+	}
+
+	// Выключение рекламы возвращает строгую CSP и странице входа.
+	if err := set.Put(ctx, "ads", json.RawMessage(`{"enabled":false}`)); err != nil {
+		t.Fatalf("Put ads: %v", err)
+	}
+	rec = c.get("/login")
+	if got := rec.Header().Get("Content-Security-Policy"); got != web.ContentSecurityPolicy {
+		t.Errorf("/login без рекламы: CSP = %q, want строгая базовая", got)
+	}
+
+	// Direct-слот с внешней картинкой тоже требует relaxed-CSP (img-src https:).
+	if err := set.Put(ctx, "ads", json.RawMessage(
+		`{"enabled":true,"provider":"direct","direct":{"url":"https://ads.example/x","image":"https://ads.example/banner.png"}}`)); err != nil {
+		t.Fatalf("Put ads: %v", err)
+	}
+	rec = c.get("/login")
+	if got := rec.Header().Get("Content-Security-Policy"); got != web.ContentSecurityPolicyAds {
+		t.Errorf("/login (direct-картинка): CSP = %q, want relaxed-вариант", got)
+	}
+}

@@ -176,7 +176,7 @@ func TestAssemblerCap(t *testing.T) {
 	// Заявленная длина сверх капа — отказ сразу, до копирования.
 	var asm Assembler
 	if _, _, err := asm.Add(&TTLS{
-		Flags: TTLSFlagStart | TTLSFlagLength | TTLSFlagMore,
+		Flags:       TTLSFlagStart | TTLSFlagLength | TTLSFlagMore,
 		DeclaredLen: MaxReassembly + 1, Payload: make([]byte, 4),
 	}); err == nil {
 		t.Fatal("заявленная длина сверх MaxReassembly не поймана")

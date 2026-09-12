@@ -207,7 +207,8 @@ func TestInsertStatementsEmpty(t *testing.T) {
 func TestDumpTableOrderFK(t *testing.T) {
 	want := []string{
 		"users", "app_devices", "groups", "user_groups", "totp_secrets", "backup_codes", "challenges", "sessions",
-		"settings", "audit_log", "trusted_devices", "webauthn_credentials",
+		"settings", "audit_log", "trusted_devices",
+		"radius_trusted_devices", "webauthn_credentials",
 		"oidc_clients", "ip_lists", "ip_bans", "support_sessions", "support_messages",
 		"schema_migrations",
 	}
@@ -227,19 +228,48 @@ func TestDumpTableOrderFK(t *testing.T) {
 	}
 }
 
-// TestSettingsExcludesMasterKey: из settings исключается master_key.
+// TestSettingsExcludesMasterKey: из settings исключается master_key —
+// и из выгрузки строк, и из очистки при восстановлении.
 func TestSettingsExcludesMasterKey(t *testing.T) {
 	for _, tb := range tables {
 		if tb.name != "settings" {
 			continue
 		}
-		if tb.exclude == nil || !tb.exclude("master_key") {
-			t.Fatal("settings: master_key должен исключаться из дампа")
-		}
-		if tb.exclude("listen.http") {
-			t.Fatal("settings: обычные ключи не должны исключаться")
+		if tb.excludeCol != "key" || tb.excludeVal != "master_key" {
+			t.Fatalf("settings: исключение (%q, %q), want (key, master_key)", tb.excludeCol, tb.excludeVal)
 		}
 		return
 	}
 	t.Fatal("таблица settings не найдена в tables")
+}
+
+// TestDeleteStatementPreservesMasterKey: settings чистится условным DELETE —
+// restore на живую инсталляцию не затирает master_key (иначе generatedKeys
+// создаст новый ключ, и весь шифротекст — totp_secrets.secret_enc,
+// users.password_enc — станет мусором). Остальные таблицы — голый DELETE.
+func TestDeleteStatementPreservesMasterKey(t *testing.T) {
+	var settingsSpec *tableSpec
+	for i := range tables {
+		if tables[i].name == "settings" {
+			settingsSpec = &tables[i]
+			break
+		}
+	}
+	if settingsSpec == nil {
+		t.Fatal("таблица settings не найдена в tables")
+	}
+	want := "DELETE FROM settings WHERE key <> 'master_key';\n"
+	if got := deleteStatement(*settingsSpec); got != want {
+		t.Fatalf("deleteStatement(settings) = %q, want %q", got, want)
+	}
+	if got := deleteStatement(tables[0]); got != "DELETE FROM users;\n" {
+		t.Fatalf("deleteStatement(users) = %q, want голый DELETE", got)
+	}
+	// Инвариант: исключение либо задано целиком (колонка + значение), либо
+	// отсутствует — половинчатая спецификация дала бы битый SQL.
+	for _, tb := range tables {
+		if (tb.excludeCol != "") != (tb.excludeVal != "") {
+			t.Fatalf("%s: неполное исключение: col=%q val=%q", tb.name, tb.excludeCol, tb.excludeVal)
+		}
+	}
 }

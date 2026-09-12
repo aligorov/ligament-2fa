@@ -615,3 +615,38 @@ func TestLdapSearchUsersPagingAndSizeLimit(t *testing.T) {
 		t.Fatalf("expected 2 search queries for 2 pages, got %d", called)
 	}
 }
+
+// ---- лицензионный гейт авто-провижининга ----
+
+// TestLdapProvisionLicenseGate — инжектируемый колбэк licenseAllowsCreate
+// решает судьбу авто-провижининга: nil (проводка не смонтирована —
+// композиции без лицензирования) разрешает; разрешение вызывается с именем
+// пользователя; отказ запрещает создание (syncUser возвращает
+// ErrBadCredentials — bind отклоняется), не создавая пользователя.
+// Запись аудита ldap_provision_license_blocked видна в интеграции
+// (требует store; здесь st == nil — проверяем отсутствие паники).
+func TestLdapProvisionLicenseGate(t *testing.T) {
+	ctx := context.Background()
+
+	// Колбэк не смонтирован — провижининг разрешён.
+	v := &LdapVerifier{}
+	if !v.provisionAllowed(ctx, "ivanov") {
+		t.Fatal("nil-колбэк должен разрешать провижининг")
+	}
+
+	// Колбэк разрешает — вызывается ровно с именем пользователя.
+	calls := []string{}
+	v.SetLicenseAllowsCreate(func(u string) bool { calls = append(calls, u); return true })
+	if !v.provisionAllowed(ctx, "ivanov") {
+		t.Fatal("разрешающий колбэк должен разрешать провижининг")
+	}
+	if len(calls) != 1 || calls[0] != "ivanov" {
+		t.Fatalf("колбэк вызван с %v, want [ivanov]", calls)
+	}
+
+	// Колбэк отказывает (лимит лицензии исчерпан) — провижининг запрещён.
+	v.SetLicenseAllowsCreate(func(string) bool { return false })
+	if v.provisionAllowed(ctx, "ivanov") {
+		t.Fatal("отказавший колбэк должен запрещать провижининг")
+	}
+}

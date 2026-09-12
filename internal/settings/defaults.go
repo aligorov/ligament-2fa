@@ -36,12 +36,18 @@ var defaults = map[string]json.RawMessage{
 	"radius.require_message_authenticator": json.RawMessage(`true`),
 	// radius.rate_limit_pps — per-NAS token bucket RADIUS-пакетов в секунду
 	// (гейт перед argon2/БД, анти-DoS). 0 — лимит выключен.
-	"radius.rate_limit_pps":    json.RawMessage(`20`),
-	"radius.reply_attributes":  json.RawMessage(`{}`),
-	"radius.vlan_profiles":     json.RawMessage(`{}`),
-	"radius.nas_inventory":     json.RawMessage(`{}`),
-	"radius.cert_file":         json.RawMessage(`""`),
-	"radius.key_file":          json.RawMessage(`""`),
+	"radius.rate_limit_pps": json.RawMessage(`20`),
+	// radius.trust_days — окно доверия Wi-Fi/VPN-устройств: после успешного
+	// второго фактора по RADIUS (push_ok или верный TOTP-код) пара
+	// (пользователь, Calling-Station-Id) доверяется N дней — повторные
+	// подключения проходят без второго фактора (пароль обязателен всегда).
+	// 0 — окно выключено (2FA на каждое подключение).
+	"radius.trust_days":       json.RawMessage(`7`),
+	"radius.reply_attributes": json.RawMessage(`{}`),
+	"radius.vlan_profiles":    json.RawMessage(`{}`),
+	"radius.nas_inventory":    json.RawMessage(`{}`),
+	"radius.cert_file":        json.RawMessage(`""`),
+	"radius.key_file":         json.RawMessage(`""`),
 	// radius.eap_cert — пара self-signed сертификата EAP-TTLS (RSA-2048,
 	// JSON {"cert_pem","key_pem"}). Дефолт null — «сертификат не создан»:
 	// генерируется RADIUS-сервером при первом старте
@@ -60,8 +66,8 @@ var defaults = map[string]json.RawMessage{
 	// audit.retention_days — ретеншн журнала audit_log (дней): ежедневная
 	// фоновая чистка удаляет события старше. 0 — хранить вечно.
 	"audit.retention_days": json.RawMessage(`365`),
-	"ldap":            json.RawMessage(`{"enabled":false,"url":"","starttls":false,"bind_dn":"","bind_password":"","base_dn":"","user_filter":"(&(objectClass=user)(sAMAccountName={login}))","group_base_dn":"","group_filter":"(&(objectClass=group)(member={dn}))","attrs":{"email":"mail","phone":"telephoneNumber","display_name":"displayName"},"allow_groups":[],"role_map":{},"group_radius_map":{}}`),
-	"support":         json.RawMessage(`{"enabled":true,"categories":[{"id":"it","name":"IT-служба","icon":"🖥","emails":[],"telegram_chat":0},{"id":"1c","name":"Поддержка 1С","icon":"📊","emails":[],"telegram_chat":0}],"disk_warning_percent":90,"disk_warning_min_gb":10,"cpu_warning_percent":95,"cpu_spike_duration_sec":15,"emails_it":[],"emails_1c":[],"telegram_chat_it":0,"telegram_chat_1c":0}`),
+	"ldap":                 json.RawMessage(`{"enabled":false,"url":"","starttls":false,"bind_dn":"","bind_password":"","base_dn":"","user_filter":"(&(objectClass=user)(sAMAccountName={login}))","group_base_dn":"","group_filter":"(&(objectClass=group)(member={dn}))","attrs":{"email":"mail","phone":"telephoneNumber","display_name":"displayName"},"allow_groups":[],"role_map":{},"group_radius_map":{}}`),
+	"support":              json.RawMessage(`{"enabled":true,"categories":[{"id":"it","name":"IT-служба","icon":"🖥","emails":[],"telegram_chat":0},{"id":"1c","name":"Поддержка 1С","icon":"📊","emails":[],"telegram_chat":0}],"disk_warning_percent":90,"disk_warning_min_gb":10,"cpu_warning_percent":95,"cpu_spike_duration_sec":15,"emails_it":[],"emails_1c":[],"telegram_chat_it":0,"telegram_chat_1c":0}`),
 	// oidc.keys — пара ключей подписи ID-токенов (RSA-2048, JSON
 	// {"current":{"kid","private_pem"},"previous":null}). Дефолт null —
 	// «ключ не создан»: генерируется менеджером OIDC при первом старте

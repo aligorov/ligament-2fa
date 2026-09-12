@@ -911,4 +911,3 @@ func TestOIDCAuthorizeNotification(t *testing.T) {
 		t.Errorf("ua = %q, want TestBrowser/1.0 (Macintosh)", notif.ua)
 	}
 }
-

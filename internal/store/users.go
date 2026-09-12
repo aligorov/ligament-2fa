@@ -43,9 +43,9 @@ type User struct {
 	RadiusReply    map[string]string // JSONB, nil допустим
 	WebAuthnID     []byte            // nil до первого webauthn-enroll
 	PasswordHash   string
-	Source         string // SourceLocal | SourceLDAP (миграция 0002)
-	DisplayName    string // отображаемое имя (синк из LDAP-атрибута)
-	PasswordEnc    []byte // AES-256-GCM шифрованный пароль под master_key с AAD username (миграция 0005)
+	Source         string   // SourceLocal | SourceLDAP (миграция 0002)
+	DisplayName    string   // отображаемое имя (синк из LDAP-атрибута)
+	PasswordEnc    []byte   // AES-256-GCM шифрованный пароль под master_key с AAD username (миграция 0005)
 	LDAPGroups     []string // группы из каталога LDAP/Active Directory (миграция 0006)
 	SupportRoles   []string // роли поддержки: "it", "1c" (миграция 0009)
 }

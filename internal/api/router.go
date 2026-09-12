@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"math/rand"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -23,35 +25,20 @@ import (
 	"github.com/aligorov/twofa/internal/webauthn"
 )
 
-// contentSecurityPolicy — CSP всех HTML-ответов: только собственные
-// скрипты/стили (инлайн-обработчики вынесены в app.js/webauthn.js/support_viewer.js),
-// QR-коды — data:-URI (img-src data:), WebSocket (ws/wss) и WebRTC (media-src blob:).
-const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; media-src 'self' blob:"
-
-// contentSecurityPolicyAds — CSP при активной рекламе РСЯ: домены Яндекса
-// для загрузчика context.js, рендера блоков и их картинок/фреймов.
-const contentSecurityPolicyAds = "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' https://yandex.st https://an.yandex.ru; frame-src https://an.yandex.ru https://yandex.st; connect-src 'self' https://an.yandex.ru"
-
 // securityHeaders — базовые заголовки безопасности каждого ответа (SEC-011):
 // nosniff против MIME-сниффинга, DENY против кликджекинга, no-referrer
 // против утечки URL (в них — коды/токены query), CSP против XSS/инъекций.
-// securityHeaders — базовые заголовки безопасности каждого ответа (SEC-011).
-// adsActive: на запросе активна реклама РСЯ → CSP расширяется доменами
-// Яндекса (остальные ответы остаются под строгой политикой).
-func securityHeaders(adsActive func(*http.Request) (bool, bool)) func(http.Handler) http.Handler {
+// CSP — всегда СТРОГАЯ базовая (web.ContentSecurityPolicy): relaxed-политику
+// с доменами Яндекса ставит точечно рендер страницы с активными рекламными
+// слотами (web.RenderHTML) — админка и страницы без слотов не расширяются.
+func securityHeaders() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			csp := contentSecurityPolicy
-			if adsActive != nil {
-				if _, need := adsActive(r); need {
-					csp = contentSecurityPolicyAds
-				}
-			}
 			h := w.Header()
 			h.Set("X-Content-Type-Options", "nosniff")
 			h.Set("X-Frame-Options", "DENY")
 			h.Set("Referrer-Policy", "no-referrer")
-			h.Set("Content-Security-Policy", csp)
+			h.Set("Content-Security-Policy", web.ContentSecurityPolicy)
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -79,22 +66,6 @@ func brandFor(lic *license.Manager, m *settings.M) func(*http.Request) web.Brand
 			Description: snap.Branding.Description,
 		}
 	}
-}
-
-// adsActive — на запросе рендерится хотя бы один рекламный слот (для
-// выбора CSP): РСЯ требует домены Яндекса, direct-баннер — https-картинки,
-// чистая direct-ссылка обходится строгой политикой.
-func adsActive(a web.AdsData) (active, needAdsCSP bool) {
-	if !a.Show {
-		return false, false
-	}
-	if a.Provider == "rsya" {
-		any := a.LoginLeft != "" || a.LoginRight != "" || a.Sidebar != ""
-		return any, any // домены Яндекса для context.js
-	}
-	// direct: слот есть и без URL (карточка «Бесплатная версия»); CSP
-	// расширяется только при внешней картинке.
-	return true, a.DirectImage != ""
 }
 
 // adsFor — решатель показа рекламы: блоки РСЯ видны только на НЕ платной
@@ -155,20 +126,39 @@ type Deps struct {
 	SupportNotifier *delivery.SupportNotifier // nil — оповещения техподдержки
 }
 
+// retryAfterSeconds — значение заголовка Retry-After при 429 автобана:
+// реальный остаток бана до banned_until (целые секунды с округлением вверх,
+// минимум 1), а не константа.
+func retryAfterSeconds(until, now time.Time) int {
+	d := until.Sub(now)
+	if d <= 0 {
+		return 1
+	}
+	s := int(d / time.Second)
+	if d%time.Second != 0 {
+		s++
+	}
+	if s < 1 {
+		s = 1
+	}
+	return s
+}
+
 // firewallMiddleware фильтрует запросы по IP ДО маршрутов и обработчиков:
-// чёрный список → 403, активный автобан → 429 (Retry-After); легитимный
-// IP кладётся в контекст — auth.Core считает по нему неудачи (fail2ban).
-// Белый список проходит без подсчёта (см. guard.Fail).
+// чёрный список → 403, активный автобан → 429 (Retry-After — остаток бана);
+// легитимный IP кладётся в контекст — auth.Core считает по нему неудачи
+// (fail2ban). Белый список проходит без подсчёта (см. guard.Fail).
 func firewallMiddleware(g *firewall.Guard) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := g.RealIP(r) // реальный IP: RemoteAddr или XFF за доверенным прокси
-			switch g.Check(r.Context(), ip) {
+			verdict, bannedUntil := g.CheckUntil(r.Context(), ip)
+			switch verdict {
 			case firewall.Denied:
 				writeError(w, http.StatusForbidden, "ip_denied")
 				return
 			case firewall.Banned:
-				w.Header().Set("Retry-After", "300")
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(bannedUntil, time.Now())))
 				writeError(w, http.StatusTooManyRequests, "ip_banned")
 				return
 			}
@@ -197,7 +187,7 @@ func (rt *Router) Stop() {
 func BuildRouter(d Deps) *Router {
 	r := chi.NewRouter()
 	ads := adsFor(d.Lic, d.M)
-	r.Use(securityHeaders(func(r *http.Request) (bool, bool) { return adsActive(ads(r)) }))
+	r.Use(securityHeaders())
 	if d.FW != nil {
 		r.Use(firewallMiddleware(d.FW))
 	}

@@ -67,9 +67,9 @@ type peapInnerState int
 
 const (
 	peapStateChallenge peapInnerState = iota // сервер отправил MS-CHAPv2 Challenge, ждёт Response
-	peapStateSuccess                        // сервер отправил MS-CHAPv2 Success, ждёт Success ACK
-	peapStateTLV                            // сервер отправил Result TLV, ждёт Result TLV Response
-	peapStateFailed                         // сервер отправил MS-CHAPv2 Failure, ждёт Failure ACK
+	peapStateSuccess                         // сервер отправил MS-CHAPv2 Success, ждёт Success ACK
+	peapStateTLV                             // сервер отправил Result TLV, ждёт Result TLV Response
+	peapStateFailed                          // сервер отправил MS-CHAPv2 Failure, ждёт Failure ACK
 )
 
 // eapConn — адаптер net.Conn для crypto/tls поверх EAP-TTLS. Read отдаёт
@@ -198,9 +198,14 @@ type ttlsFrag struct {
 
 // eapSession — одна EAP аутентификация (PEAPv0 или EAP-TTLS), резюмируется по State.
 // Поля, кроме помеченных «store-мьютекс», трогает только RADIUS-хендлер
-// (layeh/radius обслуживает пакеты последовательно на своём цикле); воркер
-// runTLS пишет только в каналы, keyBlock и буферы conn.
+// ПОД мьютексом sess.mu (захватывается в handleEAPAuth на весь шаг
+// обработки: layeh/radius зовёт хендлер в горутине НА ПАКЕТ, ретрансмиты
+// NAS и разные Identifier дают конкурентный доступ к состоянию — аудит
+// 2026-09-11); воркер runTLS пишет только в каналы, keyBlock и буферы
+// conn (синхронизация — через handshakeCh/appData).
 type eapSession struct {
+	mu sync.Mutex // сериализация шагов обработки одной сессии
+
 	state     []byte // сырые байты RADIUS State (кладутся в Challenge как есть)
 	stateKey  string // hex(state) — ключ карты сессий
 	createdAt time.Time
@@ -250,22 +255,22 @@ func newEAPSession(raw []byte, stateKey string, cert *tls.Certificate, proto eap
 		MaxVersion:   tls.VersionTLS12,
 	}
 	sess := &eapSession{
-		state:         append([]byte(nil), raw...),
-		stateKey:      stateKey,
-		createdAt:     time.Now(),
-		lastUsed:      time.Now(),
-		conn:          conn,
-		tlsConn:       tls.Server(conn, cfg),
-		handshakeCh:   make(chan error, 1),
-		appData:       make(chan []byte, 1),
-		workerErr:     make(chan error, 1),
-		proto:         proto,
-		innerState:    peapStateChallenge,
-		frag:          eap.Assembler{},
-		reqID:         0,
-		lastRespEAP:   nil,
-		lastReqEAP:    nil,
-		pendingInner:  nil,
+		state:        append([]byte(nil), raw...),
+		stateKey:     stateKey,
+		createdAt:    time.Now(),
+		lastUsed:     time.Now(),
+		conn:         conn,
+		tlsConn:      tls.Server(conn, cfg),
+		handshakeCh:  make(chan error, 1),
+		appData:      make(chan []byte, 1),
+		workerErr:    make(chan error, 1),
+		proto:        proto,
+		innerState:   peapStateChallenge,
+		frag:         eap.Assembler{},
+		reqID:        0,
+		lastRespEAP:  nil,
+		lastReqEAP:   nil,
+		pendingInner: nil,
 	}
 	go sess.runTLS()
 	return sess

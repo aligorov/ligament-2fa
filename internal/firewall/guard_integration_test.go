@@ -90,6 +90,17 @@ func TestGuardListsAndBans(t *testing.T) {
 	if v := g.Check(ctx, "203.0.114.1"); v != Banned {
 		t.Fatal("после 10 неудач нет бана")
 	}
+	// CheckUntil сообщает момент окончания бана (для Retry-After в HTTP-слое).
+	vBanned, until := g.CheckUntil(ctx, "203.0.114.1")
+	if vBanned != Banned {
+		t.Fatalf("CheckUntil = %v, want Banned", vBanned)
+	}
+	if until.Before(time.Now()) {
+		t.Fatalf("CheckUntil: banned_until в прошлом: %v", until)
+	}
+	if _, until := g.CheckUntil(ctx, "203.0.115.5"); !until.IsZero() {
+		t.Fatalf("CheckUntil небаненого IP: until = %v, хочу нулевой", until)
+	}
 
 	// Белый список: неудачи не считаются.
 	for i := 0; i < 15; i++ {

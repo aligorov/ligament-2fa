@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -307,6 +308,23 @@ func (p *PublicAPI) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Purpose-фильтр (аудит 2026-09-11): /auth/verify — шаг ВХОДА, поэтому
+	// принимает только челленджи входных назначений (auth.LoginCodePurposes:
+	// api — выдача /auth/start, radius_prefetch — предварительный код VPN;
+	// создателей radius_prefetch-челленджей в сервере пока нет, фильтр
+	// оставлен совместимым с ядром). Экранные коды других флоу сюда не
+	// проходят: ui_confirm подтверждает операции кабинета через /api/v1/me,
+	// tg_link — привязку Telegram, webauthn_session — собственную церемонию;
+	// их verify через публичный вход позволял бы потребить код одного флоу
+	// в другом. Ответ 410 неотличим от «неизвестный/просроченный» — purpose
+	// чужого челленджа не раскрывается.
+	if !slices.Contains(auth.LoginCodePurposes, ch.Purpose) {
+		p.audit(ctx, user.Username, "api_verify_fail", ip, "fail",
+			map[string]any{"reason": "purpose_forbidden", "challenge_id": ch.ID.String()})
+		writeError(w, http.StatusGone, "expired")
+		return
+	}
+
 	ok, err := p.core.VerifyChallengeCode(ctx, ch, req.Code)
 	detail := map[string]any{"channel": string(ch.Channel), "challenge_id": ch.ID.String()}
 	switch {
@@ -401,7 +419,7 @@ func (p *PublicAPI) handlePoll(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if !p.rlPoll.Allow("poll:"+clientIP(r)+"|"+req.ChallengeID) {
+	if !p.rlPoll.Allow("poll:" + clientIP(r) + "|" + req.ChallengeID) {
 		w.Header().Set("Retry-After", strconv.Itoa(rlRetryAfterSec))
 		writeJSON(w, http.StatusTooManyRequests,
 			map[string]any{"error": "rate_limited", "retry_after": rlRetryAfterSec})

@@ -489,15 +489,22 @@ func waitAudit(t *testing.T, ctx context.Context, st *store.Store, username, eve
 	}
 }
 
-// TestEAPPEAPFullExchange: полный нативный вход PEAPv0 + MS-CHAPv2
-// (стандартный сценарий iOS/macOS/Windows без профилей):
+// TestEAPPEAPFullExchange: полный нативный вход PEAPv0 + MS-CHAPv2 по
+// окну доверия (стандартный сценарий iOS/macOS/Windows без профилей):
 // Identity -> PEAP Start -> TLS handshake -> MS-CHAPv2 Challenge -> Response
-// -> Success -> Result TLV -> RADIUS Access-Accept с EAP-Success и MS-MPPE ключами.
+// -> Success -> Result TLV -> RADIUS Access-Accept с EAP-Success и MS-MPPE
+// ключами. Второй фактор НЕ запрашивается: пара (пользователь, CSID) в
+// окне доверия radius.trust_days, пароль подтверждён MS-CHAPv2
+// (аудит radius_trust_skip). Семантика password_ok изменилась: без доверия
+// и без второго фактора верный пароль Accept-а не даёт — см.
+// TestEAPPEAPNoSecondFactorSilent.
 func TestEAPPEAPFullExchange(t *testing.T) {
 	st, set, box := setup(t)
 	ctx := context.Background()
 	mustPut(t, ctx, set, "radius.reply_attributes",
 		`{"Mikrotik-Group":"peap-wifi","Session-Timeout":"7200"}`)
+	// Окно доверия включено явно (дефолт 7 — для наглядности).
+	mustPut(t, ctx, set, "radius.trust_days", `7`)
 
 	core := newCore(st, set, box, nil, nil)
 	srv := New(core, st, set)
@@ -513,8 +520,15 @@ func TestEAPPEAPFullExchange(t *testing.T) {
 	user := mkUser(t, ctx, st, "peapuser", func(u *store.User) {
 		u.PasswordEnc = box.EncryptAAD(u.Username, []byte(testPassword))
 	})
+	// Доверенное устройство: окно выдано заранее (после предыдущего
+	// успешного push/кода). CSID в сыром виде — проверяем нормализацию
+	// ключа (supplicant шлёт «AA-BB-CC-DD-EE-FF» → ключ aabbccddeeff).
+	if err := st.RadiusTrustUpsert(ctx, user.ID, "AA-BB-CC-DD-EE-FF", 7); err != nil {
+		t.Fatalf("RadiusTrustUpsert: %v", err)
+	}
 
 	supp := newPEAPSupplicant(t, authAddr, secret)
+	supp.csid = "AA-BB-CC-DD-EE-FF"
 	resp := supp.authenticate(user.Username, testPassword)
 	if resp.Code != radius.CodeAccessAccept {
 		t.Fatalf("код ответа %v, хочу Access-Accept", resp.Code)
@@ -550,7 +564,66 @@ func TestEAPPEAPFullExchange(t *testing.T) {
 		t.Fatal("Message-Authenticator Accept-а отсутствует или неверен")
 	}
 
+	// Окно продлено/записано и действительно для нормализованного CSID.
+	if !st.RadiusTrustIsTrusted(ctx, user.ID, "aabbccddeeff") {
+		t.Fatal("после входа по окну доверия устройство не числится доверенным")
+	}
+
+	// Аудит: пропуск второго фактора по окну доверия + успех EAP-обмена.
+	waitAudit(t, ctx, st, user.Username, "radius_trust_skip", "ok")
 	waitAudit(t, ctx, st, user.Username, "radius_eap", "ok")
+}
+
+// TestEAPPEAPNoSecondFactorSilent: дыра 1FA закрыта — верный пароль по PEAP
+// при выключенном push и БЕЗ окна доверия больше НЕ даёт Access-Accept
+// (прежде ветка password_ok принимала такой вход). Сервер молчит после
+// MS-CHAPv2 Response (нативный supplicant TOTP ввести не может) — NAS
+// завершит обмен по своему таймауту; аудит фиксирует second_factor_required.
+func TestEAPPEAPNoSecondFactorSilent(t *testing.T) {
+	st, set, box := setup(t)
+	ctx := context.Background()
+	// Окно доверия выключено: пароль+CSID не могут заменить второй фактор.
+	mustPut(t, ctx, set, "radius.trust_days", `0`)
+
+	core := newCore(st, set, box, nil, nil)
+	srv := New(core, st, set)
+	srvCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	authAddr, _ := startServers(t, srvCtx, srv)
+	secret := []byte(set.Get().RadiusSecret)
+
+	if err := srv.EnsureEAPCert(ctx); err != nil {
+		t.Fatalf("EnsureEAPCert: %v", err)
+	}
+
+	user := mkUser(t, ctx, st, "peapnosf", func(u *store.User) {
+		u.PasswordEnc = box.EncryptAAD(u.Username, []byte(testPassword))
+	})
+
+	supp := newPEAPSupplicant(t, authAddr, secret)
+	supp.csid = "AA-BB-CC-DD-EE-FF"
+	supp.onMSCHAPResp = func() bool {
+		if got := supp.tryReadResp(2 * time.Second); got != nil {
+			t.Errorf("верный пароль без второго фактора получил ответ %v, хочу тишину", got.Code)
+		}
+		return true // тишина подтверждена — обмен закончен
+	}
+	if resp := supp.authenticate(user.Username, testPassword); resp != nil {
+		t.Fatalf("код ответа %v, хочу отсутствие ответа (тишину)", resp.Code)
+	}
+
+	// Аудит: password_ok ушёл, вместо него second_factor_required (fail).
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		events, aerr := st.AuditList(ctx, store.AuditFilter{Username: user.Username, Event: "radius_auth"})
+		if aerr == nil && len(events) > 0 && events[0].Detail["reason"] == "second_factor_required" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("radius_auth reason=second_factor_required не найден: rows=%d err=%v", len(events), aerr)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // TestEAPPEAPTOTPReplay: код TOTP в PEAP одноразовый — как в PAP-пути.
@@ -621,6 +694,8 @@ type peapSupplicant struct {
 	addr   net.Addr
 	secret []byte
 
+	csid string // Calling-Station-Id (для тестов окна доверия); пусто — не слать
+
 	state       []byte
 	ident       int
 	lastReqPkt  *radius.Packet
@@ -629,6 +704,10 @@ type peapSupplicant struct {
 	eapReqID    byte
 
 	handshakeDone bool
+
+	// onMSCHAPResp — хук после отправки inner MS-CHAPv2 Response:
+	// true — прервать обмен (сервер молчит, второй фактор недоступен).
+	onMSCHAPResp func() bool
 }
 
 func newPEAPSupplicant(t *testing.T, addr string, secret []byte) *peapSupplicant {
@@ -665,9 +744,20 @@ func newPEAPSupplicant(t *testing.T, addr string, secret []byte) *peapSupplicant
 
 func (s *peapSupplicant) exchange(pkt *radius.Packet) *radius.Packet {
 	s.t.Helper()
+	s.send(pkt)
+	return s.readResp()
+}
+
+// send кодирует и отправляет Access-Request без чтения ответа — чтение
+// отдельно (readResp/tryReadResp) для проверки «сервер молчит».
+func (s *peapSupplicant) send(pkt *radius.Packet) {
+	s.t.Helper()
 	pkt.Identifier = byte(s.ident)
 	s.ident++
 	rfc2865.UserName_SetString(pkt, "anonymous")
+	if s.csid != "" {
+		rfc2865.CallingStationID_SetString(pkt, s.csid)
+	}
 	signRequestMA(pkt)
 	raw, err := pkt.Encode()
 	if err != nil {
@@ -678,17 +768,29 @@ func (s *peapSupplicant) exchange(pkt *radius.Packet) *radius.Packet {
 	if _, err := s.pc.WriteTo(raw, s.addr); err != nil {
 		s.t.Fatalf("WriteTo: %v", err)
 	}
-	return s.readResp()
 }
 
 func (s *peapSupplicant) readResp() *radius.Packet {
 	s.t.Helper()
+	resp := s.tryReadResp(15 * time.Second)
+	if resp == nil {
+		s.t.Fatalf("сервер не ответил за 15 с")
+	}
+	return resp
+}
+
+// tryReadResp ждёт ответ не дольше d; таймаут — nil (не фатально).
+func (s *peapSupplicant) tryReadResp(d time.Duration) *radius.Packet {
+	s.t.Helper()
 	buf := make([]byte, 4096)
-	if err := s.pc.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+	if err := s.pc.SetReadDeadline(time.Now().Add(d)); err != nil {
 		s.t.Fatalf("SetReadDeadline: %v", err)
 	}
 	n, _, err := s.pc.ReadFrom(buf)
 	if err != nil {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			return nil // тишина сервера — легитимный исход (2FA без ответа)
+		}
 		s.t.Fatalf("ReadFrom: %v", err)
 	}
 	resp, err := radius.Parse(buf[:n], s.secret)
@@ -708,6 +810,18 @@ func (s *peapSupplicant) request(eapPkt []byte) *radius.Packet {
 	}
 	rfc2869.EAPMessage_Set(pkt, eapPkt)
 	return s.exchange(pkt)
+}
+
+// sendEAP оборачивает inner EAP-пакет в Access-Request и отправляет БЕЗ
+// чтения ответа (пара к readResp — для проверки «сервер молчит»).
+func (s *peapSupplicant) sendEAP(eapPkt []byte) *radius.Packet {
+	pkt := radius.New(radius.CodeAccessRequest, s.secret)
+	if len(s.state) > 0 {
+		rfc2865.State_Add(pkt, s.state)
+	}
+	rfc2869.EAPMessage_Set(pkt, eapPkt)
+	s.send(pkt)
+	return pkt
 }
 
 func (s *peapSupplicant) waitStep() (out []byte, err error) {
@@ -842,7 +956,13 @@ func (s *peapSupplicant) authenticate(username, password string) *radius.Packet 
 				out := s.conn.takeOutput()
 				pkt := eap.BuildPEAP(eap.CodeResponse, s.eapReqID, 0, -1, out)
 				s.lastRespEAP = pkt
-				resp = s.request(pkt)
+				s.sendEAP(pkt)
+				// Хук «сервер молчит после верного пароля»: обмен без
+				// второго фактора и без доверия не получает ответа.
+				if s.onMSCHAPResp != nil && s.onMSCHAPResp() {
+					return nil
+				}
+				resp = s.readResp()
 
 			case eap.MSCHAPv2OpSuccess:
 				innerACK := []byte{byte(eap.TypeMSCHAPv2)}

@@ -187,4 +187,3 @@ func ExtractVLAN(attrs map[string]string) string {
 	}
 	return ""
 }
-

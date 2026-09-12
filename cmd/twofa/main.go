@@ -219,7 +219,12 @@ func main() {
 	// (CompositeVerifier). Конфигурация LDAP читается из снимка настроек
 	// при каждой проверке — SIGHUP применяется без пересборки.
 	pvLocal := auth.NewLocalVerifier(st)
-	pv := auth.NewCompositeVerifier(st, pvLocal, auth.NewLdapVerifier(st, m))
+	pvLdap := auth.NewLdapVerifier(st, m)
+	// Лицензионный лимит на авто-провижининг: тот же источник, что и
+	// licenseExceeded в internal/api — LDAP-вход не создаёт пользователей
+	// сверх лимита активных (report §3.3: блокируется только СОЗДАНИЕ).
+	pvLdap.SetLicenseAllowsCreate(ldapLicenseAllowsCreate(st, lic))
+	pv := auth.NewCompositeVerifier(st, pvLocal, pvLdap)
 	core := auth.NewCore(st, m, box, senders, pv, push)
 	appHub := delivery.NewAppHub()
 	core.SetAppPush(appHub)
@@ -408,6 +413,37 @@ func main() {
 		}
 	}()
 
+	// Janitor radius_trusted_devices: ежедневная чистка записей окна
+	// доверия RADIUS (radius.trust_days), истёкших больше недели назад
+	// (запас на разбор инцидентов). Ленивая чистка при каждой записи —
+	// в store.RadiusTrustUpsert; этот проход подхватывает устройства,
+	// которые больше не подключаются.
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		cleanupTrust := func() {
+			cctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			n, err := st.RadiusTrustCleanup(cctx)
+			if err != nil {
+				slog.Warn("main: janitor radius_trusted_devices", "error", err)
+				return
+			}
+			if n > 0 {
+				slog.Info("main: janitor radius_trusted_devices", "deleted", n)
+			}
+		}
+		cleanupTrust()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cleanupTrust()
+			}
+		}
+	}()
+
 	// RADIUS auth+acct: слушатели поднимаются в ListenAndServe, Shutdown —
 	// по отмене ctx (grace внутри radiusserver).
 	radiusDone := make(chan struct{})
@@ -448,6 +484,69 @@ func main() {
 	}
 	rt.Stop()
 	slog.Info("main: сервер остановлен")
+}
+
+// ldapLicenseAllowsCreate — колбэк лицензионного лимита для LdapVerifier:
+// повторяет семантику licenseExceeded из internal/api поверх того же
+// источника (license.Manager + подсчёт активных пользователей через
+// UserList). Авто-провижининг нового LDAP-пользователя при исчерпанном
+// лимите запрещается; вход существующим не ограничивается никогда.
+// Ошибки чтения состояния — fail open (лицензирование — юридический
+// барьер, не DRM; report §3.8). Колбэк без контекста запроса — для
+// обращений к БД используется фоновый контекст с потолком 5 с.
+func ldapLicenseAllowsCreate(st *store.Store, lic *license.Manager) func(string) bool {
+	return func(username string) bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if lic == nil {
+			return true // лицензирование не смонтировано (тесты/композиции)
+		}
+		status, err := lic.Effective(ctx)
+		if err != nil {
+			slog.Error("main: license статус для LDAP-провижининга", "error", err)
+			return true
+		}
+		users, err := st.UserList(ctx)
+		if err != nil {
+			slog.Error("main: список пользователей для LDAP-провижининга", "error", err)
+			return true
+		}
+		active := 0
+		for _, u := range users {
+			if u.Enabled {
+				active++
+			}
+		}
+		if status.UserLimit <= 0 || active+1 <= status.UserLimit {
+			// Лимит не достигнут: фиксация превышения больше не актуальна
+			// (как в licenseExceeded) — следующее превышение начнёт grace заново.
+			if status.UserLimit > 0 {
+				if err := lic.ClearOverLimit(ctx); err != nil {
+					slog.Warn("main: сброс license.over_limit_since", "error", err)
+				}
+			}
+			return true
+		}
+		// 30-дневный grace на превышение (report §3.3): разрешает создание,
+		// но с аудит-предупреждением; после окна — запрет.
+		dec, err := lic.OverLimit(ctx)
+		if err != nil {
+			slog.Error("main: license over-limit grace (LDAP)", "error", err)
+			return true
+		}
+		if !dec.Allowed {
+			slog.Warn("main: LDAP авто-провижининг заблокирован лимитом лицензии",
+				"username", username, "limit", status.UserLimit, "active_users", active)
+			return false
+		}
+		if err := st.Audit(ctx, username, "license_over_limit_grace", map[string]any{
+			"limit": status.UserLimit, "active_users": active,
+			"over_limit_since": dec.Since.UTC().Format(time.RFC3339),
+		}, "", "ok"); err != nil {
+			slog.Warn("main: аудит license_over_limit_grace не записан", "error", err)
+		}
+		return true
+	}
 }
 
 // runBackup выполняет логический дамп БД (twofa -backup): opens store,

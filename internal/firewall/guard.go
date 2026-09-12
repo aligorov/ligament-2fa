@@ -115,9 +115,17 @@ func contains(list []netip.Prefix, ip netip.Addr) bool {
 // Banned; белый список гасит бан (Pass). Некорректный IP — Pass (фильтрация
 // не должна ронять легитимный трафик с экзотических прокси).
 func (g *Guard) Check(ctx context.Context, ip string) Verdict {
+	v, _ := g.CheckUntil(ctx, ip)
+	return v
+}
+
+// CheckUntil — как Check, но для активного автобана дополнительно сообщает
+// момент его окончания (banned_until): HTTP-слой кладёт остаток в заголовок
+// Retry-After вместо константы. Для Denied/Pass момент нулевой.
+func (g *Guard) CheckUntil(ctx context.Context, ip string) (Verdict, time.Time) {
 	a, err := netip.ParseAddr(hostOnly(ip))
 	if err != nil {
-		return Pass
+		return Pass, time.Time{}
 	}
 	a = a.Unmap()
 	g.loadIfStale(ctx)
@@ -126,20 +134,20 @@ func (g *Guard) Check(ctx context.Context, ip string) Verdict {
 	g.mu.Unlock()
 
 	if contains(deny, a) {
-		return Denied
+		return Denied, time.Time{}
 	}
 	if contains(allow, a) {
-		return Pass
+		return Pass, time.Time{}
 	}
-	active, _, err := g.st.BanActive(ctx, a.String())
+	active, until, err := g.st.BanActive(ctx, a.String())
 	if err != nil {
 		slog.Warn("firewall: проверка бана не удалась, пропускаю", "error", err)
-		return Pass
+		return Pass, time.Time{}
 	}
 	if active {
-		return Banned
+		return Banned, until
 	}
-	return Pass
+	return Pass, time.Time{}
 }
 
 // Fail регистрирует неудачу с IP (reason — login_fail/code_fail/

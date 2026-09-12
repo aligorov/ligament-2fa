@@ -32,7 +32,7 @@ func (s *Store) SessionCreateMode(ctx context.Context, tokenHash []byte, userID 
 	return nil
 }
 
-// SessionAuthMode возвращает режим входа сессии ('' — легаси, создана до
+// SessionAuthMode возвращает режим входа сессии (” — легаси, создана до
 // появления auth_mode). Отдельный метод (как OIDCSessionInfo), чтобы не
 // менять сигнатуру SessionGet.
 func (s *Store) SessionAuthMode(ctx context.Context, tokenHash []byte) (string, error) {

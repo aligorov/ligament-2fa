@@ -113,4 +113,3 @@ func (a *Assembler) AddPEAP(p *PEAP) ([]byte, bool, error) {
 		Payload:     p.Payload,
 	})
 }
-

@@ -20,6 +20,7 @@ import (
 	ldap "github.com/go-ldap/ldap/v3"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/aligorov/twofa/internal/firewall"
 	"github.com/aligorov/twofa/internal/secrets"
 	"github.com/aligorov/twofa/internal/settings"
 	"github.com/aligorov/twofa/internal/store"
@@ -79,11 +80,23 @@ type LdapVerifier struct {
 	st   *store.Store
 	set  *settings.M
 	dial func(ctx context.Context, rawURL string, starttls bool) (LdapConn, error)
+	// licenseAllowsCreate — инжектируемый колбэк лицензионного лимита
+	// (проводится из main поверх того же источника, что и licenseExceeded
+	// в internal/api): false запрещает авто-провижининг нового пользователя.
+	// nil — проверка не смонтирована (тесты, композиции без лицензирования).
+	licenseAllowsCreate func(username string) bool
 }
 
 // NewLdapVerifier возвращает LDAP-верификатор поверх store и настроек.
 func NewLdapVerifier(st *store.Store, set *settings.M) *LdapVerifier {
 	return &LdapVerifier{st: st, set: set, dial: ldapDial}
+}
+
+// SetLicenseAllowsCreate подключает колбэк лицензионного лимита (вызов из
+// main; nil — выключено). Семафор внедрения — чтобы ldap.go не зависел от
+// internal/api и лицензирование оставалось подключаемым.
+func (v *LdapVerifier) SetLicenseAllowsCreate(fn func(username string) bool) {
+	v.licenseAllowsCreate = fn
 }
 
 var _ PasswordVerifier = (*LdapVerifier)(nil)
@@ -307,6 +320,11 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 	// Новая запись сохраняется всегда — даже с нулевыми атрибутами (иначе
 	// Verify вернёт «фантома» с пустым ID); существующая — только при изменениях.
 	if create {
+		// Авто-провижининг не обходит лимит лицензии: проверка ДО UserCreate,
+		// при отказе пользователь не создаётся и bind отклоняется.
+		if !v.provisionAllowed(ctx, username) {
+			return nil, ErrBadCredentials
+		}
 		if len(cfg.GroupRadiusMap) > 0 {
 			u.RadiusReply = res.radiusReply
 		}
@@ -359,6 +377,38 @@ func (v *LdapVerifier) syncUser(ctx context.Context, username string, res *ldapA
 		}
 	}
 	return u, nil
+}
+
+// provisionAllowed решает, разрешён ли авто-провижининг нового пользователя:
+// колбэк licenseAllowsCreate (общий с licenseExceeded источник лимита в
+// internal/api — license.Manager + счёт активных пользователей) —
+// финальное слово. Отказ фиксируется аудитом ldap_provision_license_blocked;
+// nil-колбэк (композиции без лицензирования) — разрешение.
+func (v *LdapVerifier) provisionAllowed(ctx context.Context, username string) bool {
+	if v.licenseAllowsCreate == nil {
+		return true
+	}
+	if v.licenseAllowsCreate(username) {
+		return true
+	}
+	slog.WarnContext(ctx, "auth/ldap: авто-провижининг отклонён лимитом лицензии",
+		"username", username)
+	v.auditEvent(ctx, username, "ldap_provision_license_blocked", map[string]any{
+		"reason": "license_limit",
+	})
+	return false
+}
+
+// auditEvent пишет событие в audit_log (IP — из контекста файрвола, как в
+// core.audit); ошибка записи логируется и проглатывается — аудит не должен
+// ломать поток аутентификации.
+func (v *LdapVerifier) auditEvent(ctx context.Context, username, event string, detail map[string]any) {
+	if v.st == nil {
+		return
+	}
+	if err := v.st.Audit(ctx, username, event, detail, firewall.IPFrom(ctx), "fail"); err != nil {
+		slog.WarnContext(ctx, "auth/ldap: аудит не записан", "event", event, "error", err)
+	}
 }
 
 // LdapTestResult содержит результаты проверки связи с LDAP.
@@ -940,4 +990,3 @@ func ResolveGroupRadiusAttrs(groups []string, groupMap map[string]map[string]str
 	}
 	return out
 }
-

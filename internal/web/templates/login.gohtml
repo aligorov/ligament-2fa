@@ -2,7 +2,7 @@
 {{define "content"}}
 <div class="login-card">
   <div class="login-brand">
-      {{if .Brand.Logo}}<img class="brand-logo" src="{{.Brand.Logo}}" alt="logo">
+      {{if .Brand.Logo}}<img class="brand-logo" src="/branding/logo" alt="logo">
       {{else if .Brand.Name}}<span class="brand-mark">{{if .Brand.Mark}}{{.Brand.Mark}}{{else}}{{slice .Brand.Name 0 1}}{{end}}</span>{{.Brand.Name}}
       {{else}}<span class="brand-mark">L</span>Ligament{{end}}
     </div>

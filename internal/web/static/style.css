@@ -1008,6 +1008,17 @@ ul.codes li code {
   padding: 0.35rem 0.4rem;
   vertical-align: middle;
 }
+
+/* Утилиты и ширины для разметки, собираемой app.js (строгая CSP без
+   style-src 'unsafe-inline' — инлайн-атрибуты style= запрещены). */
+.cell-center { text-align: center; }
+.fw-medium { font-weight: 500; }
+/* .hidden уже определён ниже в style.css (display: none !important). */
+.gr-group-vlan-select { max-width: 280px; }
+.gr-group-vlan-custom { max-width: 90px; }
+.gr-th-attr { width: 48%; }
+.gr-th-val { width: 44%; }
+.gr-th-del { width: 8%; text-align: center; }
 .gr-card-foot {
   display: flex;
   align-items: center;

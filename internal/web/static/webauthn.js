@@ -188,6 +188,19 @@ function showLoginInfo(msg) {
   box.appendChild(div);
 }
 
+// safeNext — та же валидация адреса возврата, что и на сервере (pages.go):
+// только локальные пути без «//» (протокол-относительный URL) и без «\»
+// (браузеры трактуют backslash как «/» — /\evil.com уводит с сайта).
+// Чужое значение заменяется на /me.
+function safeNext(next) {
+  return typeof next === "string" &&
+    next.startsWith("/") &&
+    !next.startsWith("//") &&
+    !next.includes("\\")
+    ? next
+    : "";
+}
+
 // twofaLoginPasskey проводит WebAuthn-церемонию входа (Touch ID / Face ID / Windows Hello / YubiKey).
 // isAuto = true при автоматическом вызове на сабмите формы (если passkey нет — тихий fallback на POST).
 async function twofaLoginPasskey(form, isAuto) {
@@ -322,7 +335,8 @@ async function twofaLoginPasskey(form, isAuto) {
     }
 
     // Успех! Переходим в личный кабинет / на целевую страницу
-    window.location.href = next || "/me";
+    // (next проходит safeNext — открытый редирект через /\ или // отсечён).
+    window.location.href = safeNext(next) || "/me";
     return true;
 
   } catch (err) {

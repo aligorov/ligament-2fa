@@ -1,11 +1,15 @@
 package delivery
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"mime"
+	"net"
 	"net/smtp"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -185,4 +189,151 @@ func headerValue(t *testing.T, msg, name string) string {
 	}
 	t.Fatalf("заголовок %s не найден:\n%s", name, msg)
 	return ""
+}
+
+// ---- sendSMTP: дедлайны реального SMTP-диалога (без подмены sendFn) ----
+
+// fakeSMTPServer — минимальный SMTP-сервер на localhost: greeting, EHLO
+// (анонс AUTH PLAIN, без STARTTLS), AUTH/MAIL/RCPT/DATA/QUIT по сценарию.
+type fakeSMTPServer struct {
+	ln       net.Listener
+	addr     string // host:port
+	mu       sync.Mutex
+	dataMsg  string   // принятое после DATA сообщение
+	dialogue []string // команды клиента
+	silent   bool     // принять соединение и молчать (проверка дедлайна)
+}
+
+func newFakeSMTPServer(t *testing.T, silent bool) *fakeSMTPServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &fakeSMTPServer{ln: ln, addr: ln.Addr().String(), silent: silent}
+	go s.serve()
+	t.Cleanup(func() { ln.Close() })
+	return s
+}
+
+func (s *fakeSMTPServer) serve() {
+	conn, err := s.ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if s.silent {
+		// Приняли и молчим: клиент должен упереться в дедлайн диалога.
+		time.Sleep(5 * time.Second)
+		return
+	}
+	r := bufio.NewReader(conn)
+	resp := func(line string) { conn.Write([]byte(line + "\r\n")) }
+	resp("220 fake ESMTP")
+	var msg strings.Builder
+	inData := false
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimRight(line, "\r\n")
+		s.mu.Lock()
+		s.dialogue = append(s.dialogue, line)
+		s.mu.Unlock()
+		if inData {
+			if line == "." {
+				s.mu.Lock()
+				s.dataMsg = msg.String()
+				s.mu.Unlock()
+				inData = false
+				resp("250 queued")
+			} else {
+				msg.WriteString(line + "\n")
+			}
+			continue
+		}
+		cmd := strings.ToUpper(strings.Fields(line + " ")[0])
+		switch cmd {
+		case "EHLO", "HELO":
+			// Без анонса STARTTLS — PLAIN идёт по открытому соединению
+			// (isLocalhost разрешает это для 127.0.0.1).
+			resp("250-fake")
+			resp("250 AUTH PLAIN")
+		case "AUTH":
+			resp("235 ok")
+		case "MAIL":
+			resp("250 ok")
+		case "RCPT":
+			resp("250 ok")
+		case "DATA":
+			inData = true
+			resp("354 go")
+		case "QUIT":
+			resp("221 bye")
+			return
+		default:
+			resp("500 unknown")
+		}
+	}
+}
+
+func (s *fakeSMTPServer) received() (string, []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dataMsg, s.dialogue
+}
+
+// TestEmailSendSMTPDialog — sendSMTP проводит полный диалог с фейковым
+// сервером: EHLO → AUTH PLAIN → MAIL → RCPT → DATA (письмо целиком) → QUIT.
+func TestEmailSendSMTPDialog(t *testing.T) {
+	srv := newFakeSMTPServer(t, false)
+	host, portStr, _ := net.SplitHostPort(srv.addr)
+	port, _ := strconv.Atoi(portStr)
+	e := NewEmail(host, port, false, "user", "pass",
+		"noreply@example.com", "Код", "", nil, nil, time.Minute).(*EmailSender)
+	msg := e.buildMessage("dest@example.com", "123456")
+	if err := e.sendSMTP(srv.addr, smtp.PlainAuth("", "user", "pass", host),
+		"noreply@example.com", []string{"dest@example.com"}, msg); err != nil {
+		t.Fatalf("sendSMTP: %v", err)
+	}
+	got, dialogue := srv.received()
+	for _, want := range []string{"Subject:", "To: dest@example.com", "123456"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("DATA-сообщение не содержит %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "From: noreply@example.com") {
+		t.Errorf("DATA-сообщение без From:\n%s", got)
+	}
+	joined := strings.Join(dialogue, " | ")
+	for _, want := range []string{"EHLO", "AUTH PLAIN", "MAIL FROM", "RCPT TO", "DATA", "QUIT"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("в диалоге нет %q: %s", want, joined)
+		}
+	}
+}
+
+// TestEmailSendSMTPDeadline — молчаливый сервер: диалог обрывается по
+// дедлайну соединения, а не висит вечно (раньше smtp.SendMail без
+// дедлайнов оставлял вечную горутину и коннект).
+func TestEmailSendSMTPDeadline(t *testing.T) {
+	old := smtpDialogTimeout
+	smtpDialogTimeout = 250 * time.Millisecond
+	defer func() { smtpDialogTimeout = old }()
+
+	srv := newFakeSMTPServer(t, true)
+	host, portStr, _ := net.SplitHostPort(srv.addr)
+	port, _ := strconv.Atoi(portStr)
+	e := NewEmail(host, port, false, "", "",
+		"noreply@example.com", "Код", "", nil, nil, time.Minute).(*EmailSender)
+	start := time.Now()
+	err := e.sendSMTP(srv.addr, nil, "noreply@example.com", []string{"dest@example.com"},
+		e.buildMessage("dest@example.com", "1"))
+	if err == nil {
+		t.Fatal("ожидали ошибку дедлайна против молчащего сервера")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("sendSMTP висел %s — дедлайн не работает", elapsed)
+	}
 }

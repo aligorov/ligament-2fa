@@ -4246,10 +4246,10 @@ components:
           description: "Канал выдачи кода; totp — челлендж без доставки (код генерируется приложением пользователя)."
         expires_in:
           type: integer
+          description: Секунды до истечения челленджа.
         number_match:
           type: string
-          description: "Число number-matching для push-челленджей (app_push/telegram_push): показывается на экране, запросившем вход (страница логина / тайл Windows CP при RDP), вводится в приложении-аутентификаторе. Отсутствует для кодовых каналов и RADIUS-push.
-          description: Секунды до истечения челленджа.
+          description: "Число number-matching для push-челленджей (app_push/telegram_push): показывается на экране, запросившем вход (страница логина / тайл Windows CP при RDP), вводится в приложении-аутентификаторе. Отсутствует для кодовых каналов и RADIUS-push."
     VerifyOK:
       type: object
       required: [ok, username]

@@ -4,6 +4,7 @@
 package radiusserver
 
 import (
+	"bytes"
 	"crypto/tls"
 	"testing"
 	"time"
@@ -57,4 +58,37 @@ func TestEAPSessionStoreEvictIdleOnly(t *testing.T) {
 		t.Fatalf("размер карты после выметания = %d, хочу %d", n, eapSessionCap)
 	}
 	fresh.conn.Close()
+}
+
+// TestStashPendingInnerCap — анти-DoS кап накопителя phase-2: буфер больше
+// maxPendingInner (64 KiB) не запоминается (вызывающий завершит обмен
+// failEAP), допустимый размер кладётся как есть; повторный stash заменяет
+// предыдущий (append частичного блока делается до stash).
+func TestStashPendingInnerCap(t *testing.T) {
+	sess := &eapSession{}
+
+	if !sess.stashPendingInner(make([]byte, maxPendingInner)) {
+		t.Fatal("буфер ровно maxPendingInner должен приниматься (<= кап)")
+	}
+	if len(sess.pendingInner) != maxPendingInner {
+		t.Fatalf("pendingInner = %d, хочу %d", len(sess.pendingInner), maxPendingInner)
+	}
+
+	if sess.stashPendingInner(make([]byte, maxPendingInner+1)) {
+		t.Fatal("буфер больше капа должен отвергаться (failEAP у вызывающего)")
+	}
+
+	// Отвергнутый stash не портит предыдущее состояние.
+	if len(sess.pendingInner) != maxPendingInner {
+		t.Fatalf("после отказа pendingInner = %d, хочу прежние %d",
+			len(sess.pendingInner), maxPendingInner)
+	}
+
+	small := []byte{1, 2, 3}
+	if !sess.stashPendingInner(small) {
+		t.Fatal("маленький буфер должен приниматься")
+	}
+	if !bytes.Equal(sess.pendingInner, small) {
+		t.Fatalf("pendingInner после замены = %v, хочу %v", sess.pendingInner, small)
+	}
 }

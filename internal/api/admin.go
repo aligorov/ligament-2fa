@@ -49,6 +49,13 @@ import (
 // settings.maskValue); PUT с таким значением = «не менять секрет».
 const settingsMask = "••••"
 
+// wsStatusCheckEvery — период сторожа статуса операторского WS поддержки:
+// раз в 5 с сессия перечитывается, и на терминальном статусе FSM соединение
+// закрывается (пересылка сигналов гасится). Один индексированный SELECT на
+// открытое соединение — при единицах одновременных операторов нагрузка
+// несущественна.
+const wsStatusCheckEvery = 5 * time.Second
+
 // regenerableKeys — ключи, допускающие регенерацию случайного значения.
 var regenerableKeys = map[string]struct{}{
 	"admin_token":   {},
@@ -1762,7 +1769,9 @@ func (a *AdminAPI) handleRadiusACMERenew(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *AdminAPI) ldapVerifier() *auth.LdapVerifier {
-	return auth.NewLdapVerifier(a.st, a.m)
+	v := auth.NewLdapVerifier(a.st, a.m)
+	v.SetLicenseAllowsCreate(a.ldapLicenseGate())
+	return v
 }
 
 // handleLdapTest — POST /api/v1/admin/ldap/test: проверка подключения к серверу LDAP.
@@ -2073,11 +2082,30 @@ func (a *AdminAPI) handleAdminSupportSessionSignal(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusConflict, "invalid_transition")
 		return
 	}
-	// Сигнал до approve — только назначенному оператору/админу.
+	// Личность оператора и актёр таблицы переходов: админ/глобальный токен —
+	// без ограничений; назначенный оператор — без ограничений; инженер
+	// поддержки — только сессии своей категории.
 	op := a.supportOperatorFrom(r)
-	if actor := supportActorFor(op, session); actor == store.SupportActorOperator {
+	actor := supportActorFor(op, session)
+
+	// Сигнал в активную/переадресованную сессию — только назначенному
+	// оператору/админу (посторонний инженер не ведёт чужой сеанс).
+	if actor == store.SupportActorOperator {
 		if session.Status == "active" || session.Status == "transferred" {
 			writeError(w, http.StatusForbidden, "not_assigned_operator")
+			return
+		}
+		// Категория — как в connect (аудит 2026-09-11: инженер «1c» слал
+		// WebRTC-сигналы в чужую «it»-сессию, в т.ч. неподтверждённую).
+		matched := false
+		for _, role := range op.SupportRoles {
+			if strings.EqualFold(role, session.Category) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			writeError(w, http.StatusForbidden, "category_forbidden")
 			return
 		}
 	}
@@ -2306,8 +2334,10 @@ func (a *AdminAPI) handleAdminSupportSessionsCleanup(w http.ResponseWriter, r *h
 
 // supportOperatorFrom определяет личность оператора, действующего через
 // admin-интерфейс: web-сессия (cookie twofa_session) либо app-токен
-// устройства. nil — запрос авторизован глобальным admin_token (супер-токен
-// без личности) или личность не распознана.
+// устройства (Bearer; ?token= — только для WS/SSE, как в checkOperatorAuth:
+// на нестимовых JSON-запросах query-токен не признаётся). nil — запрос
+// авторизован глобальным admin_token (супер-токен без личности) или
+// личность не распознана.
 func (a *AdminAPI) supportOperatorFrom(r *http.Request) *store.User {
 	if c, err := r.Cookie(cookieSession); err == nil && c.Value != "" {
 		tokenHash := secrets.SHA256(c.Value)
@@ -2318,10 +2348,10 @@ func (a *AdminAPI) supportOperatorFrom(r *http.Request) *store.User {
 		}
 	}
 	appToken := bearerToken(r)
-	if appToken == "" {
+	if appToken == "" && isStreamRequest(r) {
 		appToken = r.URL.Query().Get("token")
 	}
-	if appToken != "" && !isStreamRequest(r) {
+	if appToken != "" {
 		tokenHash := secrets.SHA256(appToken)
 		if device, err := a.st.AppDeviceGetByTokenHash(r.Context(), tokenHash); err == nil && device.Active {
 			if u, err := a.st.UserByID(r.Context(), device.UserID); err == nil && u.Enabled {
@@ -2384,9 +2414,12 @@ func (a *AdminAPI) checkAdminOrSupport(r *http.Request) bool {
 		}
 	}
 
-	// 3. App Token авторизованного мобильного/десктопного устройства (Bearer / ?token=)
+	// 3. App Token авторизованного мобильного/десктопного устройства
+	// (Bearer; ?token= — только WS/SSE-запросы, аудит 2026-09-11: query-
+	// строка оседает в логах прокси, на нестимовых JSON-запросах заголовок
+	// обязателен — как в supportOperatorFrom/app.authMiddleware).
 	appToken := bearerToken(r)
-	if appToken == "" {
+	if appToken == "" && isStreamRequest(r) {
 		appToken = r.URL.Query().Get("token")
 	}
 	if appToken != "" {
@@ -2446,9 +2479,13 @@ func (a *AdminAPI) checkOperatorAuth(r *http.Request, sessionID uuid.UUID) bool 
 		}
 	}
 
-	// 4. App Token авторизованного мобильного/десктопного устройства (Bearer / ?token=)
+	// 4. App Token авторизованного мобильного/десктопного устройства
+	// (Bearer; ?token= — только WS/SSE-запросы: нестимовой JSON с токеном
+	// в query отклоняется, токен принимается из заголовка — аудит
+	// 2026-09-11; transfer-токен из пункта 2 — не device-токен и остаётся
+	// допустимым в query на любом запросе).
 	appToken := bearerToken(r)
-	if appToken == "" {
+	if appToken == "" && isStreamRequest(r) {
 		appToken = r.URL.Query().Get("token")
 	}
 	if appToken != "" {
@@ -2496,6 +2533,30 @@ func (a *AdminAPI) handleAdminSupportSessionWS(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Те же ограничения, что на signal/connect (аудит 2026-09-11):
+	// назначенный оператор и админ — без ограничений; инженер поддержки —
+	// только WS сессии своей категории, а в активную/переадресованную
+	// сессию посторонний инженер не вклинивается. Владелец сессии
+	// (device-токен) операторским WS не пользуется — у него свой канал.
+	op := a.supportOperatorFrom(r)
+	if actor := supportActorFor(op, session); actor == store.SupportActorOperator {
+		if session.Status == "active" || session.Status == "transferred" {
+			writeError(w, http.StatusForbidden, "not_assigned_operator")
+			return
+		}
+		matched := false
+		for _, role := range op.SupportRoles {
+			if strings.EqualFold(role, session.Category) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			writeError(w, http.StatusForbidden, "category_forbidden")
+			return
+		}
+	}
+
 	if a.hub == nil {
 		writeError(w, http.StatusServiceUnavailable, "hub_disabled")
 		return
@@ -2509,6 +2570,33 @@ func (a *AdminAPI) handleAdminSupportSessionWS(w http.ResponseWriter, r *http.Re
 
 	a.hub.RegisterAdminWS(session.ID, conn)
 	defer a.hub.UnregisterAdminWS(session.ID, conn)
+
+	// Сторож статуса: сессия могла завершиться (end/expire/reject), пока
+	// соединение оставалось открытым — по терминальному статусу FSM
+	// (SupportIsTerminal, см. таблицу переходов support.go) сокет
+	// закрывается: пересылка сигналов и прослушивание «мёртвой» сессии
+	// гасятся в пределах wsStatusCheckEvery, а не до обрыва соединения
+	// клиентом. Close конкурентобезопасен и разблокирует ReadMessage.
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go func() {
+		ticker := time.NewTicker(wsStatusCheckEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchDone:
+				return
+			case <-ticker.C:
+				// Фоновый контекст: r.Context() отменён после выхода хендлера;
+				// транзиентная ошибка БД соединение не рвёт.
+				ss, err := a.st.SupportSessionGet(context.Background(), session.ID)
+				if err == nil && store.SupportIsTerminal(ss.Status) {
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+	}()
 
 	for {
 		messageType, data, err := conn.ReadMessage()

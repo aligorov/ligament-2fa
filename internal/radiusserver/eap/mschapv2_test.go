@@ -181,4 +181,3 @@ func TestCryptobindingTLV(t *testing.T) {
 		t.Fatalf("Cryptobinding TLV Len = %d, want 56", tlvLen)
 	}
 }
-

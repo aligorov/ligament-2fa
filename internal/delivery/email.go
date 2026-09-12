@@ -2,6 +2,8 @@ package delivery
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"mime"
 	"net"
@@ -11,6 +13,16 @@ import (
 	"time"
 
 	"github.com/aligorov/twofa/internal/channel"
+)
+
+// SMTP-дедлайны: dial ограничен 10 с, весь диалог (greeting + STARTTLS +
+// AUTH + MAIL/RCPT/DATA + QUIT) — 30 с на уровне соединения. smtp.SendMail
+// не ставит дедлайнов: зависший сервер оставлял вечную горутину и открытый
+// коннект на каждую попытку отправки. Переменные (а не константы) — для
+// подмены в тестах.
+var (
+	smtpDialTimeout   = 10 * time.Second
+	smtpDialogTimeout = 30 * time.Second
 )
 
 // EmailSender отправляет код письмом по SMTP (net/smtp).
@@ -33,7 +45,8 @@ type EmailSender struct {
 	// лицензии применяется без пересборки.
 	adLine func() string
 
-	// sendFn выполняет SMTP-транзакцию; по умолчанию smtp.SendMail.
+	// sendFn выполняет SMTP-транзакцию; по умолчанию sendSMTP —
+	// собственный диалог с дедлайнами (dial 10 с, диалог 30 с).
 	// Отдельное поле — чтобы тесты подменяли его рекордером.
 	sendFn func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
 }
@@ -42,13 +55,13 @@ var _ Sender = (*EmailSender)(nil)
 var _ AlertSender = (*EmailSender)(nil)
 
 // NewEmail создаёт SMTP-отправитель. Аутентификация PLAIN, только при
-// непустом user. STARTTLS: smtp.SendMail обновляет соединение до TLS,
-// как только сервер анонсирует STARTTLS (штатный режим порта 587;
-// флаг startTLS отмечает такие конфигурации), а smtp.PlainAuth
-// отказывается передавать учётные данные без TLS.
+// непустом user. STARTTLS: соединение обновляется до TLS, как только
+// сервер анонсирует STARTTLS (штатный режим порта 587; флаг startTLS
+// отмечает такие конфигурации), а smtp.PlainAuth отказывается передавать
+// учётные данные без TLS.
 // timeout ограничивает отправку (0 — по умолчанию 10 с).
 func NewEmail(host string, port int, startTLS bool, user, pass, from, subject, bodyTpl string, vars map[string]string, adLine func() string, timeout time.Duration) Sender {
-	return &EmailSender{
+	e := &EmailSender{
 		adLine:   adLine,
 		host:     host,
 		port:     port,
@@ -60,8 +73,11 @@ func NewEmail(host string, port int, startTLS bool, user, pass, from, subject, b
 		bodyTpl:  bodyTpl,
 		vars:     vars,
 		timeout:  timeout,
-		sendFn:   smtp.SendMail,
 	}
+	// По умолчанию — собственный SMTP-диалог с дедлайнами (sendSMTP);
+	// тесты подменяют sendFn рекордером.
+	e.sendFn = e.sendSMTP
+	return e
 }
 
 // Name реализует Sender.
@@ -98,6 +114,69 @@ func (e *EmailSender) Send(ctx context.Context, to, code string) error {
 	case <-ctx.Done():
 		return fmt.Errorf("delivery: email: отменено: %w", ctx.Err())
 	}
+}
+
+// sendSMTP выполняет SMTP-транзакцию с жёсткими дедлайнами — замена
+// smtp.SendMail, который не ограничивает ни dial, ни диалог: зависший
+// сервер оставлял вечную горутину и открытый коннект. Собственный dial
+// через net.Dialer (10 с), затем общий дедлайн всего диалога (30 с)
+// ставится на соединение — любой шаг SMTP (greeting, STARTTLS, AUTH,
+// MAIL/RCPT/DATA, QUIT) упирается в него. Поведение совпадает с
+// smtp.SendMail: STARTTLS при анонсе сервера, PLAIN-аутентификация при
+// заданном auth. Сигнатура — как у sendFn (подмена в тестах).
+func (e *EmailSender) sendSMTP(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+	// Dial с ограничением по времени (smtp.Dial — без дедлайна).
+	conn, err := (&net.Dialer{Timeout: smtpDialTimeout}).Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("dial %s: %w", addr, err)
+	}
+	defer conn.Close()
+	// Общий потолок диалога от текущего момента (включая уже прошедший dial).
+	if err := conn.SetDeadline(time.Now().Add(smtpDialogTimeout)); err != nil {
+		return fmt.Errorf("deadline %s: %w", addr, err)
+	}
+	c, err := smtp.NewClient(conn, e.host)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	// EHLO/HELO — как в smtp.SendMail.
+	if err := c.Hello("localhost"); err != nil {
+		return err
+	}
+	// STARTTLS при анонсе сервера (семантика smtp.SendMail): SNI — хост без порта.
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		if err := c.StartTLS(&tls.Config{ServerName: e.host}); err != nil {
+			return err
+		}
+	}
+	if a != nil {
+		if ok, _ := c.Extension("AUTH"); !ok {
+			return errors.New("smtp: server doesn't support AUTH")
+		}
+		if err := c.Auth(a); err != nil {
+			return err
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return err
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return err
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return c.Quit()
 }
 
 // buildMessage собирает MIME-письмо (RFC 5322, CRLF): заголовки

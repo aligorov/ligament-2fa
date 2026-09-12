@@ -39,11 +39,11 @@ type BrandData struct {
 }
 
 type BaseData struct {
-	Ads      AdsData
-	Brand    BrandData
-	Title    string
-	Username string // текущий пользователь (пусто до входа)
-	IsAdmin  bool
+	Ads         AdsData
+	Brand       BrandData
+	Title       string
+	Username    string // текущий пользователь (пусто до входа)
+	IsAdmin     bool
 	IsSupport   bool
 	IsSupportIT bool
 	IsSupport1C bool
@@ -65,11 +65,11 @@ type BaseData struct {
 // возврата после входа (hidden-поле; например, /oidc/authorize?...).
 type LoginData struct {
 	BaseData
-	Err      string // ошибка прошлого входа (не флеш — рендерится в 200/401)
-	Prefill  string // подстановка username после неудачной попытки
-	NeedCode bool   // подсказка: сервер ждёт именно код 2FA
-	Next     string // куда вернуться после успешного входа (только локальные пути)
-	Info     string // пояснение о доставке кода (email/sms/telegram/cooldown)
+	Err         string // ошибка прошлого входа (не флеш — рендерится в 200/401)
+	Prefill     string // подстановка username после неудачной попытки
+	NeedCode    bool   // подсказка: сервер ждёт именно код 2FA
+	Next        string // куда вернуться после успешного входа (только локальные пути)
+	Info        string // пояснение о доставке кода (email/sms/telegram/cooldown)
 	CanEmail    bool   // доступна ли отправка на Email
 	CanSMS      bool   // доступна ли отправка по SMS по подтверждению пользователя
 	CanPasskey  bool   // привязаны ли у пользователя passkeys (Touch ID, Windows Hello, YubiKey)

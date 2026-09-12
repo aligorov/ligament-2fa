@@ -27,9 +27,9 @@ import (
 // Срок действия ограничен 730 днями (2 года): Apple (iOS 13+) блокирует
 // TLS-сертификаты с валидностью > 825 дней.
 const (
-	eapCertKeyBits  = 2048
-	eapCertCN       = "ligament"
-	eapCertValidity = 730 * 24 * time.Hour
+	eapCertKeyBits   = 2048
+	eapCertCN        = "ligament"
+	eapCertValidity  = 730 * 24 * time.Hour
 	maxAppleCertDays = 825
 )
 

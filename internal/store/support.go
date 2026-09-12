@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -220,6 +221,57 @@ func SupportTransitionAllowed(from, to string, actor SupportActor) error {
 	}
 }
 
+// supportSessionInsert — INSERT строки support_sessions (без валидации
+// полей; значения по умолчанию проставляет SupportSessionCreate).
+func (s *Store) supportSessionInsert(ctx context.Context, ss *SupportSession) error {
+	metaJSON, err := json.Marshal(ss.Metadata)
+	if err != nil {
+		return fmt.Errorf("store: маршалинг metadata support_session: %w", err)
+	}
+
+	_, err = s.Pool().Exec(ctx, `INSERT INTO support_sessions
+		(id, user_id, device_id, category, status, problem_summary,
+		 assigned_admin_id, transferred_from_id, transferred_to_id,
+		 transfer_token_hash, number_match, access_mode, started_at, ended_at,
+		 metadata, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())`,
+		ss.ID, ss.UserID, ss.DeviceID, ss.Category, ss.Status, ss.ProblemSummary,
+		ss.AssignedAdminID, ss.TransferredFromID, ss.TransferredToID,
+		ss.TransferTokenHash, ss.NumberMatch, ss.AccessMode, ss.StartedAt, ss.EndedAt,
+		metaJSON)
+	return err
+}
+
+// SupportSessionExpireStaleByUser гасит залежавшиеся live-строки одного
+// пользователя — тот же TTL, что у ленивого sweep (SupportSessionSweepStale):
+// pending-заявки (requested/connecting/authorizing/approved) старше
+// supportPendingTTL → expired, active/transferred старше 4 часов →
+// completed (актёр system). Вызывается при 23505 в SupportSessionCreate:
+// partial unique index «одна живая сессия» покрывает и stale-строки, а
+// фильтры выборки их уже не видят — без этого новое обращение блокировалось
+// бы навсегда, пока ближайший sweep не догадается почистить
+// (аудит 2026-09-11).
+func (s *Store) SupportSessionExpireStaleByUser(ctx context.Context, userID uuid.UUID) error {
+	if _, err := s.Pool().Exec(ctx, `
+		UPDATE support_sessions SET
+			status = 'expired', ended_at = now(), updated_at = now()
+		WHERE user_id = $1
+		  AND status IN ('requested', 'connecting', 'authorizing', 'approved')
+		  AND created_at < now() - interval '15 minutes'`, userID); err != nil {
+		return fmt.Errorf("store: истечь просроченные заявки пользователя %s: %w", userID, err)
+	}
+	if _, err := s.Pool().Exec(ctx, `
+		UPDATE support_sessions SET
+			status = 'completed', ended_at = now(), updated_at = now(),
+			transfer_token_hash = NULL
+		WHERE user_id = $1
+		  AND status IN ('active', 'transferred')
+		  AND started_at < now() - interval '4 hours'`, userID); err != nil {
+		return fmt.Errorf("store: завершить устаревшие active-сессии пользователя %s: %w", userID, err)
+	}
+	return nil
+}
+
 // SupportSessionCreate создаёт новую сессию поддержки.
 func (s *Store) SupportSessionCreate(ctx context.Context, ss *SupportSession) error {
 	if ss.ID == uuid.Nil {
@@ -238,28 +290,22 @@ func (s *Store) SupportSessionCreate(ctx context.Context, ss *SupportSession) er
 		ss.Metadata = make(map[string]any)
 	}
 
-	metaJSON, err := json.Marshal(ss.Metadata)
-	if err != nil {
-		return fmt.Errorf("store: маршалинг metadata support_session: %w", err)
-	}
-
-	_, err = s.Pool().Exec(ctx, `INSERT INTO support_sessions
-		(id, user_id, device_id, category, status, problem_summary,
-		 assigned_admin_id, transferred_from_id, transferred_to_id,
-		 transfer_token_hash, number_match, access_mode, started_at, ended_at,
-		 metadata, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())`,
-		ss.ID, ss.UserID, ss.DeviceID, ss.Category, ss.Status, ss.ProblemSummary,
-		ss.AssignedAdminID, ss.TransferredFromID, ss.TransferredToID,
-		ss.TransferTokenHash, ss.NumberMatch, ss.AccessMode, ss.StartedAt, ss.EndedAt,
-		metaJSON)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			// Partial unique index «одна живая сессия на пользователя»:
-			// конкурентный запрос уже создал новое обращение.
+	err := s.supportSessionInsert(ctx, ss)
+	var pgErr *pgconn.PgError
+	if err != nil && errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		// Partial unique index «одна живая сессия на пользователя».
+		// Конкурентное свежее обращение → ErrDuplicateSession; но индекс
+		// может держать и stale live-строка (TTL истёк, ленивый sweep ещё
+		// не дошёл) — гасим её и ретраим вставку ровно один раз.
+		if expErr := s.SupportSessionExpireStaleByUser(ctx, ss.UserID); expErr != nil {
+			slog.Warn("store: гашение stale live-строк перед ретраем support_session", "error", expErr)
 			return ErrDuplicateSession
 		}
+		if err = s.supportSessionInsert(ctx, ss); err != nil && errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrDuplicateSession
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("store: создать support_session: %w", err)
 	}
 	return nil
@@ -508,43 +554,69 @@ func (s *Store) supportTransitionExec(ctx context.Context, id uuid.UUID, fromSta
 
 // SupportSessionConnect — подключение оператора: requested/connecting →
 // connecting с назначением оператора и свежим кодом number-match.
-// Перехват чужой сессии запрещён: если оператор уже назначен и подключается
-// другой — ErrSessionTaken. adminID == nil допустим только для глобального
-// admin_token (актёр admin), сессия остаётся «безымянной» до approve.
+// Перехват чужой сессии запрещён: владение проверяется В УСЛОВИИ UPDATE —
+// чужая (уже назначенная другому) сессия не мутируется вовсе, ни код
+// number-match, ни счётчик попыток не перетираются; конфликт →
+// ErrSessionTaken без побочных эффектов. adminID == nil допустим только
+// для глобального admin_token (актёр admin), сессия остаётся
+// «безымянной» до approve; админ (роль/токен) может перезапросить код и
+// для чужой сессии.
 func (s *Store) SupportSessionConnect(ctx context.Context, id uuid.UUID, actor SupportActor, adminID *uuid.UUID, numberMatch string) error {
 	if actor != SupportActorOperator && actor != SupportActorAdmin {
 		return fmt.Errorf("%w: connect доступен только оператору/админу, не %s", ErrInvalidTransition, actor)
 	}
 
 	// Атомарно: только requested/connecting; назначение оператора не
-	// перетирает уже существующее чужое.
+	// перетирает уже существующее чужое (COALESCE).
 	setSQL := `status = 'connecting',
 		number_match = $3,
 		nm_attempts = 0`
 	args := []any{numberMatch}
+	whereSQL := ""
 	if adminID != nil {
 		setSQL += `,
 		assigned_admin_id = COALESCE(assigned_admin_id, $4)`
 		args = append(args, *adminID)
-	}
-	err := s.supportTransitionExec(ctx, id, []string{"requested", "connecting"}, setSQL, args...)
-	if errors.Is(err, ErrInvalidTransition) {
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	// Если подключается НЕ назначенный оператор, а сессия уже занята —
-	// назначение не перезаписалось (COALESCE): конфликт владения. Админ
-	// (глобальный токен/роль) может перезапросить код и для чужой сессии.
-	if adminID != nil && actor == SupportActorOperator {
-		var assigned *uuid.UUID
-		if err := s.Pool().QueryRow(ctx,
-			`SELECT assigned_admin_id FROM support_sessions WHERE id = $1`, id).Scan(&assigned); err == nil {
-			if assigned != nil && *assigned != *adminID {
-				return ErrSessionTaken
-			}
+		if actor == SupportActorOperator {
+			// Оператор подключает только ничью или свою сессию: условие
+			// владения — в самом UPDATE (аудит 2026-09-11).
+			whereSQL = ` AND (assigned_admin_id IS NULL OR assigned_admin_id = $5)`
+			args = append(args, *adminID)
 		}
+	}
+	all := append([]any{id, []string{"requested", "connecting"}}, args...)
+	ct, err := s.Pool().Exec(ctx, `UPDATE support_sessions SET `+setSQL+`,
+			updated_at = now()
+		WHERE id = $1 AND status = ANY($2)`+whereSQL, all...)
+	if err != nil {
+		return fmt.Errorf("store: подключение оператора support_session %s: %w", id, err)
+	}
+	if ct.RowsAffected() == 0 {
+		// 0 строк: сессии нет / статус ушёл / занята другим оператором —
+		// разбор только чтением, без мутаций.
+		var (
+			exists   bool
+			status   string
+			assigned *uuid.UUID
+		)
+		if err := s.Pool().QueryRow(ctx, `
+			SELECT EXISTS(SELECT 1 FROM support_sessions WHERE id = $1),
+			       COALESCE((SELECT status FROM support_sessions WHERE id = $1), ''),
+			       (SELECT assigned_admin_id FROM support_sessions WHERE id = $1)`, id,
+		).Scan(&exists, &status, &assigned); err != nil {
+			return fmt.Errorf("store: проверка support_session %s: %w", id, err)
+		}
+		if !exists {
+			return ErrNotFound
+		}
+		if status != "requested" && status != "connecting" {
+			return ErrInvalidTransition
+		}
+		if actor == SupportActorOperator && adminID != nil &&
+			assigned != nil && *assigned != *adminID {
+			return ErrSessionTaken
+		}
+		return ErrInvalidTransition
 	}
 	return nil
 }

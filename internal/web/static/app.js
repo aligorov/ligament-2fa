@@ -294,7 +294,7 @@ function initGroupRadiusBuilder() {
       <td>
         <input type="text" class="input mono sm gr-attr-val" placeholder="Значение" value="${escapeHtml(val)}">
       </td>
-      <td style="text-align: center;">
+      <td class="cell-center">
         <button type="button" class="btn sm ghost danger gr-btn-delete-attr" title="Удалить атрибут">✕</button>
       </td>
     `;
@@ -335,15 +335,15 @@ function initGroupRadiusBuilder() {
       </div>
       <div class="gr-vlan-selector-bar">
         <div class="gr-vlan-label">
-          <span class="muted" style="font-weight: 500;">📶 VLAN (сегмент Wi-Fi):</span>
-          <select class="select sm gr-group-vlan-select" style="max-width: 280px;">
+          <span class="muted fw-medium">📶 VLAN (сегмент Wi-Fi):</span>
+          <select class="select sm gr-group-vlan-select">
             <option value="">— Без привязки к VLAN —</option>
             ${Object.entries(vlanProfiles).map(([id, name]) => `
               <option value="${escapeHtml(id)}" ${currentVlan === id ? "selected" : ""}>VLAN ${escapeHtml(id)} — ${escapeHtml(name)}</option>
             `).join("")}
             <option value="custom" ${currentVlan && !vlanProfiles[currentVlan] ? "selected" : ""}>Свой номер VLAN...</option>
           </select>
-          <input type="text" class="input mono sm gr-group-vlan-custom" placeholder="VLAN ID" style="max-width: 90px; ${currentVlan && !vlanProfiles[currentVlan] ? "" : "display: none;"}" value="${escapeHtml(currentVlan)}">
+          <input type="text" class="input mono sm gr-group-vlan-custom${currentVlan && !vlanProfiles[currentVlan] ? "" : " hidden"}" placeholder="VLAN ID" value="${escapeHtml(currentVlan)}">
         </div>
       </div>
       <div class="gr-card-body">
@@ -351,9 +351,9 @@ function initGroupRadiusBuilder() {
           <table class="table compact gr-attrs-table">
             <thead>
               <tr>
-                <th style="width: 48%;">Атрибут RADIUS</th>
-                <th style="width: 44%;">Значение</th>
-                <th style="width: 8%; text-align: center;"></th>
+                <th class="gr-th-attr">Атрибут RADIUS</th>
+                <th class="gr-th-val">Значение</th>
+                <th class="gr-th-del"></th>
               </tr>
             </thead>
             <tbody class="gr-attrs-tbody"></tbody>
@@ -412,11 +412,11 @@ function initGroupRadiusBuilder() {
     if (vlanSelect) {
       vlanSelect.addEventListener("change", () => {
         if (vlanSelect.value === "custom") {
-          vlanCustom.style.display = "";
+          vlanCustom.classList.remove("hidden");
           vlanCustom.focus();
           applyVLANToTable(vlanCustom.value);
         } else {
-          vlanCustom.style.display = "none";
+          vlanCustom.classList.add("hidden");
           vlanCustom.value = vlanSelect.value;
           applyVLANToTable(vlanSelect.value);
         }
@@ -973,10 +973,10 @@ function initSupportSettingsPanel() {
       tr.innerHTML = `
         <td><input type="text" name="cat_id[]" class="input sm mono" required placeholder="например: buh"></td>
         <td><input type="text" name="cat_title[]" class="input sm" required placeholder="Бухгалтерия"></td>
-        <td><input type="text" name="cat_icon[]" class="input sm" style="text-align: center;" value="💼"></td>
+        <td><input type="text" name="cat_icon[]" class="input sm cell-center" value="💼"></td>
         <td><input type="text" name="cat_emails[]" class="input sm" placeholder="buh@corp.ru"></td>
         <td><input type="text" name="cat_telegram[]" class="input sm mono" placeholder="-100..."></td>
-        <td style="text-align: center;"><button type="button" class="btn ghost sm danger cat-row-del" title="Удалить категорию">✕</button></td>
+        <td class="cell-center"><button type="button" class="btn ghost sm danger cat-row-del" title="Удалить категорию">✕</button></td>
       `;
       catTbody.appendChild(tr);
     });

@@ -185,9 +185,12 @@ func TestBackupRoundtrip(t *testing.T) {
 	}
 	s1 := string(dump1)
 
-	// Шапка: предупреждение про master_key, транзакция целиком.
+	// Шапка: предупреждение про master_key и секретность дампа, транзакция.
 	if !strings.HasPrefix(s1, "--") || !strings.Contains(s1, "master_key НЕ входит в дамп") {
 		t.Fatalf("шапка дампа не содержит предупреждения о master_key:\n%.200s", s1)
+	}
+	if !strings.Contains(s1, "admin_token") || !strings.Contains(s1, "radius.eap_cert") {
+		t.Fatal("шапка дампа не предупреждает о секретах (admin_token, приватные ключи)")
 	}
 	if !strings.Contains(s1, "BEGIN;") || !strings.HasSuffix(s1, "COMMIT;\n") {
 		t.Fatal("дамп не обёрнут в BEGIN;/COMMIT;")
@@ -199,6 +202,7 @@ func TestBackupRoundtrip(t *testing.T) {
 	for _, frag := range []string{
 		"DELETE FROM users;", "INSERT INTO users", "INSERT INTO totp_secrets",
 		"INSERT INTO backup_codes", "INSERT INTO challenges", "INSERT INTO sessions",
+		"DELETE FROM settings WHERE key <> 'master_key';",
 		"INSERT INTO settings", "INSERT INTO audit_log", "INSERT INTO trusted_devices",
 		"INSERT INTO webauthn_credentials", "INSERT INTO schema_migrations",
 	} {

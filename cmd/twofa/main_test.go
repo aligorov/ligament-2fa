@@ -48,3 +48,15 @@ func TestOpenBackupOutputBadPath(t *testing.T) {
 		t.Fatal("несуществующий каталог должен давать ошибку")
 	}
 }
+
+// TestLdapLicenseAllowsCreateWiring — проводка колбэка лицензионного лимита
+// для LdapVerifier: без смонтированного менеджера лицензий (nil) проверка
+// ничего не запрещает (fail open, композиции без лицензирования). Полная
+// семантика лимита/grace покрыта тестами licenseExceeded в internal/api —
+// источник тот же (license.Manager + счёт активных пользователей).
+func TestLdapLicenseAllowsCreateWiring(t *testing.T) {
+	fn := ldapLicenseAllowsCreate(nil, nil)
+	if !fn("ivanov") {
+		t.Fatal("nil-менеджер лицензий должен разрешать провижининг")
+	}
+}

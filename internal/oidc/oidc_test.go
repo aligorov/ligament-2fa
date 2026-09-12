@@ -555,3 +555,36 @@ func TestIsUserAllowed(t *testing.T) {
 	}
 }
 
+// ---- RFC 6749 §5.1: Cache-Control на token/userinfo ----
+
+// TestOIDCNoStoreHeaders — ответы token- и userinfo-эндпоинтов (включая
+// ошибочные) не должны кэшироваться: заголовки ставятся до первой записи
+// ответа, поэтому даже error-ответ несёт no-store.
+func TestOIDCNoStoreHeaders(t *testing.T) {
+	mgr := &Manager{} // st не нужен: оба сценария падают до обращения к БД
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/oidc/token",
+		strings.NewReader("grant_type=unsupported"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	mgr.handleToken(rec, req)
+	for h, want := range map[string]string{"Cache-Control": "no-store", "Pragma": "no-cache"} {
+		if got := rec.Header().Get(h); got != want {
+			t.Errorf("token: %s = %q, want %q", h, got, want)
+		}
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("token: статус %d, want 400", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	mgr.handleUserinfo(rec, httptest.NewRequest(http.MethodGet, "/oidc/userinfo", nil))
+	for h, want := range map[string]string{"Cache-Control": "no-store", "Pragma": "no-cache"} {
+		if got := rec.Header().Get(h); got != want {
+			t.Errorf("userinfo: %s = %q, want %q", h, got, want)
+		}
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("userinfo: статус %d, want 401", rec.Code)
+	}
+}

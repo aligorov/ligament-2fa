@@ -9,6 +9,7 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,6 +91,10 @@ func (p *PagesAPI) Register(r chi.Router) {
 	r.Get("/", p.handleRoot)
 	r.Get("/login", p.handleLoginPage)
 	r.Post("/login", p.handleLoginPost)
+	// Логотип белого лейбла как same-origin ресурс (анонимно: нужен странице
+	// входа) — data:URI из настроек не проходит urlFilter html/template,
+	// а внешний https-логотип режется строгой img-src.
+	r.Get("/branding/logo", p.handleBrandingLogo)
 
 	r.With(p.requirePage).Post("/logout", p.handleLogout)
 
@@ -337,12 +342,12 @@ func (p *PagesAPI) licenseWarnings(r *http.Request) []string {
 	return msgs
 }
 
-// render исполняет страницу шаблонизатором; ошибка рендера логируется
-// (частично записанный ответ уже не откатить).
+// render исполняет страницу шаблонизатором через web.RenderHTML: тот до
+// первого Write ставит Content-Type, при активных рекламных слотах страницы
+// перезаписывает CSP на relaxed и рендерит в буфер; ошибка рендера
+// логируется (частично записанный ответ уже не откатить).
 func (p *PagesAPI) render(w http.ResponseWriter, status int, page string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	if err := p.rend.Render(w, page, data); err != nil {
+	if err := p.rend.RenderHTML(w, status, page, data); err != nil {
 		slog.Error("pages: рендер страницы", "page", page, "error", err)
 	}
 }
@@ -392,6 +397,79 @@ func flash500(w http.ResponseWriter, r *http.Request, path string, err error) {
 
 // ---- корень и вход ----
 
+// handleBrandingLogo — GET /branding/logo: логотип белого лейбла из настроек
+// как same-origin ресурс (report 2026-09-11, Web UI-2). Прежние пути сломаны:
+// data:URI режется urlFilter html/template в #ZgotmplZ, а внешний https-URL —
+// строгой CSP (img-src 'self'). Здесь data:URI декодируется с правильным
+// Content-Type, https — 302, пусто/битое значение — 404. Решатель бренда тот
+// же, что у шаблонов (p.brand): на free-лицензии бренд скрыт → 404.
+func (p *PagesAPI) handleBrandingLogo(w http.ResponseWriter, r *http.Request) {
+	var logo string
+	if p.brand != nil {
+		logo = strings.TrimSpace(p.brand(r).Logo)
+	}
+	switch {
+	case logo == "":
+		writeError(w, http.StatusNotFound, "logo_not_found")
+	case strings.HasPrefix(logo, "data:"):
+		serveDataImage(w, r, logo)
+	case strings.HasPrefix(logo, "https://"):
+		// Внешний логотип — редиректом; только https: произвольную схему
+		// (javascript:, data: и т.п.) не открываем.
+		http.Redirect(w, r, logo, http.StatusFound)
+	default:
+		writeError(w, http.StatusNotFound, "logo_not_found")
+	}
+}
+
+// dataImageTypes — разрешённые типы data:-логотипа: растр без активного
+// содержимого. SVG исключён: при прямом открытии URL он исполняет скрипты
+// (в <img> безопасен, но маршрут отвечает напрямую браузеру).
+var dataImageTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/jpg":  true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// serveDataImage декодирует data:URI (data:image/...;base64,…) и отдаёт
+// байты с корректным Content-Type; неподдерживаемый тип или битый base64 —
+// 404 (логотип — необязательное украшение, ошибка не должна шуметь).
+func serveDataImage(w http.ResponseWriter, r *http.Request, uri string) {
+	rest := strings.TrimPrefix(uri, "data:")
+	comma := strings.Index(rest, ",")
+	if comma < 0 {
+		writeError(w, http.StatusNotFound, "logo_not_found")
+		return
+	}
+	meta, payload := strings.ToLower(strings.TrimSpace(rest[:comma])), rest[comma+1:]
+	if !strings.HasSuffix(meta, ";base64") {
+		writeError(w, http.StatusNotFound, "logo_not_found")
+		return
+	}
+	meta = strings.TrimSuffix(meta, ";base64")
+	if !dataImageTypes[meta] {
+		writeError(w, http.StatusNotFound, "logo_not_found")
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		// Допускаем base64 без выравнивания (RawStdEncoding).
+		if raw, err = base64.RawStdEncoding.DecodeString(payload); err != nil {
+			writeError(w, http.StatusNotFound, "logo_not_found")
+			return
+		}
+	}
+	h := w.Header()
+	h.Set("Content-Type", meta)
+	h.Set("Content-Length", strconv.Itoa(len(raw)))
+	// Кэш короткий и приватный: логотип меняется из админки без рестарта.
+	h.Set("Cache-Control", "private, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
 // handleRoot: / — на /me при валидной сессии, иначе на /login.
 func (p *PagesAPI) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(cookieSession); err == nil && c.Value != "" {
@@ -405,9 +483,13 @@ func (p *PagesAPI) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 // safeNext — проверка адреса возврата после входа (?next=...): только
 // локальные пути (ведут с «/», но не «//» — защита от открытого редиректа
-// на внешний сайт).
+// на внешний сайт). Backslash отвергается тоже: браузеры трактуют «\» как
+// «/», поэтому Location: /\evil.com уводит на evil.com в обход проверки
+// «//» (report 2026-09-11, P1 OIDC-1). Та же валидация продублирована в
+// static/webauthn.js (safeNext) для клиентского перехода после passkey.
 func safeNext(next string) string {
-	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
+	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") &&
+		!strings.Contains(next, `\`) {
 		return next
 	}
 	return ""
@@ -2654,7 +2736,11 @@ func (p *PagesAPI) ldapVerifier() *auth.LdapVerifier {
 	if cv, ok := p.pv.(*auth.CompositeVerifier); ok && cv.LDAP() != nil {
 		return cv.LDAP()
 	}
-	return auth.NewLdapVerifier(p.st, p.m)
+	v := auth.NewLdapVerifier(p.st, p.m)
+	if p.admin != nil {
+		v.SetLicenseAllowsCreate(p.admin.ldapLicenseGate())
+	}
+	return v
 }
 
 // ---- админ: лицензия ----

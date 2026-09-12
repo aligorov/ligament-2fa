@@ -1,8 +1,8 @@
 package auth
 
 import (
-	"bytes"
 	"context"
+	"crypto/hmac"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -127,14 +127,19 @@ func (c *Core) audit(ctx context.Context, username, event string, detail map[str
 	if err := c.st.Audit(ctx, username, event, detail, ip, result); err != nil {
 		slog.Warn("auth: аудит не записан", "event", event, "error", err)
 	}
-	// fail2ban: каждая неудача входа/кода/RADIUS считаетcя по IP
-	// (HTTP-вызовы несут IP в контексте middleware, RADIUS — параметром).
+	// fail2ban: каждая неудача входа/кода (HTTP) считается по IP.
+	// radius_fail сознательно НЕ кормит IP-счётчик: IP источника RADIUS —
+	// адрес маршрутизатора (NAS), за NAT неуспехи всех пользователей
+	// вылились бы в самобан NAS и 30-минутный отказ Wi-Fi/VPN всем
+	// сразу (аудит 2026-09-11). Брут по RADIUS ограничивает per-user
+	// fail-счётчик (FailLocked + radius.max_fail_per_user по audit_log);
+	// событие radius_fail продолжает писаться в аудит.
 	if result == "fail" && c.fw != nil {
 		if ip == "" {
 			ip = firewall.IPFrom(ctx)
 		}
 		switch event {
-		case "login_fail", "code_fail", "radius_fail":
+		case "login_fail", "code_fail":
 			if ip != "" {
 				c.fw.Fail(ctx, ip, event)
 			}
@@ -447,8 +452,10 @@ func (c *Core) VerifyChallengeCode(ctx context.Context, ch *store.Challenge, cod
 		return true, nil
 	}
 
-	// Кодовые каналы (email/sms/telegram): точное сравнение хеша.
-	if bytes.Equal(ch.CodeHash, secrets.SHA256(code)) {
+	// Кодовые каналы (email/sms/telegram): точное сравнение хеша
+	// (constant-time — hmac.Equal, чтобы тайминг не подсказывал длину
+	// совпавшего префикса; унифицировано с остальной криптопроверкой).
+	if hmac.Equal(ch.CodeHash, secrets.SHA256(code)) {
 		if err := c.st.ChallengeMarkUsed(ctx, ch.ID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				// Одноразовый claim уже забрал конкурентный запрос.
@@ -497,7 +504,7 @@ func (c *Core) VerifyAnyCode(ctx context.Context, user *store.User, code string,
 		}
 		sum := secrets.SHA256(code)
 		for _, ch := range list {
-			if bytes.Equal(ch.CodeHash, sum) {
+			if hmac.Equal(ch.CodeHash, sum) {
 				if err := c.st.ChallengeMarkUsed(ctx, ch.ID); err != nil {
 					if errors.Is(err, store.ErrNotFound) {
 						// Челлендж уже использован конкурентным запросом.
@@ -895,7 +902,12 @@ func (c *Core) RADIUSAuth(ctx context.Context, username, papString, srcIP string
 // livePendingPush возвращает живой push-челлендж пользователя (не истёк,
 // не использован, push_state=pending; каналы telegram_push/app_push) —
 // кандидат на возобновление ожидания при повторном RADIUS-запросе в
-// push_cooldown. nil — живого челленджа нет.
+// push_cooldown. Чужие purposes исключены (аудит 2026-09-11): RADIUS не
+// должен возобновлять и поглощать approval web-челленджа (web-логин —
+// purpose 'api', подтверждение операции кабинета — 'ui_confirm',
+// код привязки Telegram — 'tg_link'); RADIUS-push создаётся с purpose =
+// строке сервиса, поэтому фильтр — чёрный список. nil — живого
+// челленджа нет.
 func (c *Core) livePendingPush(ctx context.Context, userID uuid.UUID) *store.Challenge {
 	var id uuid.UUID
 	err := c.st.Pool().QueryRow(ctx, `
@@ -905,6 +917,7 @@ func (c *Core) livePendingPush(ctx context.Context, userID uuid.UUID) *store.Cha
 		  AND push_state = 'pending'
 		  AND used_at IS NULL
 		  AND expires_at > now()
+		  AND purpose NOT IN ('api', 'ui_confirm', 'tg_link')
 		ORDER BY created_at DESC
 		LIMIT 1`, userID).Scan(&id)
 	if err != nil {
@@ -1045,4 +1058,3 @@ func (c *Core) NotifyLoginSuccess(ctx context.Context, username, method, ip, ua 
 		}
 	}()
 }
-

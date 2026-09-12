@@ -203,3 +203,78 @@ func TestSupportStoreApproveClearsCode(t *testing.T) {
 		t.Fatalf("access_mode изменился при approve: %s, want view_only", got.AccessMode)
 	}
 }
+
+// TestSupportStoreConnectNoForeignMutation — перехват чужой сессии не
+// мутирует её: ErrSessionTaken, при этом number_match и назначение не
+// тронуты (аудит 2026-09-11: раньше чужой connect перетирал код и сбрасывал
+// счётчик попыток ДО проверки владения).
+func TestSupportStoreConnectNoForeignMutation(t *testing.T) {
+	st := sharedTestStore(t)
+	ctx := t.Context()
+
+	ss := newSupportSession(t, "requested")
+	op1 := newTestUser(t).ID
+	op2 := newTestUser(t).ID
+	mustConn(t, st, ss.ID, SupportActorOperator, &op1, "11")
+
+	if err := st.SupportSessionConnect(ctx, ss.ID, SupportActorOperator, &op2, "99"); !errors.Is(err, ErrSessionTaken) {
+		t.Fatalf("перехват чужой сессии: err=%v, want ErrSessionTaken", err)
+	}
+	got, err := st.SupportSessionGet(ctx, ss.ID)
+	if err != nil {
+		t.Fatalf("SupportSessionGet: %v", err)
+	}
+	if got.NumberMatch != "11" {
+		t.Fatalf("number_match перетёрт чужим connect: %q, want 11", got.NumberMatch)
+	}
+	if got.AssignedAdminID == nil || *got.AssignedAdminID != op1 {
+		t.Fatalf("assigned_admin_id изменился: %v, want op1", got.AssignedAdminID)
+	}
+}
+
+// TestSupportStoreStaleSessionUnblocksCreate — залежавшаяся (>15 мин)
+// pending-заявка не блокирует новое обращение навсегда: при 23505 stale
+// live-строки пользователя гасятся (expired) и вставка ретрится
+// (аудит 2026-09-11).
+func TestSupportStoreStaleSessionUnblocksCreate(t *testing.T) {
+	st := sharedTestStore(t)
+	ctx := t.Context()
+
+	stale := newSupportSession(t, "requested")
+	if _, err := st.Pool().Exec(ctx,
+		`UPDATE support_sessions SET created_at = now() - interval '20 minutes' WHERE id = $1`, stale.ID); err != nil {
+		t.Fatalf("backdate created_at: %v", err)
+	}
+
+	// Фильтры выборки stale-заявку уже не видят...
+	if _, err := st.SupportSessionActiveByUser(ctx, stale.UserID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ActiveByUser по stale-заявке: err=%v, want ErrNotFound", err)
+	}
+
+	// ...но она держала unique index: новое обращение создаётся,
+	// а stale-строка гасится в expired.
+	fresh := &SupportSession{
+		UserID: stale.UserID, DeviceID: stale.DeviceID, Category: "it",
+		Status: "requested", ProblemSummary: "fresh", AccessMode: "view_only",
+	}
+	if err := st.SupportSessionCreate(ctx, fresh); err != nil {
+		t.Fatalf("создание при живой stale-заявке: %v", err)
+	}
+	got, err := st.SupportSessionGet(ctx, stale.ID)
+	if err != nil {
+		t.Fatalf("SupportSessionGet(stale): %v", err)
+	}
+	if got.Status != "expired" {
+		t.Fatalf("stale-заявка: status=%s, want expired", got.Status)
+	}
+
+	// Свежее обращение при этом живо и по-прежнему защищено индексом:
+	// вторая живая сессия не создаётся.
+	dup := &SupportSession{
+		UserID: fresh.UserID, DeviceID: fresh.DeviceID, Category: "it",
+		Status: "requested", ProblemSummary: "dup", AccessMode: "view_only",
+	}
+	if err := st.SupportSessionCreate(ctx, dup); !errors.Is(err, ErrDuplicateSession) {
+		t.Fatalf("дубль свежей сессии: err=%v, want ErrDuplicateSession", err)
+	}
+}

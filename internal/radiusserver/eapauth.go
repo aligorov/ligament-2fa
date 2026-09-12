@@ -27,6 +27,22 @@ import (
 	"github.com/aligorov/twofa/internal/radiusserver/eap"
 )
 
+// maxPendingInner — кап накопленного inner-буфера: частичный AVP-блок
+// (TTLS) или внутренний EAP-пакет (PEAP), ждущий продолжения в фазе 2.
+// Без капа клиент поднятого TLS-туннеля выкачивает память сервера,
+// присылая неполные блоки (анти-DoS, аудит 2026-09-11).
+const maxPendingInner = 64 * 1024
+
+// stashPendingInner сохраняет частичный inner-буфер с капом размера;
+// false — превышен maxPendingInner (вызывающий завершает обмен failEAP).
+func (sess *eapSession) stashPendingInner(app []byte) bool {
+	if len(app) > maxPendingInner {
+		return false
+	}
+	sess.pendingInner = app
+	return true
+}
+
 // handleEAPAuth — Access-Request с EAP-Message. PAP-путь (без EAP-Message)
 // остаётся в handleAuth нетронутым. Все ответы несут корректный
 // Message-Authenticator (RFC 3579 §3.2 — обязателен для ответов на запросы
@@ -51,6 +67,15 @@ func (s *Server) handleEAPAuth(w radius.ResponseWriter, r *radius.Request, eapRa
 	state := hexState(rfc2865.State_Get(r.Packet))
 	sess := s.eapSessions.get(state)
 	if sess != nil {
+		// Весь шаг обработки (до записи ответа) — под мьютексом сессии:
+		// layeh/radius зовёт хендлер в горутине НА ПАКЕТ, поэтому
+		// ретрансмиты NAS и EAP-пакеты с разными Identifier обрабатываются
+		// конкурентно (аудит 2026-09-11, гонки eapSession: frag,
+		// pendingInner, phase, outQueue, lastReq/RespEAP). handleTTLS/
+		// handlePEAP вызываются уже под мьютексом — сериализованы вместе
+		// с ретрансмит-веткой и обновлением fragSize.
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
 		if mtu, err := rfc2865.FramedMTU_Lookup(r.Packet); err == nil && mtu > 0 {
 			maxFrag := int(mtu) - 100
 			if maxFrag > eap.MaxFragment {
@@ -97,6 +122,9 @@ func (s *Server) handleEAPAuth(w radius.ResponseWriter, r *radius.Request, eapRa
 			s.rejectEAP(w, r, pkt.ID)
 			return
 		}
+		// Свежая сессия ещё не видна клиенту (State уходит только в ответе
+		// ниже), поэтому мутируем её без захвата sess.mu — конкурентный
+		// доступ к этому State невозможен до отправки ответа.
 		sess.reqID = pkt.ID + 1
 		sess.outerIdentity = string(pkt.IdentityData())
 		sess.lastReqEAP = append([]byte(nil), eapRaw...)
@@ -247,8 +275,13 @@ func (s *Server) handleTTLS(w radius.ResponseWriter, r *radius.Request,
 			return
 		case !inner.Complete():
 			// AVP пришли частично — ждём продолжения; пустой ACK-запрос —
-			// приглашение клиенту слать данные (RFC 5281 §9.1).
-			sess.pendingInner = app
+			// приглашение клиенту слать данные (RFC 5281 §9.1). Кап размера
+			// накопленного буфера: превышение — терминальная ошибка обмена
+			// (анти-DoS неполными AVP-блоками).
+			if !sess.stashPendingInner(app) {
+				s.failEAP(w, r, sess, "кап inner-буфера (64 KiB) превышен")
+				return
+			}
 			s.pumpTTLS(w, r, sess, nil)
 			return
 		}
@@ -295,7 +328,10 @@ func (s *Server) finishInnerPAP(w radius.ResponseWriter, r *radius.Request,
 	ctx = context.WithValue(ctx, auth.CtxKeyService, svc)
 	ctx = context.WithValue(ctx, auth.CtxKeyDevice, deviceDesc)
 
-	accept, reason := s.core.RADIUSAuth(ctx, inner.UserName, inner.UserPassword, srcIP)
+	// Окно доверия: доверенное (user, Calling-Station-Id) устройство при
+	// верном пароле проходит без второго фактора; успешный 2FA
+	// (push_ok/код) продлевает окно (radius.trust_days).
+	accept, reason := s.radiusAuthWithTrust(ctx, inner.UserName, inner.UserPassword, clientMAC, srcIP)
 
 	// Аудит EAP-обмена (в дополнение к radius_auth из ядра): контекст без
 	// отмены — событие переживает отработанный push_wait.
@@ -481,7 +517,12 @@ func (s *Server) handlePEAP(w radius.ResponseWriter, r *radius.Request,
 		} else if len(app) >= 4 {
 			eapLen := int(binary.BigEndian.Uint16(app[2:4]))
 			if eapLen > len(app) {
-				sess.pendingInner = app
+				// Объявленная длина больше пришедших данных — ждём
+				// продолжения (фрагментированный внутренний EAP-пакет).
+				if !sess.stashPendingInner(app) {
+					s.failEAP(w, r, sess, "кап inner-буфера (64 KiB) превышен")
+					return
+				}
 				s.pumpPEAP(w, r, sess, nil)
 				return
 			}
@@ -492,10 +533,16 @@ func (s *Server) handlePEAP(w radius.ResponseWriter, r *radius.Request,
 				return
 			}
 			if len(app) > eapLen {
-				sess.pendingInner = app[eapLen:]
+				if !sess.stashPendingInner(app[eapLen:]) {
+					s.failEAP(w, r, sess, "кап inner-буфера (64 KiB) превышен")
+					return
+				}
 			}
 		} else {
-			sess.pendingInner = app
+			if !sess.stashPendingInner(app) {
+				s.failEAP(w, r, sess, "кап inner-буфера (64 KiB) превышен")
+				return
+			}
 			s.pumpPEAP(w, r, sess, nil)
 			return
 		}
@@ -583,6 +630,9 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 			return
 		}
 		if !user.Enabled {
+			// Выравнивание стоимости веток (user enumeration): отключённый
+			// пользователь отвечает ценой no_user/неверного пароля.
+			auth.BurnDummyVerify(username)
 			slog.Warn("radius: пользователь отключён", "user", username, "remote", srcIP)
 			_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "disabled"}, srcIP, "fail")
 			s.failMSCHAPv2(w, r, sess, resp.ID, "disabled")
@@ -615,6 +665,7 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 		}
 
 		if len(user.PasswordEnc) == 0 {
+			auth.BurnDummyVerify(username)
 			slog.Error("radius: пользователь не имеет password_enc (нужно пересохранить пароль)", "user", username)
 			_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "password_enc_missing"}, srcIP, "fail")
 			s.failMSCHAPv2(w, r, sess, resp.ID, "bad_credentials")
@@ -623,6 +674,7 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 
 		rawPwd, err := box.DecryptAAD(user.Username, user.PasswordEnc)
 		if err != nil {
+			auth.BurnDummyVerify(username)
 			slog.Error("radius: расшифровка password_enc не удалась", "user", username, "error", err)
 			_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "bad_credentials"}, srcIP, "fail")
 			s.failMSCHAPv2(w, r, sess, resp.ID, "bad_credentials")
@@ -684,38 +736,57 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 		}
 
 		if matched == nil {
+			// Выравнивание стоимости веток (user enumeration): неверный
+			// пароль существующего пользователя платит argon2-приманку,
+			// как ветка no_user.
+			auth.BurnDummyVerify(username)
 			slog.Info("radius: MS-CHAPv2 неверный пароль", "user", username, "remote", srcIP)
-			_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "bad_credentials"}, srcIP, "fail")
-			_ = s.st.Audit(ctx, username, "radius_fail", map[string]any{"reason": "bad_credentials"}, srcIP, "fail")
+			s.auditRADIUSFail(ctx, username, "bad_credentials", srcIP)
 			s.failMSCHAPv2(w, r, sess, resp.ID, "bad_credentials")
 			return
 		}
 
-		// Пароль сошёлся!
-		// Если это чистый пароль без 2FA-кода:
-		// - при user.RadiusPush || group.RadiusPush && Telegram: запускаем Telegram push-удержание через RADIUSAuth.
-		// - иначе: пользователь аутентифицируется по чистому паролю (нативный вход Wi-Fi).
-		//
-		// Код TOTP (не-чистый кандидат): окно потребляем ТУТ тем же CAS-механизмом,
-		// что и PAP-путь (auth.verifyTOTP → store.TOTPSetTimestep «строго больше»).
-		// Проигранный CAS — окно уже потрачено, код переиспользован (replay) — отказ.
-		// После потребления код в RADIUSAuth больше не проверяем (verifyTOTP
-		// счёл бы его replay-ем): второй фактор уже подтверждён, фиксируем
-		// успех напрямую — эквивалент ветки code_ok ядра.
+		// Пароль сошёлся (NT-Hash MS-CHAPv2). Дальше — второй фактор:
+		//  1. Кандидат «пароль+код»: окно TOTP потребляется CAS-ом
+		//     (TOTPSetTimestep «строго больше», replay — отказ) — второй
+		//     фактор подтверждён напрямую, эквивалент ветки code_ok ядра.
+		//  2. Доверенное устройство (radius.trust_days): пароль уже
+		//     подтверждён — Access-Accept без второго фактора.
+		//  3. Push (UserEffectiveRadiusPush): конвейер Core.RADIUSAuth
+		//     (Telegram/app push-удержание).
+		//  4. Иначе (push выключен, код ввести некуда): БЕЗ Accept —
+		//     безусловный password_ok-Accept (дыра 1FA, аудит 2026-09-11
+		//     RADIUS-1) убран; нативный PEAP-supplicant не умеет вводить
+		//     TOTP, поэтому обмен завершится таймаутом у NAS. После
+		//     первого успешного push-подтверждения повторные подключения
+		//     проходят по окну доверия (п. 2).
 		if !matched.isClean {
 			advanced, cerr := s.st.TOTPSetTimestep(ctx, user.ID, matchedTimestep)
 			if cerr != nil || !advanced {
 				slog.Info("radius: TOTP-код PEAP переиспользован — окно уже потрачено",
 					"user", username, "remote", srcIP, "timestep", matchedTimestep)
-				_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "totp_replay"}, srcIP, "fail")
-				_ = s.st.Audit(ctx, username, "radius_fail", map[string]any{"reason": "totp_replay"}, srcIP, "fail")
+				s.auditRADIUSFail(ctx, username, "totp_replay", srcIP)
 				s.failMSCHAPv2(w, r, sess, resp.ID, "bad_credentials")
 				return
 			}
 			_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "code_ok"}, srcIP, "ok")
+			// Успешный второй фактор (верный код) — продлеваем окно доверия.
+			s.radiusTrustRemember(ctx, user.ID, clientMAC)
+		} else if s.radiusTrustTrusted(ctx, user.ID, clientMAC) {
+			// Доверенное устройство: пароль подтверждён MS-CHAPv2, второй
+			// фактор не спрашиваем (radius.trust_days).
+			_ = s.st.Audit(ctx, username, "radius_trust_skip",
+				map[string]any{"reason": "trusted_device"}, srcIP, "ok")
 		} else if !s.st.UserEffectiveRadiusPush(ctx, user) {
-			// Прямой вход по логину/паролю без 2FA-кода
-			_ = s.st.Audit(ctx, username, "radius_auth", map[string]any{"reason": "password_ok"}, srcIP, "ok")
+			// Пароль верен, но второго фактора нет: push выключен, TOTP-код
+			// ввести некуда. Молчим — NAS завершит обмен по своему таймауту
+			// (ретрансмиты получают последний Challenge). Аудит фиксирует
+			// закрытую дыру 1FA.
+			_ = s.st.Audit(ctx, username, "radius_auth",
+				map[string]any{"reason": "second_factor_required"}, srcIP, "fail")
+			slog.Info("radius: PEAP пароль верен, но второй фактор недоступен (push выключен) — ответа нет, таймаут NAS",
+				"user", username, "remote", srcIP)
+			return
 		} else {
 			// Пропускаем через конвейер s.core.RADIUSAuth (Telegram/app push-удержание)
 			accept, reason := s.core.RADIUSAuth(ctx, username, matched.pwdString, srcIP)
@@ -723,6 +794,10 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 				slog.Info("radius: RADIUSAuth отклонил запрос", "user", username, "reason", reason, "remote", srcIP)
 				s.failMSCHAPv2(w, r, sess, resp.ID, reason)
 				return
+			}
+			// Успешный второй фактор (push_ok) — продлеваем окно доверия.
+			if reason == "push_ok" || reason == "code_ok" {
+				s.radiusTrustRemember(ctx, user.ID, clientMAC)
 			}
 		}
 
@@ -806,10 +881,15 @@ func (s *Server) handlePEAPInner(w radius.ResponseWriter, r *radius.Request,
 
 // failMSCHAPv2 отправляет inner EAP-Request/MS-CHAPv2 Failure (OpCode 4)
 // и переводит сессию в peapStateFailed для последующего отлупа.
+// Failure СТАТИЧЕСКИЙ — «E=691 R=0» без M=<причина>: внутренняя причина
+// отказа не раскрывается supplicant'у, проверка существования учётной
+// записи через содержимое Failure невозможна (user enumeration, аудит
+// 2026-09-11 RADIUS-2). Стоимость веток выровнена argon2-приманкой
+// (BurnDummyVerify), причина остаётся в логах и аудите.
 func (s *Server) failMSCHAPv2(w radius.ResponseWriter, r *radius.Request, sess *eapSession, mschapID byte, reason string) {
 	sess.innerReqID++
 	sess.innerState = peapStateFailed
-	failPkt := eap.BuildMSCHAPv2Failure(sess.innerReqID, mschapID, "E=691 R=0 M="+reason)
+	failPkt := eap.BuildMSCHAPv2Failure(sess.innerReqID, mschapID, "E=691 R=0")
 	if err := sess.writeInner(failPkt[4:]); err == nil {
 		s.pumpPEAP(w, r, sess, nil)
 	} else {

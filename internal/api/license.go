@@ -5,6 +5,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -264,6 +265,56 @@ func (a *AdminAPI) licenseExceeded(r *http.Request) (bool, license.Status) {
 		return false, st
 	}
 	return true, st
+}
+
+// ldapLicenseGate — колбэк для LdapVerifier.SetLicenseAllowsCreate:
+// LDAP-авто-провижининг разрешён только в пределах лимита лицензии
+// (семантика licenseExceeded, но без контекста запроса: фоновый контекст
+// с потолком 5 c, fail-open при ошибках — лицензирование юридический
+// барьер, не DRM). Вход существующим не ограничивается никогда.
+func (a *AdminAPI) ldapLicenseGate() func(string) bool {
+	return func(username string) bool {
+		if a.lic == nil {
+			return true // лицензирование не смонтировано (тесты/композиции)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		status, err := a.lic.Effective(ctx)
+		if err != nil {
+			slog.Error("api: license статус для LDAP-провижининга", "error", err)
+			return true
+		}
+		users, err := a.st.UserList(ctx)
+		if err != nil {
+			slog.Error("api: список пользователей для LDAP-провижининга", "error", err)
+			return true
+		}
+		active := 0
+		for _, u := range users {
+			if u.Enabled {
+				active++
+			}
+		}
+		if status.UserLimit <= 0 || active+1 <= status.UserLimit {
+			if status.UserLimit > 0 {
+				if err := a.lic.ClearOverLimit(ctx); err != nil {
+					slog.Warn("api: сброс license.over_limit_since", "error", err)
+				}
+			}
+			return true
+		}
+		dec, err := a.lic.OverLimit(ctx)
+		if err != nil {
+			slog.Error("api: license over-limit grace (LDAP)", "error", err)
+			return true
+		}
+		if !dec.Allowed {
+			slog.Warn("api: LDAP авто-провижининг заблокирован лимитом лицензии",
+				"username", username, "limit", status.UserLimit, "active_users", active)
+			return false
+		}
+		return true // в grace-окне создание разрешено
+	}
 }
 
 // denyLicenseLimit отвечает 403 license_limit и пишет аудит.

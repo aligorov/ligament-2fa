@@ -87,6 +87,24 @@ func NewAppAPI(core *auth.Core, st *store.Store, pv auth.PasswordVerifier, set *
 	}
 }
 
+// rateLimitByUser — rate-limit корзин username+IP (a.allow) для
+// аутентифицированных ручек с перебираемым секретом. Ставится на decision
+// (P1 аудита 2026-09-11: перебор number_match не ограничивался).
+// authMiddleware гарантирует пользователя в контексте; на всякий случай
+// при его отсутствии ограничивается хотя бы IP-корзина.
+func (a *AppAPI) rateLimitByUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username := ""
+		if user, _ := appUserFromCtx(r.Context()); user != nil {
+			username = user.Username
+		}
+		if !a.allow(w, r, username) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Register монтирует маршруты приложения.
 func (a *AppAPI) Register(r chi.Router) {
 	r.Route("/api/v1/app", func(r chi.Router) {
@@ -101,7 +119,8 @@ func (a *AppAPI) Register(r chi.Router) {
 			r.Post("/telemetry", a.handleTelemetry)
 
 			r.Get("/challenges/pending", a.handlePendingChallenges)
-			r.Post("/challenges/{id}/decision", a.handleChallengeDecision)
+			// Decision — перебор number_match: rate-limit как у /app/login.
+			r.With(a.rateLimitByUser).Post("/challenges/{id}/decision", a.handleChallengeDecision)
 
 			// Удаленная поддержка (SOS / Quick Assist)
 			r.Post("/support/request", a.handleSupportRequest)
@@ -154,6 +173,7 @@ func (a *AppAPI) sweepStaleSupport(ctx context.Context) {
 type appLoginRequest struct {
 	Username        string         `json:"username"`
 	Password        string         `json:"password"`
+	Code            string         `json:"code"` // код второго фактора (TOTP/резервный/доставленный), когда фактор настроен
 	DeviceName      string         `json:"device_name"`
 	Platform        string         `json:"platform"` // windows | android | ios
 	OSVersion       string         `json:"os_version"`
@@ -206,7 +226,9 @@ func (a *AppAPI) failLogin(ctx context.Context, username, ip, reason string, det
 
 // handleLogin — авторизация устройства в приложении. Защищён как web-вход
 // (аудит раунд-2): rate-limit username+IP, per-user fail-блокировка до
-// проверки пароля, единый 401 против перечисления, кормление fail2ban.
+// проверки пароля, единый 401 против перечисления, кормление fail2ban;
+// при настроенном втором факторе требуется код (P0 аудита 2026-09-11 —
+// раньше токен с правом approve выдавался по одному паролю).
 func (a *AppAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req appLoginRequest
 	if !decodeJSON(w, r, &req) {
@@ -255,6 +277,27 @@ func (a *AppAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !user.Enabled {
 		writeError(w, http.StatusForbidden, "user_disabled")
 		return
+	}
+
+	// Второй фактор (P0 аудита 2026-09-11): токен устройства даёт право
+	// approve push-челленджей, поэтому выдача по одному паролю вырождала
+	// 2FA в пароль (полная цепочка logins→approve одним фактором). При
+	// наличии у пользователя хоть одного настроенного фактора требуется
+	// валидный код — тот же верификатор и login-набор purposes, что у
+	// web-входа (TOTP/резервные — факторы пользователя, доставленные
+	// коды — только своего назначения). Учётка вообще без факторов
+	// (bootstrap) пускается как раньше — подтверждаться нечем.
+	if hasSecondFactor(ctx, a.st, user) {
+		if a.core == nil || strings.TrimSpace(req.Code) == "" {
+			a.failLogin(ctx, user.Username, ip, "bad_code", nil)
+			writeError(w, http.StatusUnauthorized, "second_factor_required")
+			return
+		}
+		if _, err := a.core.VerifyAnyCode(ctx, user, strings.TrimSpace(req.Code), auth.LoginCodePurposes...); err != nil {
+			a.failLogin(ctx, user.Username, ip, "bad_code", nil)
+			writeError(w, http.StatusUnauthorized, "second_factor_required")
+			return
+		}
 	}
 
 	// Генерация 32-байтного Bearer-токена
@@ -583,6 +626,15 @@ func (a *AppAPI) handleChallengeDecision(w http.ResponseWriter, r *http.Request)
 		// 2. Проверка Number Matching (защита от push-fatigue и случайных нажатий)
 		if expectedMatch, ok := ch.Metadata["number_match"].(string); ok && expectedMatch != "" {
 			if strings.TrimSpace(req.NumberMatch) != expectedMatch {
+				// Промах расходует попытку челленджа (как Core.failAttempt:
+				// атомарный декремент, при исчерпании — погашение). Без
+				// этого 2-значный код перебирается за TTL (P1 аудита
+				// 2026-09-11); погашенный челлендж в RADIUS/pollStatus
+				// ведёт себя как отклонённый.
+				left, derr := a.st.ChallengeDecrAttempt(r.Context(), ch.ID)
+				if derr == nil && left == 0 {
+					_ = a.st.ChallengeMarkUsed(r.Context(), ch.ID)
+				}
 				a.audit(r.Context(), user.Username, "app_push_number_mismatch",
 					map[string]any{"challenge_id": ch.ID.String(), "entered": req.NumberMatch}, ip, "fail")
 				writeError(w, http.StatusBadRequest, "number_match_mismatch")
@@ -789,7 +841,11 @@ func (a *AppAPI) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Access-Control-Allow-Origin намеренно не ставится (аудит 2026-09-11):
+	// поток аутентифицирован Bearer-токеном устройства и доставляет
+	// push-челленджи — открытый CORS позволял бы чужим origin'ам
+	// подключаться с токеном, выуженным из логов/истории (запросы из
+	// браузера и так ходят с того же origin или нативных клиентов).
 
 	ch := a.hub.RegisterSSE(user.ID)
 	defer a.hub.UnregisterSSE(user.ID, ch)

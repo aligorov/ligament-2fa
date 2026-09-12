@@ -25,10 +25,10 @@ func TestGroupPriorityAndSettingsResolution(t *testing.T) {
 	}
 
 	gLow := &Group{
-		Name:        "LowPrio-" + uuid.NewString()[:8],
-		Priority:    30,
+		Name:           "LowPrio-" + uuid.NewString()[:8],
+		Priority:       30,
 		PreferChannels: []channel.Channel{channel.SMS},
-		RadiusPush:  false,
+		RadiusPush:     false,
 		RadiusReply: map[string]string{
 			"Mikrotik-Group":          "users",
 			"Tunnel-Private-Group-Id": "30",
@@ -39,10 +39,10 @@ func TestGroupPriorityAndSettingsResolution(t *testing.T) {
 	}
 
 	gHigh := &Group{
-		Name:        "HighPrio-" + uuid.NewString()[:8],
-		Priority:    80,
+		Name:           "HighPrio-" + uuid.NewString()[:8],
+		Priority:       80,
 		PreferChannels: []channel.Channel{channel.TOTP},
-		RadiusPush:  true,
+		RadiusPush:     true,
 		RadiusReply: map[string]string{
 			"Mikrotik-Group":          "admins",
 			"Tunnel-Private-Group-Id": "80",

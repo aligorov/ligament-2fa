@@ -132,11 +132,11 @@ func BuildCryptobindingTLV(nonce []byte, cmk []byte) []byte {
 	tlv := make([]byte, 60)
 	binary.BigEndian.PutUint16(tlv[0:2], 12) // Type 12 = Cryptobinding TLV
 	binary.BigEndian.PutUint16(tlv[2:4], 56) // Length = 56
-	tlv[4] = 0                              // Reserved
-	tlv[5] = 0                              // Version = 0 (PEAPv0)
-	tlv[6] = 0                              // RecvVersion = 0
-	tlv[7] = 0                              // SubType = 0 (Request)
-	copy(tlv[8:40], nonce)                  // 32-byte Nonce
+	tlv[4] = 0                               // Reserved
+	tlv[5] = 0                               // Version = 0 (PEAPv0)
+	tlv[6] = 0                               // RecvVersion = 0
+	tlv[7] = 0                               // SubType = 0 (Request)
+	copy(tlv[8:40], nonce)                   // 32-byte Nonce
 	// tlv[40:60] — Compound_MAC, инициализированный нулями
 
 	// Compound_MAC: HMAC-SHA1-160(CMK, cryptobinding TLV (60 байт с нулями в MAC) | EAP_TYPE_PEAP (0x19))

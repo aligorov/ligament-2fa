@@ -21,7 +21,7 @@
 <div class="app">
   <aside class="sidebar">
     <a class="brand" href="/me">
-      {{if .Brand.Logo}}<img class="brand-logo" src="{{.Brand.Logo}}" alt="{{if .Brand.Name}}{{.Brand.Name}}{{else}}Ligament{{end}}">
+      {{if .Brand.Logo}}<img class="brand-logo" src="/branding/logo" alt="{{if .Brand.Name}}{{.Brand.Name}}{{else}}Ligament{{end}}">
       {{else if .Brand.Name}}<span class="brand-mark">{{if .Brand.Mark}}{{.Brand.Mark}}{{else}}{{slice .Brand.Name 0 1}}{{end}}</span>{{.Brand.Name}}
       {{else}}<span class="brand-mark">L</span>Ligament{{end}}
     </a>

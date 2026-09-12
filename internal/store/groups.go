@@ -110,7 +110,7 @@ func (s *Store) GroupDelete(ctx context.Context, id uuid.UUID) error {
 // GroupByID возвращает группу по ID вместе с числом участников.
 func (s *Store) GroupByID(ctx context.Context, id uuid.UUID) (*Group, error) {
 	var (
-		g                  Group
+		g                   Group
 		preferRaw, replyRaw []byte
 	)
 	err := s.Pool().QueryRow(ctx, `
@@ -154,7 +154,7 @@ func (s *Store) GroupList(ctx context.Context) ([]Group, error) {
 	var groups []Group
 	for rows.Next() {
 		var (
-			g                  Group
+			g                   Group
 			preferRaw, replyRaw []byte
 		)
 		if err := rows.Scan(
@@ -242,7 +242,7 @@ func (s *Store) UserGroups(ctx context.Context, userID uuid.UUID) ([]Group, erro
 	var list []Group
 	for rows.Next() {
 		var (
-			g                  Group
+			g                   Group
 			preferRaw, replyRaw []byte
 		)
 		if err := rows.Scan(

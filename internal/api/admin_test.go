@@ -273,5 +273,3 @@ func TestACMERouteInRouter(t *testing.T) {
 		t.Fatalf("expected keyauth123, got %s", rec.Body.String())
 	}
 }
-
-

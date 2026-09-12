@@ -126,6 +126,13 @@ type T struct {
 		// RequireMessageAuthenticator — Access-Request без валидного
 		// Message-Authenticator отбрасывается (RFC 3579, BlastRADIUS).
 		RequireMessageAuthenticator bool
+		// TrustDays — окно доверия Wi-Fi/VPN-устройств (ключ
+		// radius.trust_days): после успешного второго фактора по RADIUS
+		// (push_ok или верный TOTP-код) пара (пользователь, нормализованный
+		// Calling-Station-Id) доверяется N дней — повторные подключения
+		// проходят без второго фактора (пароль обязателен всегда).
+		// 0 — окно выключено (2FA запрашивается на каждое подключение).
+		TrustDays int
 		// RateLimitPPS — per-NAS token bucket пакетов в секунду перед
 		// любой тяжёлой работой (argon2/БД); 0 — выключено.
 		RateLimitPPS int
@@ -228,7 +235,7 @@ type SupportSettings struct {
 	Enabled             bool              `json:"enabled"`
 	Categories          []SupportCategory `json:"categories"`
 	DiskWarningPercent  int               `json:"disk_warning_percent"`   // по умолчанию 90%
-	DiskWarningMinGB    int               `json:"disk_warning_min_gb"`     // по умолчанию 10 GB
+	DiskWarningMinGB    int               `json:"disk_warning_min_gb"`    // по умолчанию 10 GB
 	CpuWarningPercent   int               `json:"cpu_warning_percent"`    // по умолчанию 95%
 	CpuSpikeDurationSec int               `json:"cpu_spike_duration_sec"` // по умолчанию 15s
 	EmailsIT            []string          `json:"emails_it"`
@@ -278,16 +285,16 @@ func (s SupportSettings) TelegramChatForCategory(cat string) int64 {
 // группы синхронизируются в локального пользователя. Именованный тип
 // нужен пакету auth (LdapVerifier принимает значение снимка без доступа к T).
 type LDAPSettings struct {
-	Enabled      bool
-	URL          string // ldap://host:389 или ldaps://host:636
-	StartTLS     bool   // STARTTLS поверх ldap://
-	BindDN       string // сервисная учётка для поиска (пустая — анонимный поиск)
-	BindPassword string
-	BaseDN       string
-	UserFilter   string // {login} заменяется на экранированный логин
-	GroupBaseDN  string // пусто — base_dn
-	GroupFilter  string // {dn} заменяется на DN пользователя
-	Attrs        LDAPAttrs
+	Enabled        bool
+	URL            string // ldap://host:389 или ldaps://host:636
+	StartTLS       bool   // STARTTLS поверх ldap://
+	BindDN         string // сервисная учётка для поиска (пустая — анонимный поиск)
+	BindPassword   string
+	BaseDN         string
+	UserFilter     string // {login} заменяется на экранированный логин
+	GroupBaseDN    string // пусто — base_dn
+	GroupFilter    string // {dn} заменяется на DN пользователя
+	Attrs          LDAPAttrs
 	AllowGroups    []string                     // пусто — все найденные в каталоге
 	RoleMap        map[string]string            // DN или CN группы → роль (admin/user)
 	GroupRadiusMap map[string]map[string]string // DN или CN группы → RADIUS reply-атрибуты
@@ -360,6 +367,7 @@ func defaultT() *T {
 	t.Radius.PushWait = 20 * time.Second
 	t.Radius.RequireMessageAuthenticator = true
 	t.Radius.RateLimitPPS = 20
+	t.Radius.TrustDays = 7
 	t.Radius.ReplyAttributes = map[string]string{}
 	t.Radius.VLANProfiles = map[string]string{}
 	t.Radius.NASInventory = map[string]string{}
@@ -727,6 +735,7 @@ func buildT(raw map[string]json.RawMessage) *T {
 	t.Radius.PushWait = parseDur(raw["radius.push_wait"], def.Radius.PushWait)
 	t.Radius.RequireMessageAuthenticator = parseBool(raw["radius.require_message_authenticator"], def.Radius.RequireMessageAuthenticator)
 	t.Radius.RateLimitPPS = parseInt(raw["radius.rate_limit_pps"], def.Radius.RateLimitPPS)
+	t.Radius.TrustDays = parseInt(raw["radius.trust_days"], def.Radius.TrustDays)
 	t.Radius.ReplyAttributes = parseStringMap(raw["radius.reply_attributes"], def.Radius.ReplyAttributes)
 	t.Radius.VLANProfiles = parseStringMap(raw["radius.vlan_profiles"], def.Radius.VLANProfiles)
 	t.Radius.NASInventory = parseStringMap(raw["radius.nas_inventory"], def.Radius.NASInventory)
@@ -1210,18 +1219,19 @@ func (t *T) masked() map[string]any {
 		"master_key":  secretMask(t.MasterKeyB64),
 		"admin_token": secretMask(t.AdminToken),
 		"radius": map[string]any{
-			"secret":                         secretMask(t.RadiusSecret),
-			"code_lengths":                   t.Radius.CodeLengths,
-			"max_fail_per_user":              t.Radius.MaxFailPerUser,
-			"fail_window":                    t.Radius.FailWindow.String(),
-			"push_wait":                      t.Radius.PushWait.String(),
-			"require_message_authenticator":  t.Radius.RequireMessageAuthenticator,
-			"rate_limit_pps":                 t.Radius.RateLimitPPS,
-			"reply_attributes":               t.Radius.ReplyAttributes,
-			"vlan_profiles":                  t.Radius.VLANProfiles,
-			"nas_inventory":                  t.Radius.NASInventory,
-			"cert_file":                      t.Radius.CertFile,
-			"key_file":                       secretMask(t.Radius.KeyFile),
+			"secret":                        secretMask(t.RadiusSecret),
+			"code_lengths":                  t.Radius.CodeLengths,
+			"max_fail_per_user":             t.Radius.MaxFailPerUser,
+			"fail_window":                   t.Radius.FailWindow.String(),
+			"push_wait":                     t.Radius.PushWait.String(),
+			"require_message_authenticator": t.Radius.RequireMessageAuthenticator,
+			"rate_limit_pps":                t.Radius.RateLimitPPS,
+			"trust_days":                    t.Radius.TrustDays,
+			"reply_attributes":              t.Radius.ReplyAttributes,
+			"vlan_profiles":                 t.Radius.VLANProfiles,
+			"nas_inventory":                 t.Radius.NASInventory,
+			"cert_file":                     t.Radius.CertFile,
+			"key_file":                      secretMask(t.Radius.KeyFile),
 			// eap_cert — секрет: приватный ключ TLS-сертификата.
 			"eap_cert": maskForValue(t.Radius.EAPCert),
 		},

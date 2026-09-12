@@ -437,7 +437,7 @@ func TestRenderPages(t *testing.T) {
 			name: "admin_support",
 			tmpl: "admin_support",
 			data: AdminSupportData{
-				BaseData: base("Удаленная помощь"),
+				BaseData:       base("Удаленная помощь"),
 				CategoryFilter: "it",
 				Sessions: []store.SupportSession{
 					{
@@ -670,6 +670,124 @@ func TestRenderUnknownTemplate(t *testing.T) {
 	r := mustNew(t)
 	if err := r.Render(&strings.Builder{}, "no_such_page", nil); err == nil {
 		t.Error("ожидалась ошибка для неизвестного шаблона")
+	}
+}
+
+// TestRenderHTMLCSP — CSP-решение рендера: middleware ставит строгую базовую
+// политику всем ответам; RenderHTML ПЕРЕЗАПИСЫВАЕТ её на relaxed только у
+// страницы с фактически отрендеренными рекламными слотами (админка и
+// страницы без слотов остаются строгими — report 2026-09-11, Web UI-1).
+func TestRenderHTMLCSP(t *testing.T) {
+	r := mustNew(t)
+	// mk — данные соответствующей страницы с подставленной рекламой
+	// (решение CSP делается по полю Ads в BaseData любых страниц).
+	adsOf := func(b BaseData, ads AdsData) BaseData { b.Ads = ads; return b }
+	login := func(a AdsData) any { return LoginData{BaseData: adsOf(BaseData{Title: "Вход"}, a)} }
+	cases := []struct {
+		name string
+		page string
+		mk   func(AdsData) any
+		ads  AdsData
+		want string
+	}{
+		{"no_ads", "login", login, AdsData{}, ContentSecurityPolicy},
+		{"rsya_no_slots", "login", login, AdsData{Show: true, Provider: "rsya"}, ContentSecurityPolicy},
+		{"rsya_login_left", "login", login, AdsData{Show: true, Provider: "rsya", LoginLeft: "R-A-1"}, ContentSecurityPolicyAds},
+		{"rsya_login_right", "error", func(a AdsData) any {
+			return ErrorData{BaseData: adsOf(BaseData{Title: "Ошибка"}, a), Code: 404, Message: "нет"}
+		}, AdsData{Show: true, Provider: "rsya", LoginRight: "R-A-2"}, ContentSecurityPolicyAds},
+		{"rsya_consent_left", "oidc_consent", func(a AdsData) any {
+			return OIDCConsentData{BaseData: adsOf(BaseData{Title: "Вход в приложение", Username: "vasya", CSRF: testCSRF}, a), ClientID: "mfa_x"}
+		}, AdsData{Show: true, Provider: "rsya", LoginLeft: "R-A-7"}, ContentSecurityPolicyAds},
+		// App-страницы игнорируют login-слоты: рендерится только Sidebar.
+		{"rsya_login_slots_on_app_page", "me_profile", func(a AdsData) any {
+			return MeProfileData{BaseData: adsOf(BaseData{Title: "Профиль", Username: "vasya", CSRF: testCSRF}, a), User: testUser()}
+		}, AdsData{Show: true, Provider: "rsya", LoginLeft: "R-A-1", LoginRight: "R-A-2"}, ContentSecurityPolicy},
+		{"rsya_sidebar_on_app_page", "admin_users", func(a AdsData) any {
+			return AdminUsersData{BaseData: adsOf(BaseData{Title: "Пользователи", Username: "vasya", CSRF: testCSRF}, a)}
+		}, AdsData{Show: true, Provider: "rsya", Sidebar: "R-A-3"}, ContentSecurityPolicyAds},
+		{"rsya_sidebar_empty", "me_profile", func(a AdsData) any {
+			return MeProfileData{BaseData: adsOf(BaseData{Title: "Профиль", Username: "vasya", CSRF: testCSRF}, a), User: testUser()}
+		}, AdsData{Show: true, Provider: "rsya"}, ContentSecurityPolicy},
+		{"rsya_sidebar_on_login", "login", login, AdsData{Show: true, Provider: "rsya", Sidebar: "R-A-3"}, ContentSecurityPolicy},
+		{"rsya_on_support_viewer", "admin_support_viewer", func(a AdsData) any {
+			return AdminSupportViewerData{
+				BaseData: adsOf(BaseData{Title: "Управление ПК", Username: "vasya", CSRF: testCSRF}, a),
+				Session:  &store.SupportSession{ID: uuid.MustParse("44444444-4444-4444-4444-444444444444")},
+			}
+		}, AdsData{Show: true, Provider: "rsya", Sidebar: "R-A-3", LoginLeft: "R-A-1"}, ContentSecurityPolicy},
+		{"direct_no_image", "login", login, AdsData{Show: true, Provider: "direct", DirectURL: "https://ads.example/x"}, ContentSecurityPolicy},
+		{"direct_image", "login", login, AdsData{Show: true, Provider: "direct", DirectImage: "https://ads.example/banner.png"}, ContentSecurityPolicyAds},
+		{"direct_image_on_app_page", "admin_users", func(a AdsData) any {
+			return AdminUsersData{BaseData: adsOf(BaseData{Title: "Пользователи", Username: "vasya", CSRF: testCSRF}, a)}
+		}, AdsData{Show: true, Provider: "direct", DirectImage: "https://ads.example/banner.png"}, ContentSecurityPolicyAds},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			if err := r.RenderHTML(rec, http.StatusOK, tc.page, tc.mk(tc.ads)); err != nil {
+				t.Fatalf("RenderHTML(%s): %v", tc.page, err)
+			}
+			if got := rec.Header().Get("Content-Security-Policy"); got != tc.want {
+				t.Errorf("CSP = %q, want %q", got, tc.want)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+				t.Errorf("Content-Type = %q", got)
+			}
+			if rec.Code != http.StatusOK {
+				t.Errorf("статус %d, ожидался 200 (заголовки до первого Write)", rec.Code)
+			}
+		})
+	}
+
+	// Страница без рекламных данных (any, не содержащий BaseData) — строгая CSP.
+	rec := httptest.NewRecorder()
+	if err := r.RenderHTML(rec, http.StatusOK, "login", nil); err != nil {
+		t.Fatalf("RenderHTML(login, nil): %v", err)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != ContentSecurityPolicy {
+		t.Errorf("CSP без данных = %q, want %q", got, ContentSecurityPolicy)
+	}
+}
+
+// TestRenderBrandLogoSameOrigin — логотип белого лейбла рендерится
+// same-origin ресурсом /branding/logo (report 2026-09-11, Web UI-2):
+// data:URI в src заменялся фильтром html/template на #ZgotmplZ, а внешний
+// https-URL резался строгой img-src.
+func TestRenderBrandLogoSameOrigin(t *testing.T) {
+	r := mustNew(t)
+	dataURI := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+	consentBase := BaseData{Title: "Вход в приложение", Username: "vasya", CSRF: testCSRF,
+		Brand: BrandData{Name: "Acme", Logo: dataURI}}
+	cases := []struct {
+		name string
+		tmpl string
+		data any
+	}{
+		{"login", "login", LoginData{BaseData: BaseData{Title: "Вход", Brand: BrandData{Name: "Acme", Logo: dataURI}}}},
+		{"me_profile", "me_profile", MeProfileData{BaseData: BaseData{Title: "Профиль", Username: "admin", IsAdmin: true, CSRF: testCSRF, Brand: BrandData{Name: "Acme", Logo: dataURI}}, User: testUser()}},
+		{"oidc_consent", "oidc_consent", OIDCConsentData{
+			BaseData: consentBase,
+			ClientID: "mfa_x",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sb strings.Builder
+			if err := r.Render(&sb, tc.tmpl, tc.data); err != nil {
+				t.Fatalf("Render(%s): %v", tc.tmpl, err)
+			}
+			out := sb.String()
+			if !strings.Contains(out, `src="/branding/logo"`) {
+				t.Errorf("Render(%s): нет src=\"/branding/logo\"", tc.tmpl)
+			}
+			if strings.Contains(out, "ZgotmplZ") {
+				t.Errorf("Render(%s): data:URI превратился в #ZgotmplZ", tc.tmpl)
+			}
+			if strings.Contains(out, dataURI) {
+				t.Errorf("Render(%s): сырой data:URI попал в разметку", tc.tmpl)
+			}
+		})
 	}
 }
 

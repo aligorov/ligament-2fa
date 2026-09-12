@@ -140,11 +140,12 @@ func issuerFrom(domain string, r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
-// renderPage рендерит HTML-страницу web-интерфейса.
+// renderPage рендерит HTML-страницу web-интерфейса через web.RenderHTML:
+// тот до первого Write ставит Content-Type и при активных рекламных слотах
+// страницы согласия перезаписывает CSP на relaxed (строгая политика иначе
+// режет загрузчик РСЯ).
 func (mgr *Manager) renderPage(w http.ResponseWriter, status int, page string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	if err := mgr.rend.Render(w, page, data); err != nil {
+	if err := mgr.rend.RenderHTML(w, status, page, data); err != nil {
 		slog.Error("oidc: рендер страницы", "page", page, "error", err)
 	}
 }
@@ -162,7 +163,7 @@ func (mgr *Manager) renderErrorPage(w http.ResponseWriter, r *http.Request, stat
 // sessionUser — пользователь web-сессии по cookie twofa_session
 // (включая отключённых: requirePage инвариант «отключённый теряет
 // сессию»). Возвращает пользователя, CSRF, момент входа (auth_time) и
-// режим входа сессии (auth_mode → клейм amr; '' — легаси-сессия).
+// режим входа сессии (auth_mode → клейм amr; ” — легаси-сессия).
 func (mgr *Manager) sessionUser(r *http.Request) (*store.User, string, time.Time, string, bool) {
 	c, err := r.Cookie(cookieSession)
 	if err != nil || c.Value == "" {
@@ -603,12 +604,12 @@ func (mgr *Manager) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reques
 	code := secrets.RandomToken(32)
 	if err := mgr.st.OIDCCodeSave(r.Context(), secrets.SHA256(code), &store.OIDCCode{
 		ClientID:            client.ClientID,
-		UserID:             user.ID,
-		RedirectURI:        ar.RedirectURI,
-		Scope:              FilterScopes(ar.Scope),
-		Nonce:              ar.Nonce,
-		AuthTime:           authTime,
-		AMR:                AMRForMode(authMode),
+		UserID:              user.ID,
+		RedirectURI:         ar.RedirectURI,
+		Scope:               FilterScopes(ar.Scope),
+		Nonce:               ar.Nonce,
+		AuthTime:            authTime,
+		AMR:                 AMRForMode(authMode),
 		CodeChallenge:       ar.CodeChallenge,
 		CodeChallengeMethod: ar.CodeChallengeMethod,
 	}, codeTTL); err != nil {
@@ -657,6 +658,10 @@ func (mgr *Manager) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reques
 // N5); неудачная аутентификация клиента пишется в аудит oidc_token_fail.
 // Ошибки — RFC 6749 §5.2.
 func (mgr *Manager) handleToken(w http.ResponseWriter, r *http.Request) {
+	// RFC 6749 §5.1: ответы token-эндпоинта (включая ошибки) не должны
+	// кэшироваться — в них фигурируют access/ID-токены.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	if err := r.ParseForm(); err != nil {
 		writeOIDCError(w, http.StatusBadRequest, "invalid_request")
 		return
@@ -783,6 +788,10 @@ func (mgr *Manager) handleToken(w http.ResponseWriter, r *http.Request) {
 // пользователя по access-токену; sub обязателен, профильные клеймы — по
 // scope токена.
 func (mgr *Manager) handleUserinfo(w http.ResponseWriter, r *http.Request) {
+	// RFC 6749 §5.1: клеймы пользователя (профиль/email) не должны
+	// оседать в кэшах прокси и браузера.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
 	if !strings.HasPrefix(h, prefix) {
@@ -804,6 +813,14 @@ func (mgr *Manager) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := mgr.st.UserByID(r.Context(), t.UserID)
 	if err != nil {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="oidc", error="invalid_token"`)
+		writeOIDCError(w, http.StatusUnauthorized, "invalid_token")
+		return
+	}
+	if !user.Enabled {
+		// Отключённый пользователь с живым access-токеном: учётная запись
+		// деактивирована после выдачи токена — токен недействителен
+		// (RFC 6750 §3.1 invalid_token), а не отдаёт профиль дальше.
 		w.Header().Set("WWW-Authenticate", `Bearer realm="oidc", error="invalid_token"`)
 		writeOIDCError(w, http.StatusUnauthorized, "invalid_token")
 		return
