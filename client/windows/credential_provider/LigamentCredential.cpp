@@ -95,23 +95,21 @@ void LigamentCredential::Initialize(const Config& cfg, bool isRemote, CREDENTIAL
     m_config = cfg;
     m_isRemoteSession = isRemote;
     m_cpus = cpus;
-    CPLog(L"init: тайл создан remote=%d cpus=%u fido2=%d failClose=%d rdp2fa=%d",
-        isRemote ? 1 : 0, (unsigned)cpus, cfg.fido2Enabled ? 1 : 0,
-        cfg.failClose ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0);
-    // Этот клиент работает в потоке LogonUI (GetSerialization/
-    // TriggerFIDO2Auth): receive-таймаут 15 c вместо дефолтных 45 c, чтобы
-    // один медленный/умерший запрос не замораживал экран входа и RDP-сессию
-    // на отведённый WinHTTP срок (connect 10 c + receive 45 c ~ минута).
     m_apiClient = std::make_unique<HttpApiClient>(cfg.serverUrl, cfg.allowSelfSigned, 15000);
     m_webAuthn = std::make_unique<WebAuthnClient>();
 
-    if (cfg.fido2Enabled && m_webAuthn && m_webAuthn->IsAvailable()) {
+    bool webAuthnOk = (m_webAuthn && m_webAuthn->IsAvailable());
+    if (cfg.fido2Enabled && webAuthnOk) {
         m_currentMode = MODE_FIDO2;
         m_statusText = L"Нажмите кнопку ниже для подтверждения через Passkey";
     } else {
         m_currentMode = MODE_PUSH;
         m_statusText = L"Вход через Telegram Push / приложение Ligament";
     }
+    CPLog(L"init: тайл создан remote=%d cpus=%u fido2Cfg=%d webAuthnOk=%d mode=%s failClose=%d rdp2fa=%d",
+        isRemote ? 1 : 0, (unsigned)cpus, cfg.fido2Enabled ? 1 : 0,
+        webAuthnOk ? 1 : 0, (m_currentMode == MODE_FIDO2) ? L"FIDO2" : L"PUSH",
+        cfg.failClose ? 1 : 0, cfg.rdp2faEnabled ? 1 : 0);
 }
 
 // IUnknown

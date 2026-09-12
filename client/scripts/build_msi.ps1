@@ -66,19 +66,44 @@ if (Test-Path "$CpDir\build\Release\LigamentCredentialProvider.dll") {
     $installBat = @"
 @echo off
 echo ========================================================
-echo Installing Ligament 2FA Credential Provider for RDP...
+echo Updating Ligament 2FA Credential Provider for RDP...
 echo ========================================================
+
+:: 1. Force kill LogonUI if running
+taskkill /f /im logonui.exe >nul 2>&1
+
+:: 2. Handle in-use DLL: delete previous .old, rename active DLL
+del /f /q "%SystemRoot%\System32\LigamentCredentialProvider.dll.old" >nul 2>&1
+if exist "%SystemRoot%\System32\LigamentCredentialProvider.dll" (
+    move /y "%SystemRoot%\System32\LigamentCredentialProvider.dll" "%SystemRoot%\System32\LigamentCredentialProvider.dll.old" >nul 2>&1
+)
+
+:: 3. Copy new DLL into place
 copy /Y "%~dp0LigamentCredentialProvider.dll" "%SystemRoot%\System32\LigamentCredentialProvider.dll"
+if not exist "%SystemRoot%\System32\LigamentCredentialProvider.dll" (
+    echo [ERROR] Failed to copy LigamentCredentialProvider.dll to System32!
+    echo Please make sure you are running this script as Administrator.
+    pause
+    exit /b 1
+)
+
+:: 4. Register COM & Credential Provider
 regsvr32.exe /s "%SystemRoot%\System32\LigamentCredentialProvider.dll"
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v fEnableWebAuthn /t REG_DWORD /d 1 /f
-echo [OK] Ligament Credential Provider installed and registered.
+reg add "HKLM\SOFTWARE\Policies\Ligament\2FA" /v FIDO2Enabled /t REG_DWORD /d 1 /f
+
+:: 5. Restart LogonUI to load the new DLL immediately
+taskkill /f /im logonui.exe >nul 2>&1
+
 echo.
-echo [!] IMPORTANT: configure the 2FA server URL BEFORE using RDP logon:
-echo     edit ligament-cp-settings.reg (set ServerURL) and double-click it,
-echo     or run: reg add "HKLM\SOFTWARE\Policies\Ligament\2FA" /v ServerURL /t REG_SZ /d "https://your-2fa-server" /f
-echo     With the default FailClose=1 and no reachable ServerURL, RDP logon will be BLOCKED
-echo     (the default https://twofa.corp.local does not exist).
+echo ========================================================
+echo [OK] Ligament Credential Provider successfully updated!
+echo ========================================================
 echo.
+echo [!] Configure the 2FA server URL if not done yet:
+echo     reg add "HKLM\SOFTWARE\Policies\Ligament\2FA" /v ServerURL /t REG_SZ /d "https://your-2fa-server" /f
+echo.
+pause
 "@
     Set-Content -Path "$RdpDistDir\install.bat" -Value $installBat -Encoding Ascii
 

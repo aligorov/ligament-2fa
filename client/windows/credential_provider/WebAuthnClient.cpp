@@ -1,14 +1,27 @@
-﻿// WebAuthnClient.cpp — Win32 WebAuthn API client implementation
+// WebAuthnClient.cpp — Win32 WebAuthn API client implementation
 #include "WebAuthnClient.h"
 
 namespace ligament {
 
 WebAuthnClient::WebAuthnClient() {
-    m_hWebAuthn = LoadLibraryW(L"webauthn.dll");
+    wchar_t sysDir[MAX_PATH] = { 0 };
+    if (GetSystemDirectoryW(sysDir, MAX_PATH) > 0) {
+        std::wstring dllPath = std::wstring(sysDir) + L"\\webauthn.dll";
+        m_hWebAuthn = LoadLibraryW(dllPath.c_str());
+    }
+    if (!m_hWebAuthn) {
+        m_hWebAuthn = LoadLibraryW(L"webauthn.dll");
+    }
+
     if (m_hWebAuthn) {
         m_pfnGetAssertion = (FnWebAuthnAuthenticatorGetAssertion)GetProcAddress(m_hWebAuthn, "WebAuthnAuthenticatorGetAssertion");
         m_pfnFreeAssertion = (FnWebAuthnFreeAssertion)GetProcAddress(m_hWebAuthn, "WebAuthnFreeAssertion");
         m_pfnIsUVPAA = (FnWebAuthnIsUserVerifyingPlatformAuthenticatorAvailable)GetProcAddress(m_hWebAuthn, "WebAuthnIsUserVerifyingPlatformAuthenticatorAvailable");
+        LogDebug(L"webauthn: DLL загружена, GetAssertion=%p FreeAssertion=%p UVPAA=%p",
+            m_pfnGetAssertion, m_pfnFreeAssertion, m_pfnIsUVPAA);
+    } else {
+        DWORD err = GetLastError();
+        LogDebug(L"webauthn: не удалось загрузить webauthn.dll err=%lu (126 = файл не найден в System32)", err);
     }
 }
 
